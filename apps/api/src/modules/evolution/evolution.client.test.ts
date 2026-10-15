@@ -824,7 +824,7 @@ describe('exact canonical media acquisition', () => {
     const client = createEvolutionClient({ baseUrl: 'https://evolution.invalid', apiKey: 'synthetic', fetch });
     await expect(client.fetchMedia!({ instanceName: 'inst', id: 'same', key })).resolves.toBe('data:image/png;base64,eA==');
     expect(JSON.parse(String(fetch.mock.calls[1]?.[1]?.body))).toMatchObject({ message: exact });
-    expect(JSON.parse(String(fetch.mock.calls[0]?.[1]?.body))).toMatchObject({ where: { key: exact.key } });
+    expect(JSON.parse(String(fetch.mock.calls[0]?.[1]?.body)).where.key).toEqual({ id: exact.key.id });
   });
   it('does not download bytes for mismatched direction or group participant', async () => {
     const fetch = vi.fn(async () => Response.json({ messages: { pages: 1, records: [{ key: { id: 'same', remoteJid: key.nativeChatAddress, fromMe: true }, messageTimestamp: 1700000010, message: {} }] } }));

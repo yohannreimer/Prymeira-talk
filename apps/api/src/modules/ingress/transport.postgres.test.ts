@@ -5,7 +5,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import amqp, { type ChannelModel } from 'amqplib';
 import { PrismaClient } from '@prisma/client';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { ConfirmedIngressPublisher, transportTopology } from './broker.js';
+import { ConfirmedIngressPublisher, IngressBackpressure, transportTopology } from './broker.js';
 import { IngressPrivateStore } from './private-store.js';
 import { IngressJournal } from './journal.js';
 import { createIngressHttp } from './http.js';
@@ -70,8 +70,8 @@ describe.skipIf(!databaseUrl || !brokerUrl)('isolated ingress PostgreSQL + actua
       workspaceAllowlist: new Set([workspaceId]), evolutionAliases: ['/private/evolution/:workspaceId'] }); apps.push(app);
     const envelope = { event: 'MESSAGES_UPSERT', instance: evolution.sessionName, data: { key: { id: 'stanza-A', remoteJid: peer, fromMe: false }, message: { conversation: 'hello' }, messageTimestamp: 1700000000 } };
     const submit = (body: unknown = envelope, headers: Record<string, string | string[]> = { 'x-prymeira-talk-secret': secret }, path = `/webhooks/evolution/${workspaceId}`) => app.inject({ method: 'POST', url: path, payload: JSON.stringify(body), headers: { 'content-type': 'application/json', ...headers } });
-    const consume = async () => {
-      const consumer = await IngressTransportConsumer.start({ url: brokerUrl!, namespace, journal, publisher: () => publisher });
+    const consume = async (application?: { apply(receiptId: string): Promise<unknown> }) => {
+      const consumer = await IngressTransportConsumer.start({ url: brokerUrl!, namespace, journal, publisher: () => publisher, application });
       consumers.push(consumer); return consumer;
     };
     return { workspaceId, channel, evolution, waha, publisher, namespace, app, envelope, submit, consume };
@@ -241,6 +241,113 @@ describe.skipIf(!databaseUrl || !brokerUrl)('isolated ingress PostgreSQL + actua
     await until(() => db.ingressApplication.count({ where: { receiptId: id } }), n => n === 1);
     expect(await db.ingressReceipt.count({ where: { workspaceId: f.workspaceId } })).toBe(1);
     await channel.close();
+  });
+  it('waits for a delivered publication lease to settle before publishing its failure retry', async () => {
+    const f = await fixture(), original = f.publisher.publish.bind(f.publisher);
+    let published!: () => void, release!: () => void;
+    const sent = new Promise<void>(resolve => { published = resolve; });
+    const settled = new Promise<void>(resolve => { release = resolve; });
+    const spy = vi.spyOn(f.publisher, 'publish').mockImplementationOnce(async (...args) => {
+      await original(...args); published(); await settled;
+    });
+    const submission = f.submit();
+    try {
+      await sent;
+      const receipt = await db.ingressReceipt.findFirstOrThrow({ where: { workspaceId: f.workspaceId } });
+      await rename(join(root, receipt.eventRef), join(root, `${receipt.eventRef}.held`));
+      const consumer = await f.consume();
+      await new Promise(resolve => setTimeout(resolve, 100));
+      expect(consumer.alive).toBe(true);
+      expect((await db.ingressDelivery.findUniqueOrThrow({ where: { receiptId: receipt.id } })).failures).toBe(0);
+      release(); expect((await submission).statusCode).toBe(202);
+      await until(() => db.ingressDelivery.findUniqueOrThrow({ where: { receiptId: receipt.id } }), delivery => delivery.state === 'dead_letter');
+      const attempts = await db.ingressPublishAttempt.findMany({ where: { receiptId: receipt.id }, orderBy: { createdAt: 'asc' } });
+      expect(attempts.map(attempt => [attempt.destination, attempt.outcome])).toEqual([['incoming', 'confirmed'], ['retry', 'confirmed'], ['retry', 'confirmed'], ['dead', 'confirmed']]);
+    } finally { release(); await submission; spy.mockRestore(); }
+  });
+  it('settles concurrent duplicate retries without repeating application or failure counting for a collided publish', async () => {
+    const f = await fixture(), response = await f.submit(), receiptId = response.json().receiptId;
+    await f.publisher.publish({ version: 1, receiptId }, 'incoming'); // A real at-least-once duplicate reference.
+    let releaseApplications!: () => void, releaseClaims!: () => void, releasePublish!: () => void, published!: () => void;
+    const applications = new Promise<void>(resolve => { releaseApplications = resolve; });
+    const claims = new Promise<void>(resolve => { releaseClaims = resolve; });
+    const publication = new Promise<void>(resolve => { releasePublish = resolve; });
+    const sent = new Promise<void>(resolve => { published = resolve; });
+    let entered = 0, claimAttempts = 0, collisions = 0, paused = false;
+    const apply = vi.fn(async () => { if (++entered === 2) releaseApplications(); await applications; throw new Error('synthetic application failure'); });
+    const originalJournal = journal.publish.bind(journal), originalPublisher = f.publisher.publish.bind(f.publisher);
+    const claimSpy = vi.spyOn(journal, 'publish').mockImplementation(async (...args) => {
+      if (args[0] === receiptId && args[2] === 'retry' && ++claimAttempts <= 2) {
+        if (claimAttempts === 2) releaseClaims(); await claims;
+      }
+      try { return await originalJournal(...args); }
+      catch (error) { if (error instanceof IngressBackpressure && error.code === 'publication_in_progress') collisions++; throw error; }
+    });
+    const publisherSpy = vi.spyOn(f.publisher, 'publish').mockImplementation(async (...args) => {
+      await originalPublisher(...args);
+      if (args[1] === 'retry' && !paused) { paused = true; published(); await publication; }
+    });
+    try {
+      const consumer = await f.consume({ apply }), ack = vi.spyOn(consumer.channel, 'ack');
+      await sent; await until(async () => collisions, count => count === 1);
+      await new Promise(resolve => setTimeout(resolve, 100));
+      expect(consumer.alive).toBe(true);
+      expect((await db.ingressDelivery.findUniqueOrThrow({ where: { receiptId } })).failures).toBe(2);
+      releasePublish();
+      await until(() => db.ingressDelivery.findUniqueOrThrow({ where: { receiptId } }), state => state.state === 'dead_letter');
+      const attempts = await until(() => db.ingressPublishAttempt.findMany({ where: { receiptId }, orderBy: { createdAt: 'asc' } }), rows =>
+        rows.every(row => row.outcome === 'confirmed') && ack.mock.calls.length === 2 + rows.filter(row => row.destination === 'retry').length);
+      expect(attempts[0]?.destination).toBe('incoming');
+      expect(attempts.some(row => row.destination === 'retry')).toBe(true);
+      expect(attempts.some(row => row.destination === 'dead')).toBe(true);
+      expect((await db.ingressDelivery.findUniqueOrThrow({ where: { receiptId } })).failures).toBeLessThanOrEqual(apply.mock.calls.length);
+      expect(consumer.alive).toBe(true);
+    } finally { releaseApplications(); releaseClaims(); releasePublish(); claimSpy.mockRestore(); publisherSpy.mockRestore(); }
+  });
+  it('closes a lease-waiting original channel without a late ACK and requeues its reference for durable handoff', async () => {
+    const f = await fixture(), original = f.publisher.publish.bind(f.publisher);
+    let published!: () => void, release!: () => void, attempted!: () => void;
+    const sent = new Promise<void>(resolve => { published = resolve; });
+    const publication = new Promise<void>(resolve => { release = resolve; });
+    const applicationAttempt = new Promise<void>(resolve => { attempted = resolve; });
+    const spy = vi.spyOn(f.publisher, 'publish').mockImplementationOnce(async (...args) => { await original(...args); published(); await publication; });
+    const submission = f.submit();
+    try {
+      await sent;
+      const receipt = await db.ingressReceipt.findFirstOrThrow({ where: { workspaceId: f.workspaceId } });
+      const apply = vi.fn(async () => { attempted(); throw new Error('synthetic application failure'); });
+      const consumer = await f.consume({ apply }), ack = vi.spyOn(consumer.channel, 'ack');
+      await applicationAttempt; await consumer.close();
+      release(); expect((await submission).statusCode).toBe(202);
+      await until(() => db.ingressDelivery.findUniqueOrThrow({ where: { receiptId: receipt.id } }), state => state.leaseToken === null);
+      expect(ack).not.toHaveBeenCalled();
+      expect(apply).toHaveBeenCalledOnce();
+      expect((await db.ingressDelivery.findUniqueOrThrow({ where: { receiptId: receipt.id } })).failures).toBe(0);
+      await f.consume();
+      await until(() => db.ingressApplication.count({ where: { receiptId: receipt.id } }), count => count === 1);
+      expect((await db.ingressPublishAttempt.findMany({ where: { receiptId: receipt.id } })).map(row => row.outcome)).toEqual(['confirmed']);
+      expect(ack).not.toHaveBeenCalled();
+    } finally { release(); await submission; spy.mockRestore(); }
+  });
+  it('does not count or retry a failed duplicate after another handoff commits before its failure increment', async () => {
+    const f = await fixture(), response = await f.submit(), receiptId = response.json().receiptId;
+    let entered!: () => void, release!: () => void;
+    const incrementing = new Promise<void>(resolve => { entered = resolve; });
+    const increment = new Promise<void>(resolve => { release = resolve; });
+    const original = db.ingressDelivery.updateMany.bind(db.ingressDelivery);
+    const spy = vi.spyOn(db.ingressDelivery, 'updateMany').mockImplementation((async (args: any) => {
+      if (args.where.receiptId === receiptId && args.data.failures?.increment === 1) { entered(); await increment; }
+      return original(args);
+    }) as never);
+    const apply = vi.fn(async () => { throw new Error('synthetic failed duplicate'); });
+    try {
+      const consumer = await f.consume({ apply }), ack = vi.spyOn(consumer.channel, 'ack');
+      await incrementing; await journal.handoff(receiptId); release();
+      await until(async () => ack.mock.calls.length, count => count === 1);
+      expect(await db.ingressDelivery.findUniqueOrThrow({ where: { receiptId } })).toMatchObject({ state: 'pending_application', failures: 0 });
+      expect(await db.ingressPublishAttempt.count({ where: { receiptId } })).toBe(1);
+      expect(apply).toHaveBeenCalledOnce(); expect(consumer.alive).toBe(true);
+    } finally { release(); spy.mockRestore(); }
   });
   it('requeues unACKed original channel deliveries and remains idempotent after commit-before-ACK failure', async () => {
     const f = await fixture(); const response = await f.submit(), id = response.json().receiptId;

@@ -896,10 +896,11 @@ describe.skipIf(!databaseUrl || !brokerUrl)('stage 1B canonical application with
             const message = await db.message.findFirstOrThrow({ where: { workspaceId: f.workspaceId } });
             expect((await media.read({ workspaceId: f.workspaceId, conversationId: message.conversationId, messageId: message.id }))?.bytes.equals(PNG)).toBe(true);
         });
-        it('the compiled worker executes media.prepare by itself: webhook -> Message -> effect -> stored original', async () => {
+        it('the compiled worker prepares original media when Evolution stores the webhook PN as an explicit native LID', async () => {
             const f = await fixture();
             const expectedKey = { id: 'worker-media', remoteJid: peer, fromMe: false };
-            const provider = createExactEvolutionMediaFixture({ sessionName: f.evo.sessionName, key: expectedKey, bytes: PNG });
+            const nativeKey = { ...expectedKey, remoteJid: '700001@lid', remoteJidAlt: peer };
+            const provider = createExactEvolutionMediaFixture({ sessionName: f.evo.sessionName, key: nativeKey, bytes: PNG });
             const { server: evolutionApi, requests } = provider;
             await new Promise<void>(resolve => evolutionApi.listen(0, '127.0.0.1', resolve));
             const mediaRoot = join(root, `worker-media-${randomUUID()}`);
@@ -913,7 +914,7 @@ describe.skipIf(!databaseUrl || !brokerUrl)('stage 1B canonical application with
                 expect(stored).toMatchObject({ mimeType: 'image/png', sourceKind: 'evolution', sizeBytes: PNG.length });
                 expect(await until(() => db.ingressEffect.findFirstOrThrow({ where: { workspaceId: f.workspaceId, kind: 'media.prepare' } }), v => v.state === 'done')).toMatchObject({ attempts: 1 });
                 expect(requests).toEqual([`POST /chat/findMessages/${encodeURIComponent(f.evo.sessionName)}`, `POST /chat/getBase64FromMediaMessage/${encodeURIComponent(f.evo.sessionName)}`]);
-                expect(provider.keys).toEqual([expectedKey, expectedKey]);
+                expect(provider.keys).toEqual([{ id: expectedKey.id }, nativeKey]);
                 // Effects without a handler yet stay pending obligations, untouched.
                 expect(await db.ingressEffect.count({ where: { workspaceId: f.workspaceId, state: 'pending' } })).toBeGreaterThan(0);
             } finally {

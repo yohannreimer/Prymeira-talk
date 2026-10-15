@@ -33,7 +33,7 @@ describe.skipIf(!databaseUrl || !brokerUrl)('ingress in the production stage (re
     db = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
     root = await realpath(await mkdtemp(join(tmpdir(), 'talk-prod-rehearsal-')));
     workspaceId = `rehearsal-${randomUUID()}`; instance = `inst-${randomUUID()}`;
-    evolutionApi = createExactEvolutionMediaFixture({ sessionName: instance, key: { id: 'PROD-MEDIA-1', remoteJid: '15550001111@s.whatsapp.net', fromMe: false }, bytes: PNG }).server;
+    evolutionApi = createExactEvolutionMediaFixture({ sessionName: instance, key: { id: 'PROD-MEDIA-1', remoteJid: '700001@lid', remoteJidAlt: '15550001111@s.whatsapp.net', fromMe: false }, bytes: PNG }).server;
     await new Promise<void>(resolve => evolutionApi.listen(0, '127.0.0.1', resolve));
     const channel = await db.channel.create({ data: { workspaceId, provider: 'evolution', providerKey: instance, status: 'connected' } });
     await db.channelConnection.create({ data: { workspaceId, channelId: channel.id, provider: 'evolution', sessionName: instance, status: 'connected', health: 'healthy', eligible: true, verifiedPhoneNumber: '15550008888' } });

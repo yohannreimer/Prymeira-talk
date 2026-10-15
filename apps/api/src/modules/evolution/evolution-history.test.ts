@@ -1,5 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
 import { createEvolutionHistorySource } from './evolution-history.js';
+import { fullProviderKeyMatches } from '../messaging/provider-exact.js';
+import type { WhatsAppMessageKey } from '../messaging/whatsapp-identity.js';
+import { createExactEvolutionMediaFixture } from '../../test/evolution-media-fixture.js';
+import type { AddressInfo } from 'node:net';
 
 const jid = '123456789@s.whatsapp.net';
 const end = new Date('2026-09-14T12:00:00Z');
@@ -15,6 +19,90 @@ function setup(passes: unknown[][] = [[row('old'), row('anchor', end.getTime())]
   return { fetchMock, source: createEvolutionHistorySource({ baseUrl: 'https://evolution.invalid', apiKey: 'test', fetch: fetchMock as typeof fetch }) };
 }
 const input = { instanceName: 'Diogo', anchorId: 'anchor', from, to: end };
+describe('exact Evolution PN/LID rebound', () => {
+  const pn = '15550001111@s.whatsapp.net', lid = '700001@lid', group = '120000-100@g.us';
+  const expected: WhatsAppMessageKey = { identityFormat: 'whatsapp_stanza', nativeId: 'NATIVE', rawId: 'NATIVE', nativeChatAddress: pn,
+    chatAddress: pn, nativeSenderParticipant: null, senderParticipant: '', direction: 'inbound' };
+  const native = { ...row('NATIVE', end.getTime(), lid), key: { id: 'NATIVE', remoteJid: lid, remoteJidAlt: pn, fromMe: false } };
+  function exact(records: unknown[], metadata: { pages?: number; total?: number } = {}) {
+    const fetch = vi.fn(async (url: unknown, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      if (String(url).includes('getBase64')) return Response.json({ base64: 'YQ==', mimetype: 'image/png' });
+      // Faithful failing production contract: the provider stores LID; a PN filter misses it.
+      return Response.json({ messages: { records: body.where.key.remoteJid ? [] : records, pages: 1, ...metadata } });
+    });
+    return { fetch, source: createEvolutionHistorySource({ baseUrl: 'https://evolution.invalid', apiKey: 'fixture-key', fetch }) };
+  }
+  it('resolves a requested PN against its explicit native LID and passes the original key to media I/O', async () => {
+    const { source, fetch } = exact([native]), keyBefore = { ...expected };
+    expect(await source.mediaExact({ instanceName: 'owned-instance', key: expected, purpose: 'serve' })).toEqual({ kind: 'resolved', record: native, mediaUrl: 'data:image/png;base64,YQ==' });
+    expect(JSON.parse(String(fetch.mock.calls[0]?.[1]?.body))).toEqual({ where: { key: { id: 'NATIVE' } }, page: 1, offset: 100 });
+    expect(fetch.mock.calls.map(([url]) => url)).toEqual(['https://evolution.invalid/chat/findMessages/owned-instance', 'https://evolution.invalid/chat/getBase64FromMediaMessage/owned-instance']);
+    expect(JSON.parse(String(fetch.mock.calls[1]?.[1]?.body)).message.key).toEqual(native.key);
+    expect(expected).toEqual(keyBefore);
+    expect(fullProviderKeyMatches(expected, { ...expected, nativeChatAddress: lid, chatAddress: lid }, { chat: pn })).toBe(false);
+  });
+  it('also requires explicit proof when the requested native LID is stored as PN', async () => {
+    const key = { ...expected, nativeChatAddress: lid }, item = { ...native, key: { ...native.key, remoteJid: pn, remoteJidAlt: lid } };
+    expect(await exact([item]).source.findMessageExact({ instanceName: 'owned-instance', key })).toEqual({ kind: 'resolved', record: item });
+  });
+  it('keeps the real EvolutionClient and loopback provider fixture on the exact ID/native media contract', async () => {
+    const provider = createExactEvolutionMediaFixture({ sessionName: 'owned-instance', key: native.key, bytes: Buffer.from('a') });
+    await new Promise<void>(resolve => provider.server.listen(0, '127.0.0.1', resolve));
+    try {
+      const { createEvolutionClient } = await import('./evolution.client.js');
+      const client = createEvolutionClient({ baseUrl: `http://127.0.0.1:${(provider.server.address() as AddressInfo).port}`, apiKey: 'test-only' });
+      expect(await client.fetchMedia!({ instanceName: 'owned-instance', id: 'NATIVE', key: expected })).toBe('data:image/png;base64,YQ==');
+      expect(provider.keys).toEqual([{ id: 'NATIVE' }, native.key]);
+    } finally { await new Promise<void>(resolve => provider.server.close(() => resolve())); }
+  });
+  it('rebinds a group sender only through the record participantAlt', async () => {
+    const key = { ...expected, nativeChatAddress: group, chatAddress: group, nativeSenderParticipant: pn, senderParticipant: pn };
+    const item = { ...native, key: { id: 'NATIVE', remoteJid: group, fromMe: false, participant: lid, participantAlt: pn } };
+    const { source, fetch } = exact([item]);
+    expect(await source.mediaExact({ instanceName: 'owned-instance', key, purpose: 'serve' })).toMatchObject({ kind: 'resolved', record: item });
+    expect(JSON.parse(String(fetch.mock.calls[1]?.[1]?.body)).message.key).toEqual(item.key);
+  });
+  it.each([
+    { label: 'missing pair', key: { ...native.key, remoteJidAlt: undefined } },
+    { label: 'unrelated pair', key: { ...native.key, remoteJidAlt: '15550002222@s.whatsapp.net' } },
+    { label: 'other id', key: { ...native.key, id: 'FOREIGN' } },
+    { label: 'other direction', key: { ...native.key, fromMe: true } },
+    { label: 'different group', key: { ...native.key, remoteJid: '120000-200@g.us' } },
+    { label: 'direct sender contamination', key: { ...native.key, participant: pn, participantAlt: lid } },
+    { label: 'same digits in unrelated PN namespace', key: { ...native.key, remoteJid: '15550002222@s.whatsapp.net', remoteJidAlt: pn } }
+  ])('rejects $label before media I/O', async ({ key }) => {
+    const { source, fetch } = exact([{ ...native, key }]);
+    expect(await source.mediaExact({ instanceName: 'owned-instance', key: expected, purpose: 'serve' })).toEqual({ kind: 'missing' });
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+  it.each([{ identityFormat: 'provider_native' as const, rawId: null }, { rawId: 'OTHER' }, { chatAddress: '15550002222@s.whatsapp.net' }])('keeps other expected key fields exact: %j', async changed => {
+    expect(await exact([native]).source.findMessageExact({ instanceName: 'owned-instance', key: { ...expected, ...changed } })).toEqual({ kind: 'missing' });
+  });
+  it.each([undefined, '15550002222@s.whatsapp.net'])('does not rebind a group sender with participantAlt=%s', async participantAlt => {
+    const key = { ...expected, nativeChatAddress: group, chatAddress: group, nativeSenderParticipant: pn, senderParticipant: pn };
+    const item = { ...native, key: { id: 'NATIVE', remoteJid: group, fromMe: false, participant: lid, participantAlt } };
+    expect(await exact([item]).source.findMessageExact({ instanceName: 'owned-instance', key })).toEqual({ kind: 'missing' });
+  });
+  it('preserves contradictory group-sender evidence as ambiguous after a valid rebound', async () => {
+    const key = { ...expected, nativeChatAddress: group, chatAddress: group, nativeSenderParticipant: pn, senderParticipant: pn };
+    const item = { ...native, key: { id: 'NATIVE', remoteJid: group, fromMe: false, participant: lid, participantAlt: pn }, participant: '15550002222@s.whatsapp.net' };
+    expect(await exact([item]).source.findMessageExact({ instanceName: 'owned-instance', key })).toEqual({ kind: 'ambiguous' });
+  });
+  it('rejects multiple alias candidates and incomplete pagination before requesting bytes', async () => {
+    for (const fixture of [exact([native, { ...native, key: { ...native.key, remoteJid: '700002@lid' } }]), exact([native], { pages: 2 }), exact([native], { total: 2 })]) {
+      expect(await fixture.source.mediaExact({ instanceName: 'owned-instance', key: expected, purpose: 'serve' })).toEqual({ kind: 'ambiguous' });
+      expect(fixture.fetch).toHaveBeenCalledOnce();
+    }
+  });
+  it('rejects invalid native timestamps before requesting media', async () => {
+    for (const messageTimestamp of [0, null, 'invalid']) {
+      const { source, fetch } = exact([{ ...native, messageTimestamp }]);
+      await expect(source.mediaExact({ instanceName: 'owned-instance', key: expected, purpose: 'serve' })).rejects.toThrow('HISTORY_RECORD');
+      expect(fetch).toHaveBeenCalledOnce();
+    }
+  });
+});
 describe('read-only Evolution history', () => {
   it('accepts byte-equivalent duplicate history rows, but never conflicting messages or identities', async () => {
     const original = row('anchor');

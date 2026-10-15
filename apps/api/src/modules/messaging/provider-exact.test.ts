@@ -24,10 +24,10 @@ describe('exact provider I/O contracts', () => {
     const normalized = normalizeEvolutionWebhook(context, { event: 'messages.upsert', data: record });
     expect(normalized.kind === 'accepted' && normalized.event.kind === 'message' && normalized.event.key.senderParticipant).toBe(PN);
   });
-  it('queries Evolution using the full native key and validates response identity', async () => {
+  it('queries Evolution candidates by ID and validates the full native response identity', async () => {
     const { source, fetch } = evo([raw]);
     expect(await source.findMessageExact({ instanceName: 'fixture', key: key() })).toMatchObject({ kind: 'resolved', record: raw });
-    expect(JSON.parse(String(fetch.mock.calls[0]?.[1]?.body)).where.key).toMatchObject({ id: 'A', remoteJid: GROUP, fromMe: false, participant: PN });
+    expect(JSON.parse(String(fetch.mock.calls[0]?.[1]?.body)).where.key).toEqual({ id: 'A' });
     const wrong = evo([{ ...raw, key: { ...raw.key, participant: '15550002222@s.whatsapp.net' } }]);
     expect(await wrong.source.findMessageExact({ instanceName: 'fixture', key: key() })).toMatchObject({ kind: 'missing' });
     expect(await evo([raw, raw]).source.findMessageExact({ instanceName: 'fixture', key: key() })).toMatchObject({ kind: 'ambiguous' });

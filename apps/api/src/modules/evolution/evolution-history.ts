@@ -76,10 +76,6 @@ export function createEvolutionHistorySource(options: { baseUrl: string; apiKey:
       ...(typeof value.messageType === 'string' ? { messageType: value.messageType } : {}),
       ...(pushName ? { pushName } : {}) };
   }
-  function nativeKey(key: WhatsAppMessageKey) {
-    return { id: key.nativeId!, remoteJid: key.nativeChatAddress!, fromMe: key.direction === 'outbound',
-      ...(key.nativeSenderParticipant ? { participant: key.nativeSenderParticipant } : {}) };
-  }
   function exactRecordKey(item: HistoryRecord): WhatsAppMessageKey {
     const k = item.key, chatAddress = normalizeChatAddress(k.remoteJid), providerNative = k.id.startsWith('wamid.');
     return { identityFormat: providerNative ? 'provider_native' : 'whatsapp_stanza', nativeId: k.id, rawId: providerNative ? null : k.id,
@@ -95,16 +91,39 @@ export function createEvolutionHistorySource(options: { baseUrl: string; apiKey:
     if (item.participant && !explicitAddressMatch(normalizeChatAddress(item.participant), key.nativeSenderParticipant, item.key.participantAlt)) return { kind: 'ambiguous', key };
     return { kind: 'consistent', key };
   }
+  /** A provider database may store the explicit PN/LID alias opposite to the
+   * authenticated webhook. Rebind only this lookup's native fields, never the
+   * stored source or the shared exact matcher. Raw IDs, direction and canonical
+   * chat/sender remain checked by the full matcher after the local binding. */
+  function exactRecordMatches(expected: WhatsAppMessageKey, actual: WhatsAppMessageKey, item: HistoryRecord) {
+    const bound = { ...expected };
+    const provenAlias = (requested: string | null, native: string | null, alternate?: string) => {
+      const a = normalizeChatAddress(requested), b = normalizeChatAddress(native);
+      const pair = a?.endsWith('@lid') && b?.endsWith('@s.whatsapp.net') || a?.endsWith('@s.whatsapp.net') && b?.endsWith('@lid');
+      return !!pair && explicitAddressMatch(a, native, alternate);
+    };
+    if (expected.nativeChatAddress !== actual.nativeChatAddress) {
+      if (!provenAlias(expected.nativeChatAddress, actual.nativeChatAddress, item.key.remoteJidAlt)) return false;
+      bound.nativeChatAddress = actual.nativeChatAddress;
+    }
+    if (expected.nativeSenderParticipant !== actual.nativeSenderParticipant) {
+      if (!expected.chatAddress?.endsWith('@g.us') || !actual.chatAddress?.endsWith('@g.us') ||
+        !provenAlias(expected.nativeSenderParticipant, actual.nativeSenderParticipant, item.key.participantAlt)) return false;
+      bound.nativeSenderParticipant = actual.nativeSenderParticipant;
+    }
+    return fullProviderKeyMatches(bound, actual, { chat: item.key.remoteJidAlt, sender: item.key.participantAlt });
+  }
   async function findMessageExact(input: { instanceName: string; key: WhatsAppMessageKey }): Promise<
     { kind: 'resolved'; record: HistoryRecord } | { kind: 'missing' | 'incomplete' | 'ambiguous' }> {
     if (!input.instanceName || !completeProviderKey(input.key)) return { kind: 'incomplete' };
-    const result = await page(input.instanceName, nativeKey(input.key), 1);
+    const result = await page(input.instanceName, { id: input.key.nativeId! }, 1);
     // More than one page cannot establish uniqueness from the first page.
-    if (result.pages > 1) return { kind: 'ambiguous' };
+    if (result.pages > 1 || (result.pages === 0 && result.records.length) ||
+      (result.total !== null && result.total !== result.records.length)) return { kind: 'ambiguous' };
     const matches: HistoryRecord[] = [];
     for (const raw of result.records) {
       const item = parse(raw), identity = exactRecordIdentity(item);
-      if (!fullProviderKeyMatches(input.key, identity.key, { chat: item.key.remoteJidAlt, sender: item.key.participantAlt })) continue;
+      if (!exactRecordMatches(input.key, identity.key, item)) continue;
       // A contradictory claim for this exact tuple cannot disappear when another
       // response row is clean. Neither row certifies uniqueness or an I/O anchor.
       if (identity.kind !== 'consistent') return { kind: 'ambiguous' };

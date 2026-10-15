@@ -30,3 +30,13 @@ Recovery scans exhaust provider pages and retain compact identities/hashes for c
 WAHA JSON responses are limited to 4 MiB while streaming, before parsing; recovery scan retention has an 8 MiB JSON budget. Exceeding a limit fails that connection's recovery without advancing its checkpoint or returning a partial history as complete. The sweep continues with other connections. A response limit after a send is still uncertain external delivery and must never authorize an automatic resend.
 
 For an observed worker memory failure, temporarily pause only `INGRESS_RECOVERY_ENABLED` and `WAHA_HISTORY_IMPORT_ENABLED` on the worker while retaining ingress consumption and durable effects. After deploying the validated fix, restore both original values and observe the same task through multiple recovery intervals. Check memory, task stability, live receipt/application/effect progress and history error states separately; a successful initial startup is insufficient. Do not raise memory limits as a substitute for bounding retained provider data.
+
+## Exact media identity across Evolution aliases
+
+Evolution may store a chat by LID while its authenticated webhook identifies the explicit alternate phone number. Candidate lookup uses the native message ID in the same instance, then validates the complete key. A lookup-local native chat/sender binding requires the provider record's explicit PN/LID pair; unrelated chats, direction, participants, raw IDs, conflicting aliases and incomplete pagination remain rejected. The shared exact matcher and stored source are unchanged. Media downloads use the original native key returned by the provider.
+
+After validating a fix for unavailable attachments, only the identified `media.prepare` obligations may be retried. Preserve receipt identities, attempt evidence and business execution checkpoints. This does not authorize replaying agent, automation, CRM or outbound-send actions.
+
+## Retry publication reservations
+
+RabbitMQ can deliver a reference before its publisher records confirmation and releases its durable publication reservation. A successful database handoff can still complete independently. A failed handoff waits for that reservation before publishing its replacement; expected contention from duplicate references is bounded and does not repeat the application or increment the failure counter again. The original reference is acknowledged only after confirmed replacement evidence or an existing durable handoff/dead-letter milestone. Closing the consumer interrupts the wait and lets the original channel requeue its unacknowledged reference.
