@@ -135,7 +135,16 @@ export type ScenarioScore = {
   falhas: Array<{ tentativa: number; checks: Check[]; transcript: string; erro: string | null }>;
 };
 
-export type SuiteReport = { agente: string; modelo: string; k: number; cenarios: ScenarioScore[]; passK: number; passAt1: number };
+export type SuiteReport = {
+  agente: string;
+  modelo: string;
+  k: number;
+  cenarios: ScenarioScore[];
+  passK: number;
+  passAt1: number;
+  /** Share of all runs that ended with a person taking over. Watched so "hand it to a human" never becomes the easy way out. */
+  taxaHumano: number;
+};
 
 /** Runs every scenario k times. A scenario counts only if all k runs pass all checks. */
 export async function runSuite<Ficha, Pedido>(input: {
@@ -148,10 +157,14 @@ export async function runSuite<Ficha, Pedido>(input: {
 }): Promise<SuiteReport> {
   const cenarios: ScenarioScore[] = [];
   let firstTries = 0;
+  let runs = 0;
+  let toHuman = 0;
   for (const scenario of input.scenarios) {
     const score: ScenarioScore = { id: scenario.id, titulo: scenario.titulo, tentativas: input.k, acertos: 0, passouTodas: false, falhas: [] };
     for (let attempt = 1; attempt <= input.k; attempt += 1) {
       const run = await runScenario({ agent: input.agent, deps: input.deps(), scenario, fornecedorModel: input.fornecedorModel });
+      runs += 1;
+      if (run.humano) toHuman += 1;
       const checks = run.erro ? [{ nome: "rodou_sem_erro", ok: false, detalhe: run.erro }] : scenario.verificar(run);
       const ok = checks.every((check) => check.ok);
       if (ok) score.acertos += 1;
@@ -169,7 +182,8 @@ export async function runSuite<Ficha, Pedido>(input: {
     k: input.k,
     cenarios,
     passK: cenarios.filter((scenario) => scenario.passouTodas).length / total,
-    passAt1: firstTries / total
+    passAt1: firstTries / total,
+    taxaHumano: runs ? toHuman / runs : 0
   };
 }
 
@@ -194,7 +208,7 @@ export function renderReport(report: SuiteReport) {
     "",
     `Modelo: ${report.modelo} · ${report.k} tentativas por cenário`,
     "",
-    `**Passou todas as ${report.k} vezes: ${pct(report.passK)}** dos cenários · acertou na primeira: ${pct(report.passAt1)}`,
+    `**Passou todas as ${report.k} vezes: ${pct(report.passK)}** dos cenários · acertou na primeira: ${pct(report.passAt1)} · foi para humano: ${pct(report.taxaHumano)} das conversas`,
     "",
     "| Cenário | Acertos | Resultado |",
     "|---|---|---|",
