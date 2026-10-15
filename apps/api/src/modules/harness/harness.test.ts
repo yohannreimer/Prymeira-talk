@@ -12,6 +12,12 @@ import { runTurn } from "./core/runner.js";
 import { createTriage, triageByRules } from "./core/triage.js";
 import type { Jogada } from "./core/types.js";
 import { renderReport, runScenario, runSuite } from "./simulador/simulador.js";
+import { atendimento } from "./agentes/atendimento/index.js";
+import { cenarios as cenariosAtendimento, contextoVillefer, conversa } from "./agentes/atendimento/cenarios.js";
+import { conferirProva } from "./agentes/atendimento/ferramentas.js";
+import { fichaInicial as fichaInicialAtendimento } from "./agentes/atendimento/ficha.js";
+import { decidirJogada as decidirJogadaAtendimento } from "./agentes/atendimento/jogadas.js";
+import type { FichaDoAtendimento } from "./agentes/atendimento/tipos.js";
 
 const pedido = pedidoBase();
 
@@ -218,5 +224,127 @@ describe("simulador com modelos falsos", () => {
       scenario: { ...cenarios.find((item) => item.id === "robo_de_menu")!, persona: roteiro(["Digite o número da opção:\n1 - Vendas\n2 - Financeiro", "Oi, aqui é a Carla"]) }
     });
     expect(run.historico.slice(0, 4).map((message) => message.autor)).toEqual(["agente", "contato", "contato", "agente"]);
+  });
+});
+
+describe("atendimento: follow-up no harness", () => {
+  const contexto = contextoVillefer();
+  const historico = conversa(
+    "C: quanto fica 30 telhas trapezoidais 0,43 de 6 metros?",
+    "E: As 30 telhas TP40 0,43 de 6 m ficam R$ 8.940, pagamento em 28 dias. Retirada ou entrega?",
+    "C: vou ver com meu sócio e te falo"
+  );
+  const fichaAtd = (overrides: Partial<FichaDoAtendimento> = {}): FichaDoAtendimento => ({ ...fichaInicialAtendimento(), ...overrides });
+  const pendencia = (dono: "cliente" | "empresa", mensagem: number, id = "p1") => ({
+    id, dono, descricao: "cliente ia ver as telhas com o sócio", prova: { mensagem, trecho: "x" }, status: "aberta" as const, resolvidaPor: null
+  });
+  const silencio = { tipo: "silencio" as const, horasSemResposta: 6 };
+
+  /** Analyst that registers the given calls once, then stops. */
+  const analistaQueRegistra = (...calls: ReturnType<typeof toolCall>[]) =>
+    createScriptedModel("analista", (_request, index) => ({ content: null, toolCalls: index === 0 ? calls : [] }));
+  const escritor = (...textos: string[]) =>
+    createScriptedModel("escritor", (_request, index) => ({ content: null, toolCalls: [toolCall("responder", { texto: textos[Math.min(index, textos.length - 1)] })] }));
+
+  it("accepts only quotes that are really in the cited message", () => {
+    expect(conferirProva(historico, 2, "vou ver com meu SÓCIO")).toEqual({ mensagem: 2, trecho: "vou ver com meu SÓCIO" });
+    expect(() => conferirProva(historico, 2, "fechado, pode faturar")).toThrow(/não está na mensagem/);
+    expect(() => conferirProva(historico, 9, "oi")).toThrow(/não existe/);
+  });
+
+  it("the analyst reads the whole conversation on a silence and the writer chases that one item", async () => {
+    const result = await runTurn(atendimento, {
+      model: escritor("Oi! Conseguiu ver as 30 telhas com seu sócio? Se quiser, ajusto a quantidade."),
+      analista: analistaQueRegistra(
+        toolCall("classificar_contato", { tipo: "cliente" }),
+        toolCall("abrir_pendencia", { dono: "cliente", descricao: "ia ver as 30 telhas com o sócio", mensagem: 2, trecho: "vou ver com meu sócio" })
+      )
+    }, { ficha: fichaInicialAtendimento(), pedido: contexto, historico, evento: silencio });
+    expect(result.trace.find((step) => step.fase === "analise")).toBeTruthy();
+    expect(result.jogada?.tipo).toBe("cobrar_pendencia");
+    expect(result.enviar).toMatch(/telhas/);
+    expect(result.ficha.followups).toEqual([{ texto: result.enviar, pendenciaId: "p1" }]);
+  });
+
+  it("an invented pending item never reaches the record, so nothing is sent", async () => {
+    const result = await runTurn(atendimento, {
+      model: escritor("não deveria sair"),
+      analista: analistaQueRegistra(toolCall("abrir_pendencia", { dono: "cliente", descricao: "cliente ia mandar o CNPJ", mensagem: 2, trecho: "te mando o CNPJ" }))
+    }, { ficha: fichaInicialAtendimento(), pedido: contexto, historico, evento: silencio });
+    expect(result.ficha.pendencias).toHaveLength(0);
+    expect(result.jogada?.tipo).toBe("nada_aberto");
+    expect(result.enviar).toBeNull();
+  });
+
+  it("a company message nobody answered leaves no pending item", async () => {
+    const soEmpresa = conversa("E: Olá! Posso te mandar nossa tabela de chapas?");
+    const result = await runTurn(atendimento, {
+      model: escritor("não deveria sair"),
+      analista: analistaQueRegistra(toolCall("abrir_pendencia", { dono: "cliente", descricao: "responder sobre a tabela", mensagem: 0, trecho: "Posso te mandar" }))
+    }, { ficha: fichaInicialAtendimento(), pedido: contexto, historico: soEmpresa, evento: silencio });
+    expect(result.jogada?.tipo).toBe("nada_aberto");
+  });
+
+  it("code decides the move from the record", () => {
+    const decide = (ficha: FichaDoAtendimento, pedido = contexto) => decidirJogadaAtendimento({ ficha, pedido, triagem: null, evento: silencio });
+    expect(decide(fichaAtd({ contato: { tipo: "colega", prova: { mensagem: 0, trecho: "x" } }, pendencias: [pendencia("cliente", 2)] })).tipo).toBe("contato_nao_cliente");
+    expect(decide(fichaAtd({ pendencias: [pendencia("empresa", 2)] }))).toMatchObject({ tipo: "lembrete_vendedor", humano: expect.stringMatching(/^Lembrete:/) });
+    expect(decide(fichaAtd({ pendencias: [pendencia("cliente", 1)], encerrada: { motivo: "fechou", prova: { mensagem: 3, trecho: "x" } } })).tipo).toBe("encerrada");
+    expect(decide(fichaAtd({ pendencias: [pendencia("cliente", 5)], encerrada: { motivo: "fechou o anterior", prova: { mensagem: 3, trecho: "x" } } })).tipo).toBe("cobrar_pendencia");
+    expect(decide(fichaAtd({ pendencias: [pendencia("cliente", 2)], followups: [{ texto: "a", pendenciaId: "p1" }, { texto: "b", pendenciaId: "p1" }] }), contextoVillefer({ maxFollowups: 2 })).tipo).toBe("limite_de_tentativas");
+    expect(decidirJogadaAtendimento({ ficha: fichaAtd({ pendencias: [pendencia("cliente", 2)] }), pedido: contexto, triagem: null, evento: { tipo: "mensagem", texto: "oi" } }).silencio).toBe(true);
+  });
+
+  it("blocks a follow-up that repeats an earlier one or brings a new price", async () => {
+    const base = { ficha: fichaAtd({ followups: [{ texto: "Oi! Conseguiu ver as telhas com seu sócio?", pendenciaId: "p1" }] }), pedido: contexto, historico, jogada: { tipo: "cobrar_pendencia", instrucao: "" }, rules: atendimento.regras, fichaTexto: "" };
+    expect(await reviewMessage({ ...base, texto: "Oi! Conseguiu ver as telhas com o seu sócio?" })).toMatchObject({ ok: false, regra: "nao_repete" });
+    expect(await reviewMessage({ ...base, texto: "Consigo fazer as telhas por R$ 8.500, fechamos?" })).toMatchObject({ ok: false, regra: "sem_valor_novo" });
+    expect(await reviewMessage({ ...base, texto: "Ficou alguma dúvida sobre as telhas TP40 que eu possa ajudar?" })).toMatchObject({ ok: true });
+  });
+
+  it("two silences, two different follow-ups, then it stops at the limit", async () => {
+    const scenario = cenariosAtendimento.find((item) => item.id === "duas_tentativas_sem_repetir")!;
+    const analista = createScriptedModel("analista", (request) => {
+      const fichaTexto = String(request.messages[1]?.content ?? "");
+      return fichaTexto.includes("p1 [aberta]")
+        ? { content: null, toolCalls: [] }
+        : { content: null, toolCalls: [toolCall("abrir_pendencia", { dono: "cliente", descricao: "ia calcular a quantidade de vergalhão", mensagem: 2, trecho: "vou fazer a conta da obra" })] };
+    });
+    const run = await runScenario({
+      agent: atendimento,
+      deps: { model: escritor("Oi! Conseguiu fechar a conta do vergalhão 10 mm da obra?", "Se quiser, me passa a metragem da laje que eu te ajudo a calcular as barras."), analista },
+      scenario
+    });
+    expect(run.turnos.some((turno) => turno.evento === "abertura")).toBe(false);
+    expect(scenario.verificar(run).filter((check) => !check.ok)).toEqual([]);
+  });
+});
+
+describe("sem enrolação: o escritor não estaciona a conversa", () => {
+  const jogada: Jogada = { tipo: "responder", instrucao: "" };
+  const base = { ficha: {}, pedido: {}, historico: [], rules: [], fichaTexto: "" };
+
+  it("blocks 'vou consultar e já te aviso' unless the move allows a callback", async () => {
+    expect(await reviewMessage({ ...base, jogada, texto: "Vou consultar essas informações e já te dou um retorno." })).toMatchObject({ ok: false, regra: "sem_promessa_de_retorno" });
+    expect(await reviewMessage({ ...base, jogada, texto: "Deixa eu verificar aqui e te aviso." })).toMatchObject({ ok: false, regra: "sem_promessa_de_retorno" });
+    expect(await reviewMessage({ ...base, jogada: { ...jogada, dados: { podePrometerRetorno: true } }, texto: "Vou verificar com a empresa e te retorno até sexta." })).toMatchObject({ ok: true });
+    expect(await reviewMessage({ ...base, jogada, texto: "Temos sim, a chapa 3 mm sai em 1200x3000. Quantas você precisa?" })).toMatchObject({ ok: true });
+  });
+
+  it("refuses a handover outside the agent's reasons once, so the writer answers", async () => {
+    const model = createScriptedModel("escritor", (_request, index) => ({
+      content: null,
+      toolCalls: [index === 0 ? toolCall("pedir_humano", { motivo: "pergunta_dificil", detalhe: "não sei" }) : toolCall("responder", { texto: "Oi! Conseguiu ver as telhas TP40 com seu sócio?" })]
+    }));
+    const analista = createScriptedModel("analista", () => ({ content: null, toolCalls: [] }));
+    const result = await runTurn(atendimento, { model, analista }, {
+      ficha: { ...fichaInicialAtendimento(), pendencias: [{ id: "p1", dono: "cliente", descricao: "telhas", prova: { mensagem: 2, trecho: "x" }, status: "aberta", resolvidaPor: null }] },
+      pedido: contextoVillefer(),
+      historico: conversa("C: telhas?", "E: As telhas TP40 ficam R$ 8.940.", "C: vou ver com meu sócio"),
+      evento: { tipo: "silencio", horasSemResposta: 6 }
+    });
+    expect(result.humano).toBeNull();
+    expect(result.enviar).toMatch(/telhas/);
+    expect(result.trace.some((step) => step.fase === "escrita" && (step.detalhe as { pedirHumanoRecusado?: string }).pedirHumanoRecusado === "pergunta_dificil")).toBe(true);
   });
 });

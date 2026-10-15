@@ -19,7 +19,12 @@ export const comprador: AgentDefinition<FichaDoFornecedor, PedidoDeCompra> = {
   aposTriagem,
   aposEnvio,
   regras,
-  janelaDeMensagens: 15
+  janelaDeMensagens: 15,
+  motivosParaHumano: {
+    pergunta_fora_do_pedido: "o fornecedor perguntou algo que o pedido não responde e sem isso não consegue cotar",
+    quer_falar_com_pessoa: "o fornecedor pediu para falar com uma pessoa",
+    fora_da_alcada: "o fornecedor quer fechar, assinar ou mudar o pedido"
+  }
 };
 
 export type { FichaDoFornecedor, PedidoDeCompra } from "./tipos.js";

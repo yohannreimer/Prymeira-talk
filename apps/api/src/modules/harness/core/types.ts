@@ -42,6 +42,8 @@ export type ToolContext<Ficha, Pedido> = {
   /** Replaces the record. Tools are the only way the model changes it. */
   setFicha: (next: Ficha) => void;
   mensagemAtual: string;
+  /** The whole conversation. Tools that need proof check quotes against it. */
+  historico: HarnessMessage[];
 };
 
 export type HarnessTool<Ficha, Pedido, Args = unknown> = {
@@ -96,6 +98,21 @@ export type AgentDefinition<Ficha, Pedido> = {
   regras: ReviewRule<Ficha, Pedido>[];
   /** How many recent messages the writer sees verbatim. The record carries the rest. */
   janelaDeMensagens?: number;
+  /**
+   * The only reasons the writer may hand the conversation to a person, as {key: when it applies}.
+   * Without it the writer may hand over for any reason, which is how "anything hard goes to a human" starts.
+   */
+  motivosParaHumano?: Record<string, string>;
+  /**
+   * Subagent that runs on a silence, before the move: it reads the WHOLE conversation (numbered) and
+   * brings the record up to date with its own tools. It only reads; it never writes to the contact.
+   */
+  analista?: {
+    instrucoes: string;
+    ferramentas: HarnessTool<Ficha, Pedido, any>[];
+    /** Tool rounds before the harness stops asking. Defaults to 4. */
+    maxRodadas?: number;
+  };
 };
 
 /** Why the harness is running now. */
@@ -105,7 +122,7 @@ export type HarnessEvent =
   | { tipo: "silencio"; horasSemResposta: number };
 
 export type TraceStep = {
-  fase: "triagem" | "leitura" | "jogada" | "escrita" | "revisao" | "envio" | "humano" | "silencio";
+  fase: "triagem" | "leitura" | "analise" | "jogada" | "escrita" | "revisao" | "envio" | "humano" | "silencio";
   detalhe: unknown;
   ms?: number;
 };

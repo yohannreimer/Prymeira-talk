@@ -1,8 +1,11 @@
 import { PrismaClient } from "@prisma/client";
 import { config } from "dotenv";
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { resolveOpenAiCompatibleSettings } from "../src/modules/agents/ai-provider-settings.js";
+import { atendimento } from "../src/modules/harness/agentes/atendimento/index.js";
+import { cenarios as cenariosAtendimento, cenariosDeCasos } from "../src/modules/harness/agentes/atendimento/cenarios.js";
+import { createJuizDeFollowup } from "../src/modules/harness/agentes/atendimento/juiz.js";
 import { cenarios } from "../src/modules/harness/agentes/comprador/cenarios.js";
 import { comprador } from "../src/modules/harness/agentes/comprador/index.js";
 import { createFakeComprador } from "../src/modules/harness/agentes/comprador/modelos-falsos.js";
@@ -15,7 +18,9 @@ import { renderReport, runSuite } from "../src/modules/harness/simulador/simulad
 
 config({ path: resolve(import.meta.dirname, "../../../.env") });
 
-// Runs the buyer agent against the supplier scenarios and prints the scorecard (pass^k).
+// Runs an agent against its scenarios and prints the scorecard (pass^k).
+// HARNESS_AGENTE=comprador (default) or atendimento (follow-up on silence; HARNESS_CASOS=cases.jsonl adds
+// labeled real conversations in the evaluate-followup-brain format).
 // Nothing is sent to WhatsApp and nothing is written to the database.
 //
 // Model (pick one):
@@ -27,8 +32,10 @@ config({ path: resolve(import.meta.dirname, "../../../.env") });
 //   HARNESS_REASONING=none|low|medium|high · FORNECEDOR_MODEL (plays the LLM suppliers; default HARNESS_MODEL)
 //   HARNESS_K (default 4) · HARNESS_CENARIOS=id1,id2 · HARNESS_RELATORIO=path.md
 //   JEV_API_KEY: JEV does the triage and judges each message (fails closed when JEV is down)
+//   HARNESS_REASONING_ANALISTA (default high): reasoning of the analyst subagent (atendimento)
 
 async function main() {
+  if (process.env.HARNESS_AGENTE === "atendimento") return runAtendimento();
   const k = Number(process.env.HARNESS_K ?? 4);
   const wanted = (process.env.HARNESS_CENARIOS ?? "").split(",").map((id) => id.trim()).filter(Boolean);
   const offline = process.env.HARNESS_OFFLINE === "1";
@@ -68,6 +75,38 @@ async function main() {
     await writeFile(resolve(process.env.HARNESS_RELATORIO), markdown);
     console.error(`Relatório salvo em ${process.env.HARNESS_RELATORIO}`);
   }
+  console.log(markdown);
+  if (report.passK < 1) process.exitCode = 1;
+}
+
+async function runAtendimento() {
+  const k = Number(process.env.HARNESS_K ?? 4);
+  const wanted = (process.env.HARNESS_CENARIOS ?? "").split(",").map((id) => id.trim()).filter(Boolean);
+  const casos = process.env.HARNESS_CASOS
+    ? cenariosDeCasos((await readFile(resolve(process.env.HARNESS_CASOS), "utf8")).split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line)))
+    : [];
+  const scenarios = [...cenariosAtendimento, ...casos].filter((scenario) => !wanted.length || wanted.includes(scenario.id));
+  if (process.env.HARNESS_OFFLINE === "1") throw new Error("Os cenários de atendimento precisam de modelo: use HARNESS_WORKSPACE_ID ou HARNESS_BASE_URL.");
+  const endpoint = await resolveEndpoint();
+  const mode = process.env.HARNESS_MODE === "json" ? "json" : "tools";
+  const model = createOpenAiCompatibleModel({ ...endpoint, mode, reasoningEffort: readReasoning() });
+  const analistaReasoning = process.env.HARNESS_REASONING_ANALISTA;
+  const analista = createOpenAiCompatibleModel({
+    ...endpoint,
+    mode,
+    reasoningEffort: analistaReasoning === "none" || analistaReasoning === "low" || analistaReasoning === "medium" ? analistaReasoning : "high",
+    maxCompletionTokens: 16_000
+  });
+  const jev = process.env.JEV_API_KEY ? createJevClient({ apiKey: process.env.JEV_API_KEY, model: process.env.JEV_MODEL }) : undefined;
+  const report = await runSuite({
+    agent: atendimento,
+    deps: () => ({ model, analista, ...(jev ? { judge: createJuizDeFollowup(jev), judgeFailClosed: true } : {}) }),
+    scenarios,
+    k,
+    onProgress: (line) => console.error(line)
+  });
+  const markdown = renderReport(report);
+  if (process.env.HARNESS_RELATORIO) await writeFile(resolve(process.env.HARNESS_RELATORIO), markdown);
   console.log(markdown);
   if (report.passK < 1) process.exitCode = 1;
 }

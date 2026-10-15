@@ -112,6 +112,7 @@ export function decidirJogada(input: {
     }
     return withExtras({
       tipo: "fechar_rodada",
+      dados: { podePrometerRetorno: true },
       instrucao: reducao
         ? `O fornecedor melhorou o preço: o total caiu ${formatBRL(reducao.valor)} e agora fecha em ${formatBRL(totalDaProposta(propostaAtual(ficha), pedido)!)}. Agradeça e diga que vai apresentar a proposta para a empresa e retorna até ${formatDate(pedido.prazoResposta)}.`
         : `O fornecedor manteve o preço. Agradeça sem insistir e diga que vai apresentar a proposta para a empresa e retorna até ${formatDate(pedido.prazoResposta)}.`
@@ -124,6 +125,7 @@ export function decidirJogada(input: {
 
   return withExtras({
     tipo: "fechar_rodada",
+      dados: { podePrometerRetorno: true },
     instrucao: `Proposta completa. Agradeça e diga que vai apresentar para a empresa e retorna até ${formatDate(pedido.prazoResposta)}.`
   }, extras);
 }

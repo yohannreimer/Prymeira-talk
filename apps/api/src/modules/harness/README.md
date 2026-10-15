@@ -18,6 +18,12 @@ mensagem do contato
 
 O modelo nunca decide o processo (quando pedir desconto, quando revelar um número, quando parar). Ele lê e escreve.
 
+No **silêncio** (conversa parada), se o agente tem um `analista`, um subagente roda antes da jogada: lê a conversa inteira numerada, com mais raciocínio, e atualiza a ficha com as ferramentas dele. Ele só lê; não escreve nada para o contato. Cada registro cita o número da mensagem e um trecho exato, e o código confere que o trecho está lá. O que não tem prova não entra na ficha.
+
+Duas travas valem para todos os agentes:
+- **Sem "vou consultar e já te aviso".** A regra `sem_promessa_de_retorno` bloqueia a mensagem que promete consultar e retornar depois. O escritor responde com o que tem ou pergunta o que falta. Só a jogada que realmente leva algo para a empresa decidir libera isso (`dados.podePrometerRetorno`).
+- **Passar para humano tem motivo fechado.** Cada agente lista em `motivosParaHumano` quando pode passar a conversa para uma pessoa. Fora da lista, o pedido é recusado uma vez e o escritor tem de responder.
+
 ## O que é de cada agente
 
 Um agente novo é uma pasta em `agentes/` que preenche `AgentDefinition` (`core/types.ts`):
@@ -31,7 +37,9 @@ Um agente novo é uma pasta em `agentes/` que preenche `AgentDefinition` (`core/
 | `regras.ts` | Regras duras do revisor |
 | `cenarios.ts` | Cenários do simulador e o que conferir no fim de cada um |
 
-O primeiro agente é o `comprador` (módulo de orçamentos).
+Agentes:
+- `comprador`: módulo de orçamentos.
+- `atendimento`: por enquanto, só o follow-up (silêncio) do atendimento. As respostas ao vivo continuam no motor atual até migrarem.
 
 ## Simulador
 
@@ -51,6 +59,14 @@ HARNESS_WORKSPACE_ID=<id> JEV_API_KEY=... HARNESS_K=4 HARNESS_RELATORIO=relatori
 HARNESS_WORKSPACE_ID=<id> pnpm --filter @prymeira-talk/api harness:sondar-modelo
 ```
 
-Outras variáveis: `HARNESS_MODEL`, `HARNESS_MODE=tools|json`, `HARNESS_REASONING=none|low|medium|high`, `FORNECEDOR_MODEL`, `HARNESS_CENARIOS=id1,id2`.
+```bash
+# follow-up do atendimento (precisa de modelo); HARNESS_CASOS junta conversas reais rotuladas
+HARNESS_AGENTE=atendimento HARNESS_WORKSPACE_ID=<id> JEV_API_KEY=... pnpm --filter @prymeira-talk/api harness:simular
+HARNESS_AGENTE=atendimento HARNESS_WORKSPACE_ID=<id> HARNESS_CASOS=casos.jsonl pnpm --filter @prymeira-talk/api harness:simular
+```
+
+`HARNESS_CASOS` usa o mesmo formato do `eval:followup-brain` (uma linha JSON por conversa: `caseId`, `expected`, `messages`), então as mesmas conversas medem o motor velho e o novo.
+
+Outras variáveis: `HARNESS_REASONING_ANALISTA` (padrão `high`), `HARNESS_MODEL`, `HARNESS_MODE=tools|json`, `HARNESS_REASONING=none|low|medium|high`, `FORNECEDOR_MODEL`, `HARNESS_CENARIOS=id1,id2`.
 
 Uma conversa real que deu errado vira cenário novo em `cenarios.ts`.

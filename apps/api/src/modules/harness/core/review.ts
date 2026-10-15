@@ -29,12 +29,26 @@ export const coreRules: ReviewRule<unknown, unknown>[] = [
       : { ok: false, regra: "uma_pergunta", motivo: "Mais de duas perguntas numa mensagem. Junte numa pergunta só." }
   },
   {
+    // "Vou consultar e já te aviso" became an escape hatch in the old engine: anything hard got parked.
+    // Here the writer answers with what it has, asks for what is missing, or hands over with a reason.
+    id: "sem_promessa_de_retorno",
+    check: ({ texto, jogada }) => jogada.dados?.podePrometerRetorno === true || !PROMESSA_DE_RETORNO.test(normalizeText(texto))
+      ? { ok: true }
+      : { ok: false, regra: "sem_promessa_de_retorno", motivo: "Não prometa consultar e retornar depois. Responda com o que está no pedido, na ficha ou na conversa, ou pergunte o dado que falta. Se não der mesmo para responder, use pedir_humano com o motivo." }
+  },
+  {
     id: "sem_bastidores",
     check: ({ texto }) => /\b(minhas instru[cç][oõ]es|meu prompt|system prompt|minha ficha|a jogada|minhas ferramentas|tool_call)\b/i.test(texto)
       ? { ok: false, regra: "sem_bastidores", motivo: "A mensagem fala dos bastidores do agente (instruções, ficha, ferramentas)." }
       : { ok: true }
   }
 ];
+
+const PROMESSA_DE_RETORNO = /\b(?:vou|vamos|irei|deixa eu|deixe-me|vou so)\s+(?:consultar|verificar|checar|conferir|confirmar|ver|levantar|olhar)\b.{0,80}\b(?:retorno|retornar|aviso|avisar|volto|te falo|te passo|te digo)\b|\bja (?:te |lhe )?(?:dou um |trago um )?(?:retorno|aviso|volto)\b|\bem breve (?:te |lhe )?(?:retorno|retornamos|aviso)\b/;
+
+function normalizeText(text: string) {
+  return text.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+}
 
 export type ReviewOutcome = { ok: true; juiz: "aprovou" | "sem_juiz" | "falhou_aberto" } | { ok: false; regra: string; motivo: string; fonte: "regra" | "juiz" };
 

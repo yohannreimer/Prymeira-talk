@@ -15,6 +15,11 @@ export type Scenario<Ficha, Pedido> = {
   titulo: string;
   pedido: Pedido;
   persona: Persona;
+  /**
+   * A conversation that already happened (a real one, for follow-up scenarios). The run starts from it
+   * instead of an opening message; a persona that stays silent then exercises the silence events.
+   */
+  historicoInicial?: HarnessMessage[];
   /** Contact messages before the harness stops the conversation. */
   maxTrocas?: number;
   /** Needs a real model (numbers spelled out, an LLM persona): left out of the offline test run. */
@@ -46,7 +51,7 @@ export async function runScenario<Ficha, Pedido>(input: {
   const run: ScenarioRun<Ficha, Pedido> = {
     pedido: scenario.pedido,
     ficha: agent.fichaInicial(scenario.pedido),
-    historico: [],
+    historico: [...(scenario.historicoInicial ?? [])],
     turnos: [],
     humano: null,
     erro: null
@@ -62,7 +67,7 @@ export async function runScenario<Ficha, Pedido>(input: {
   };
 
   try {
-    await step({ tipo: "abertura" });
+    if (!scenario.historicoInicial?.length) await step({ tipo: "abertura" });
     let silencesInARow = 0;
     const maxTrocas = scenario.maxTrocas ?? 10;
     for (let vez = 0; vez < maxTrocas && !run.humano; vez += 1) {
