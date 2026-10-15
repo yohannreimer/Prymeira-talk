@@ -107,8 +107,10 @@ export function createChannelConnectionsService(prisma: ConnectionPrisma, option
     const candidates = writerCandidates(routable);
     const writable = new Set(candidates.map(record => record.id));
     const writer = active ? candidates[0]?.id ?? active.id : null;
+    const dto = toChannelDto(channel);
     return {
-      ...toChannelDto(channel), status: logicalChannelStatus(records, channel.redundancyEnabled, channel.verifiedMessagingPhoneNumber) ?? channel.status, redundancyEnabled: channel.redundancyEnabled ?? false,
+      ...dto, phoneNumber: dto.phoneNumber ?? candidates[0]?.verifiedPhoneNumber ?? null,
+      status: logicalChannelStatus(records, channel.redundancyEnabled, channel.verifiedMessagingPhoneNumber) ?? channel.status, redundancyEnabled: channel.redundancyEnabled ?? false,
       redundancyAvailable: options.waha?.enabled === true && options.waha.client !== null && (options.waha.allows?.(channel.workspaceId) ?? true),
       activeConnectionId: writer, connectionTotal: 2,
       connectedCount: records.filter((record) => record.status === 'connected').length,

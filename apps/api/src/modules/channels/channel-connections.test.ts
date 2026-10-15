@@ -37,6 +37,42 @@ function fixture() {
   return { prisma, client, evolution, channel: () => channel, records };
 }
 describe('physical channel lifecycle', () => {
+  it('shows the eligible WAHA phone for a legacy channel without a logical phone or anchor', async () => {
+    const f = fixture();
+    Object.assign(f.channel(), { phoneNumber: null, verifiedMessagingPhoneNumber: null, activeConnectionId: wahaId });
+    Object.assign(f.records[0], { status: 'disconnected', eligible: false });
+    Object.assign(f.records[1], { status: 'connected', health: 'healthy', eligible: true, verifiedPhoneNumber: '5547999990000', lastHealthyAt: new Date() });
+    const channelBefore = { ...f.channel() }, connectionsBefore = f.records.map(record => ({ ...record }));
+    const service = (await load()).createChannelConnectionsService(f.prisma, { waha: { enabled: true, client: f.client }, evolution: f.evolution });
+
+    const result = await service.describe(f.channel());
+
+    expect(result).toMatchObject({ phoneNumber: '5547999990000', status: 'connected', activeConnectionId: wahaId, connectedCount: 1 });
+    expect(result.connections!.find(record => record.id === wahaId)).toMatchObject({ eligible: true, isActiveWriter: true });
+    expect(f.channel()).toEqual(channelBefore);
+    expect(f.records).toEqual(connectionsBefore);
+    expect(f.prisma.channel.update).not.toHaveBeenCalled();
+    expect(f.prisma.channel.updateMany).not.toHaveBeenCalled();
+    expect(f.prisma.channelConnection.update).not.toHaveBeenCalled();
+    expect(f.prisma.channelConnection.updateMany).not.toHaveBeenCalled();
+    expect(f.client.getSession).not.toHaveBeenCalled();
+    expect(f.evolution.client.getInstanceIdentity).not.toHaveBeenCalled();
+  });
+  it('does not display an unproven physical phone when a legacy WAHA identity mismatches', async () => {
+    const f = fixture();
+    Object.assign(f.channel(), { phoneNumber: null, verifiedMessagingPhoneNumber: null, activeConnectionId: wahaId });
+    Object.assign(f.records[0], { status: 'disconnected', eligible: false });
+    Object.assign(f.records[1], { status: 'connected', health: 'healthy', eligible: true, verifiedPhoneNumber: '5511888882222', lastHealthyAt: new Date(), lastError: 'PHONE_MISMATCH' });
+    const channelBefore = { ...f.channel() }, connectionsBefore = f.records.map(record => ({ ...record }));
+    const service = (await load()).createChannelConnectionsService(f.prisma, { waha: { enabled: true, client: f.client }, evolution: f.evolution });
+
+    const result = await service.describe(f.channel());
+
+    expect(result).toMatchObject({ phoneNumber: null, status: 'disconnected' });
+    expect(result.connections!.every(record => !record.eligible && !record.isActiveWriter)).toBe(true);
+    expect(f.channel()).toEqual(channelBefore);
+    expect(f.records).toEqual(connectionsBefore);
+  });
   it.each(['refresh', 'startQr', 'disconnect'] as const)('rejects ambiguous WAHA physical ownership before %s provider I/O', async action => {
     const f = fixture();
     f.records.push({ ...f.records[1], id: 'foreign', workspaceId: 'other', channelId: 'other-channel' });
