@@ -185,11 +185,12 @@ describe.skipIf(!databaseUrl || !brokerUrl)('stage 1B canonical application with
         const ch = await admin.createChannel();
         await ch.purgeQueue(transportTopology(f.namespace).incoming);
         await db.ingressReceipt.delete({ where: { id: seedId } });
-        await journal.publish(receipt.id, f.publisher);
         const consumer = await IngressTransportConsumer.start({ url: brokerUrl!, namespace: f.namespace, journal, publisher: () => f.publisher, application: service });
+        const ack = vi.spyOn(consumer.channel, 'ack');
         consumers.push(consumer);
+        await journal.publish(receipt.id, f.publisher);
         await until(() => db.ingressApplication.findUnique({ where: { receiptId: receipt.id } }), v => v?.state === 'held');
-        await until(() => ch.checkQueue(transportTopology(f.namespace).incoming), v => v.messageCount === 0);
+        await until(async () => ack.mock.calls.length, count => count === 1);
         await consumer.close();
         await ch.close();
         await service.apply(receipt.id);
@@ -236,11 +237,19 @@ describe.skipIf(!databaseUrl || !brokerUrl)('stage 1B canonical application with
         const ch = await admin.createChannel();
         await ch.purgeQueue(transportTopology(f.namespace).incoming);
         await db.ingressReceipt.delete({ where: { id: seed } });
-        await journal.publish(receipt.id, f.publisher);
-        const consumer = await IngressTransportConsumer.start({ url: brokerUrl!, namespace: f.namespace, journal, publisher: () => f.publisher, application: service });
+        let releaseApplication!: () => void;
+        const applicationCommitted = new Promise<void>(resolve => { releaseApplication = resolve; });
+        const consumer = await IngressTransportConsumer.start({ url: brokerUrl!, namespace: f.namespace, journal, publisher: () => f.publisher,
+            application: { async apply(id) { const result = await service.apply(id); await applicationCommitted; return result; } } });
+        const ack = vi.spyOn(consumer.channel, 'ack');
         consumers.push(consumer);
+        await journal.publish(receipt.id, f.publisher);
         const applied = variant === 'verified-pn-lid';
         await until(() => db.ingressApplication.findUnique({ where: { receiptId: receipt.id } }), v => v?.state === (applied ? 'applied' : 'held'));
+        // The SQL milestone is visible before apply returns and the original channel ACKs.
+        // Force that scheduling gap: retiring here would correctly requeue the reference.
+        releaseApplication();
+        await until(async () => ack.mock.calls.length, count => count === 1);
         await consumer.close();
         for (const queue of [transportTopology(f.namespace).incoming, transportTopology(f.namespace).retry, transportTopology(f.namespace).dead])
             expect((await ch.checkQueue(queue)).messageCount).toBe(0);
