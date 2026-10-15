@@ -1,3 +1,4 @@
+import { observeOperationalOperation, reportOperationalException } from '../../observability/operation-observer.js';
 import { enterCanonicalWorkspaceTransaction } from "../messaging/canonical-boundary.js";
 import { replayProspectingFollowupObservations } from "../prospecting/prospecting-followup-observation.js";
 import type { ConversationFollowupsObserver } from "../followups/conversation-followups.service.js";
@@ -248,17 +249,18 @@ export function createAgentReplyScheduler(input: {
         }, AGENT_REPLY_LEASE_MS / 3);
         heartbeat.unref?.();
         try {
-          const run = await input.agentRuntime.runForMessage({ workspaceId: pendingReply.workspaceId,
+          const run = await observeOperationalOperation('agent_scheduler', () => input.agentRuntime.runForMessage({ workspaceId: pendingReply.workspaceId,
             agentId: pendingReply.agentId, conversationId: pendingReply.conversationId,
             messageId: pendingReply.lastMessageId, trigger: "automation", replyClaim: { id: pendingReply.id, token },
             ...(pendingReply.prospectingGeneration ? { prospectingGeneration: pendingReply.prospectingGeneration } : {}),
-            instruction: pendingReply.instruction ?? null });
+            instruction: pendingReply.instruction ?? null }));
           const status = run.status === "failed" || run.status === "skipped" ? run.status : "completed";
           await input.prisma.aiAgentPendingReply.updateMany({ where: ownership,
             data: { status, claimToken: null, lockedAt: null,
               lastError: status === "failed" || status === "skipped" ? run.message ?? `Agent reply ${run.status}.` : null } });
           results.push({ id: pendingReply.id, status: run.status, runId: run.runId });
         } catch (error) {
+          reportOperationalException('agent_scheduler', error);
           await input.prisma.aiAgentPendingReply.updateMany({ where: ownership, data: { status: "failed", claimToken: null,
             lockedAt: null, lastError: error instanceof Error ? error.message : "Agent reply processing failed." } });
           results.push({ id: pendingReply.id, status: "failed" });
@@ -266,6 +268,9 @@ export function createAgentReplyScheduler(input: {
       }
 
       return results;
+    } catch (error) {
+      reportOperationalException('agent_scheduler', error);
+      throw error;
     } finally {
       isProcessing = false;
     }
@@ -277,7 +282,7 @@ export function createAgentReplyScheduler(input: {
     }
 
     timer = setInterval(() => {
-      void processDueReplies();
+      void processDueReplies().catch(() => undefined);
     }, pollIntervalMs);
     timer.unref?.();
   }
@@ -303,7 +308,7 @@ export function createAgentReplyScheduler(input: {
     const delayMs = Math.max(0, scheduledAt.getTime() - now.getTime() + 100);
     const wakeTimer = setTimeout(() => {
       wakeTimers.delete(wakeTimer);
-      void processDueReplies();
+      void processDueReplies().catch(() => undefined);
     }, delayMs);
     wakeTimers.add(wakeTimer);
     wakeTimer.unref?.();

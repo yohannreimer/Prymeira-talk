@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createAgentReplyScheduler } from "./agent-reply-scheduler.js";
+import * as monitoring from '../../observability/glitchtip.js';
 
 const ids = {
   workspace: "workspace_a",
@@ -389,5 +390,24 @@ describe("createAgentReplyScheduler", () => {
         lastError: "OpenAI-compatible provider returned an invalid response."
       })
     });
+  });
+
+  it.each(['returned', 'thrown'] as const)('reports %s failures without forwarding result messages or queue identities', async mode => {
+    const report = vi.spyOn(monitoring, 'reportFailure').mockReturnValue(true);
+    try {
+      const prisma = buildPrisma({ aiAgentPendingReply: { findMany: vi.fn().mockResolvedValue([{
+        id: ids.pending, workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation,
+        lastMessageId: ids.secondMessage, attempts: 0
+      }]) } });
+      const runForMessage = mode === 'returned' ? vi.fn().mockResolvedValue({ status: 'failed', message: 'PRIVATE_FIXTURE' })
+        : vi.fn().mockRejectedValue(new TypeError("ownKeys did not include '$on'"));
+      const scheduler = createAgentReplyScheduler({ prisma, agentRuntime: { runForMessage } });
+      expect((await scheduler.processDueReplies())[0]?.status).toBe('failed');
+      expect(report).toHaveBeenCalledOnce();
+      if (mode === 'returned') {
+        expect(report.mock.calls[0]?.[2]?.diagnostic?.code).toBe('AGENT_RUN_FAILED');
+        expect(JSON.stringify(report.mock.calls)).not.toMatch(/PRIVATE_FIXTURE|workspace_a/);
+      }
+    } finally { report.mockRestore(); }
   });
 });
