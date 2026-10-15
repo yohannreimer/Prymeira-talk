@@ -149,7 +149,7 @@ function requireConversationResetOwner(
 /** What WhatsApp needs to quote a message of this conversation (or of one retired into it): its stanza id, who sent it
  * and its text. Null when the message has no WhatsApp id (e.g. a note, or a send that never left). */
 async function replyReference(prisma: FastifyInstance['prisma'], workspaceId: string, conversationId: string, messageId: string) {
-  const record = await prisma.message.findFirst({ where: { workspaceId, id: messageId,
+  const record = await prisma.message.findFirst({ where: { workspaceId, hiddenByReset: false, id: messageId,
     OR: [{ conversationId }, { conversation: { retiredIntoConversationId: conversationId } }] } });
   if (!record) return null;
   const metadata = record.metadata && typeof record.metadata === 'object' && !Array.isArray(record.metadata) ? record.metadata as Record<string, unknown> : {};
@@ -173,7 +173,7 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
     if (!params.success) return reply.code(400).send({ error: 'Mensagem inválida.' });
     const workspaceId = request.talk.workspaceId;
     const record = await app.prisma.message.findFirst({
-      where: { id: params.data.messageId, conversationId: params.data.conversationId, workspaceId },
+      where: { id: params.data.messageId, conversationId: params.data.conversationId, workspaceId, hiddenByReset: false },
       include: { conversation: { include: { channel: true, contact: true } } }
     });
     if (!record) return reply.code(404).send({ error: 'Mensagem não encontrada.' });
@@ -232,7 +232,7 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
     if (!params.success || !body.success) return reply.code(400).send({ error: 'Escreva o novo texto da mensagem.' });
     const workspaceId = request.talk.workspaceId;
     const record = await app.prisma.message.findFirst({
-      where: { id: params.data.messageId, conversationId: params.data.conversationId, workspaceId },
+      where: { id: params.data.messageId, conversationId: params.data.conversationId, workspaceId, hiddenByReset: false },
       include: { conversation: { include: { channel: true, contact: true } } }
     });
     if (!record) return reply.code(404).send({ error: 'Mensagem não encontrada.' });
@@ -280,7 +280,7 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
     const workspaceId = request.talk.workspaceId;
     const message = await app.prisma.message.findFirst({ where: {
       id: params.data.messageId, conversationId: params.data.conversationId, workspaceId,
-      type: 'system', body: 'Mensagem não reconhecida'
+      hiddenByReset: false, type: 'system', body: 'Mensagem não reconhecida'
     } });
     if (!message?.providerMessageId) return reply.code(404).send({ error: 'Mensagem não encontrada.' });
     const conversation = await app.prisma.conversation.findFirst({ where: { id: params.data.conversationId, workspaceId },
@@ -302,7 +302,7 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
       if (isEncryptedControlEnvelope({ message: original.message })) {
         await app.prisma.message.delete({ where: { id: message.id } });
         const previous = await app.prisma.message.findFirst({
-          where: { workspaceId, conversationId: conversation.id },
+          where: { workspaceId, conversationId: conversation.id, hiddenByReset: false },
           orderBy: [{ createdAt: 'desc' }, { id: 'desc' }]
         });
         await app.prisma.conversation.updateMany({
@@ -376,7 +376,7 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
     if (!params.success) return reply.code(400).send({ error: 'Áudio inválido.' });
     const { conversationId, messageId } = params.data;
     const workspaceId = request.talk.workspaceId;
-    const message = await app.prisma.message.findFirst({ where: { id: messageId, conversationId, workspaceId, type: 'audio' } });
+    const message = await app.prisma.message.findFirst({ where: { id: messageId, conversationId, workspaceId, hiddenByReset: false, type: 'audio' } });
     if (!message) return reply.code(404).send({ error: 'Áudio não encontrado.' });
     const existing = message.body?.trim();
     if (existing && !/^(Áudio recebido|Áudio enviado|Processando áudio\.\.\.|Não foi possível transcrever este áudio\.)$/i.test(existing)) {
@@ -612,6 +612,7 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
       actorUserId
     }).catch((error: unknown) => {
       if (error instanceof ConversationNotFoundError) return null;
+      if (error instanceof ConversationActionError) return error;
       throw error;
     });
 
@@ -620,6 +621,10 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
         code: "CONVERSATION_NOT_FOUND",
         error: "Conversation not found."
       });
+    }
+
+    if (result instanceof ConversationActionError) {
+      return reply.code(result.statusCode).send({ code: result.code, error: result.message });
     }
 
     app.realtime.publish({
@@ -821,6 +826,12 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
       };
     }
 
+    const quoted = body.data.replyToMessageId && body.data.body && !body.data.attachment
+      ? await replyReference(app.prisma, scope.workspaceId, scope.conversationId, body.data.replyToMessageId) : null;
+    if (body.data.replyToMessageId && body.data.body && !body.data.attachment && !quoted) {
+      return sent(404, { code: "MESSAGE_NOT_FOUND", error: "A mensagem respondida não está disponível." });
+    }
+
     const meta = await resolveMetaRuntime(app.prisma, { workspaceId: scope.workspaceId });
     const writeService = createConversationsService(app.prisma as unknown as PrismaLike, {
       evolution: options.evolution,
@@ -849,8 +860,6 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
       });
     }
 
-    const quoted = body.data.replyToMessageId && body.data.body && !body.data.attachment
-      ? await replyReference(app.prisma, scope.workspaceId, scope.conversationId, body.data.replyToMessageId) : null;
     const result = await writeService.createPendingOutboundMessage({
       workspaceId: scope.workspaceId,
       conversationId: scope.conversationId,
@@ -1035,7 +1044,7 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
     if (!params.success || !body.success) return reply.code(400).send({ error: "Escolha até 20 mensagens e até 5 conversas." });
     const workspaceId = request.talk.workspaceId;
     const sources = await app.prisma.message.findMany({
-      where: { workspaceId, conversationId: params.data.conversationId, id: { in: [...new Set(body.data.messageIds)] } },
+      where: { workspaceId, conversationId: params.data.conversationId, hiddenByReset: false, id: { in: [...new Set(body.data.messageIds)] } },
       select: { id: true, type: true, body: true, metadata: true, createdAt: true }, orderBy: { createdAt: "asc" }
     });
     if (!sources.length) return reply.code(404).send({ error: "Mensagem não encontrada." });

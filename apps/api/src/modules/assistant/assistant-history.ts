@@ -29,12 +29,12 @@ export function createAssistantHistoryImporter(db: PrismaClient, source: Evoluti
     const {settings,humanSupport}=resolveConversationAssistant(conversation);
     if ((conversation.aiControlStatus !== 'agent_allowed' && !humanSupport) || settings.mode === 'disabled') return zero;
     if (!input.force && object(object(conversation.channel.encryptedConfig).assistantHistory).days !== 30) return zero;
-    const live = await db.message.findMany({ where: { workspaceId, conversationId }, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }], take: 5001 });
+    const live = await db.message.findMany({ where: { workspaceId, conversationId, hiddenByReset: false }, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }], take: 5001 });
     const anchor = live.find(m => m.providerMessageId && object(object(m.metadata).historyImport).source !== 'evolution');
     if (!anchor?.providerMessageId) throw new AssistantError('ASSISTANT_HISTORY_ANCHOR', 'Não foi possível identificar a origem do histórico.');
     if (object(object(anchor.metadata).assistantHistory).completed === true) return zero;
     const to = anchor.createdAt;
-    const from = new Date(to.getTime() - 30 * 86400000);
+    const from = new Date(Math.max(to.getTime() - 30 * 86400000, conversation.historyResetAt?.getTime() ?? 0));
     let records;
     try { records = await source.load({ instanceName: conversation.channel.providerKey, anchorId: anchor.providerMessageId, from, to }); }
     catch { throw new AssistantError('ASSISTANT_HISTORY_UNAVAILABLE', 'Não foi possível recuperar o histórico anterior. Tente novamente antes de usar a sugestão.'); }
@@ -85,7 +85,7 @@ export function createAssistantHistoryImporter(db: PrismaClient, source: Evoluti
     }
     return db.$transaction(async tx => {
       await lockAssistantConversation(tx, workspaceId, conversationId);
-      const current = await tx.message.findFirst({ where: { workspaceId, conversationId, id: anchor.id } });
+      const current = await tx.message.findFirst({ where: { workspaceId, conversationId, id: anchor.id, hiddenByReset: false } });
       if (!current) throw new AssistantError('ASSISTANT_HISTORY_CHANGED', 'A conversa mudou durante a importação.');
       if (object(object(current.metadata).assistantHistory).completed === true) return zero;
       const collisions = await tx.message.findMany({ where: { workspaceId, providerMessageId: { in: rows.map(r => r.providerMessageId!) } } });

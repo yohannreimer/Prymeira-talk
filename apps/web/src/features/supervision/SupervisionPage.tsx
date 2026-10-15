@@ -127,9 +127,9 @@ function SupervisorReply({ conversation, getToken, onSent, suggestedBody }: { co
   }
   return <form className="supervision-reply" onSubmit={event => { event.preventDefault(); void send(); }}>
     <p className="supervision-reply-note"><ShieldCheck size={14} aria-hidden="true" />Sua resposta sai pelo WhatsApp de <strong>{sellerLabel(conversation)}</strong>. No Talk, o vendedor verá que foi o supervisor.</p>
-    {suggestedBody ? <button type="button" className="supervision-use-suggestion" disabled={sending} onClick={() => setText(suggestedBody)}>Usar sugestão</button> : null}
     <div className="supervision-reply-row">
-      <textarea aria-label="Resposta do supervisor" placeholder="Responder ao cliente como supervisor…" rows={2} maxLength={4000} value={text} disabled={sending}
+      {suggestedBody ? <button type="button" className="supervision-use-suggestion" disabled={sending} onClick={() => setText(suggestedBody)}>Usar sugestão</button> : null}
+      <textarea aria-label="Resposta do supervisor" placeholder="Responder ao cliente como supervisor…" rows={1} maxLength={4000} value={text} disabled={sending}
         onChange={event => setText(event.target.value)} onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(); } }} />
       <button type="submit" disabled={!text.trim() || sending} aria-label="Enviar resposta do supervisor"><Send size={17} aria-hidden="true" />Enviar</button>
     </div>
@@ -204,6 +204,13 @@ export function SupervisionPage() {
     view.changeFilters({ ...filters, sellerCustomerId, status: "all", nextAction: false, unread: false, waiting: undefined, search: undefined });
   }
   const unreadPeriod = filters.unreadPeriod ?? "24h";
+  // Opening a conversation scrolls the page so the inbox (and the open chat) takes the whole screen.
+  const inbox = useRef<HTMLElement>(null);
+  const selectedKey = selected ? conversationKey(selected) : null;
+  useEffect(() => {
+    const element = inbox.current;
+    if (selectedKey && element && element.getBoundingClientRect().top > 12) element.scrollIntoView?.({ block: "start", behavior: "smooth" });
+  }, [selectedKey]);
   const displayedConversation = thread?.conversation ?? selected;
   const today = new Date(now).toLocaleDateString("pt-BR", { weekday: "long", day: "numeric", month: "long" });
   const queueTitle = weeklyMode ? "Follow-ups e lembretes" : filters.waiting ? "Clientes esperando resposta" : filters.nextAction && filters.unread ? "Próxima ação e não lidas"
@@ -216,45 +223,40 @@ export function SupervisionPage() {
       <a href={readConfigValue("VITE_PRYMEIRA_HUB_URL") ?? "https://account.prymeira.com"}><ArrowLeft size={16} aria-hidden="true" /> Voltar ao Hub</a>
     </header>
     <div className="supervision-content">
-      <div className="supervision-title-row"><div><p className="supervision-eyebrow">Supervisão · {today}</p><h1>{weeklyMode ? "Follow-ups da semana" : "Sua equipe hoje"}</h1>
-        <p>{weeklyMode ? "Abra uma conversa da seleção semanal para ver o histórico atual, conferir a sugestão e responder pelo número do vendedor." : "Quem está esperando resposta, o que ficou pendente e como foi o atendimento do dia. Você lê todas as conversas e pode responder quando precisar."}</p></div>
-        <div className="supervision-refresh"><span><Eye size={14} aria-hidden="true" /> Leitura e respostas do supervisor</span>
-          <button type="button" onClick={view.refresh} disabled={view.loading && !view.denied}><RefreshCw size={16} aria-hidden="true" className={view.loading ? "is-refreshing" : ""} />Atualizar</button>
+      <div className="supervision-title-row"><div className="supervision-title"><h1>{weeklyMode ? "Follow-ups da semana" : "Sua equipe hoje"}</h1><p className="supervision-eyebrow">{today}</p></div>
+        {!view.denied ? <nav className="supervision-tabs" aria-label="Áreas da supervisão">
+          <button type="button" aria-pressed={!weeklyMode} onClick={() => view.changeFilters({ status: "active", nextAction: false, unread: false, unreadPeriod: "24h", waiting: true })}>Supervisão</button>
+          <button type="button" aria-pressed={weeklyMode} onClick={() => { if (!weeklyMode) view.changeFilters({ status: "all", nextAction: false, unread: false, followupWeek: "latest" }); }}>Follow-ups da semana</button>
+        </nav> : null}
+        <div className="supervision-refresh">
           {view.updatedAt ? <small>Atualizado às {view.updatedAt.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}</small> : null}
+          <button type="button" onClick={view.refresh} disabled={view.loading && !view.denied}><RefreshCw size={15} aria-hidden="true" className={view.loading ? "is-refreshing" : ""} />Atualizar</button>
         </div>
       </div>
       {view.denied ? <section className="supervision-denied" role="alert"><ShieldCheck size={32} aria-hidden="true" /><h2>Acesso à supervisão indisponível</h2><p>{view.denied}</p><button type="button" onClick={view.refresh}>Verificar acesso novamente</button></section> : <>
-        <nav className="supervision-tabs" aria-label="Áreas da supervisão">
-          <button type="button" aria-pressed={!weeklyMode} onClick={() => view.changeFilters({ status: "active", nextAction: false, unread: false, unreadPeriod: "24h", waiting: true })}>Supervisão</button>
-          <button type="button" aria-pressed={weeklyMode} onClick={() => { if (!weeklyMode) view.changeFilters({ status: "all", nextAction: false, unread: false, followupWeek: "latest" }); }}>Follow-ups da semana</button>
-        </nav>
         {!weeklyMode ? <>
         <section className="supervision-pulse" aria-label="Resumo da equipe">
           {insights ? <button type="button" className={`supervision-tile is-${totals?.waiting ? waitTone(totals.oldest, now) : "ok"}${filters.waiting && !filters.sellerCustomerId ? " is-active" : ""}`}
             aria-label={`Esperando resposta de todos: ${totals?.waiting ?? 0}`} onClick={() => indicator(undefined, "waiting")}>
-            <span className="supervision-tile-label"><Hourglass size={15} aria-hidden="true" />Esperando resposta</span>
-            <strong>{totals?.waiting ?? "–"}</strong>
-            <small>{totals?.oldest ? <>maior espera: <b>{waitLabel(totals.oldest, now)}</b></> : "ninguém esperando agora"}</small>
+            <Hourglass size={15} aria-hidden="true" /><strong>{totals?.waiting ?? "–"}</strong><span className="supervision-tile-label">esperando resposta</span>
+            <small>{totals?.oldest ? <>maior espera <b>{waitLabel(totals.oldest, now)}</b></> : "ninguém esperando agora"}</small>
           </button> : null}
           <button type="button" className={`supervision-tile${totals?.nextAction ? " is-warning" : " is-ok"}${filters.nextAction && !filters.sellerCustomerId ? " is-active" : ""}`}
             aria-label={`Próxima ação de todos: ${totals?.nextAction ?? 0}`} onClick={() => indicator(undefined, "nextAction")}>
-            <span className="supervision-tile-label"><ListTodo size={15} aria-hidden="true" />Próximas ações</span>
-            <strong>{totals?.nextAction ?? "–"}</strong><small>conversas que a IA passou para o vendedor</small>
+            <ListTodo size={15} aria-hidden="true" /><strong>{totals?.nextAction ?? "–"}</strong><span className="supervision-tile-label" title="Conversas que a IA passou para o vendedor">próximas ações</span>
           </button>
           <button type="button" className={`supervision-tile is-neutral${filters.unread && !filters.sellerCustomerId ? " is-active" : ""}`}
             aria-label={`Não lidas de todos: ${totals?.unread ?? 0}`} onClick={() => indicator(undefined, "unread")}>
-            <span className="supervision-tile-label"><MailWarning size={15} aria-hidden="true" />Não lidas pelo vendedor</span>
-            <strong>{totals?.unread ?? "–"}</strong><small className="supervision-period-label">{unreadPeriodLabels[unreadPeriod]}</small>
+            <MailWarning size={15} aria-hidden="true" /><strong>{totals?.unread ?? "–"}</strong><span className="supervision-tile-label">não lidas pelo vendedor</span>
+            <small className="supervision-period-label">{unreadPeriodLabels[unreadPeriod]}</small>
           </button>
           {insights ? <div className="supervision-tile is-neutral is-static">
-            <span className="supervision-tile-label"><MessageSquareText size={15} aria-hidden="true" />Atendimento de hoje</span>
-            <strong>{totals?.conversations ?? 0}</strong>
-            <small>conversas · {totals?.sent ?? 0} mensagens enviadas{teamResponse !== null ? <> · 1ª resposta em <b>~{responseLabel(teamResponse)}</b></> : null}</small>
+            <MessageSquareText size={15} aria-hidden="true" /><strong>{totals?.conversations ?? 0}</strong><span className="supervision-tile-label">conversas hoje</span>
+            <small>{totals?.sent ?? 0} enviadas{teamResponse !== null ? <> · 1ª resposta <b>~{responseLabel(teamResponse)}</b></> : null}</small>
           </div> : null}
         </section>
 
         <section className="supervision-summary" aria-label="Resumo por vendedor">
-          <div className="supervision-section-heading"><h2>Vendedores</h2><span>Clique em um número para ver as conversas</span></div>
           <div className="supervision-sellers">{sellers.map(seller => {
             const state = sellerState(seller, now), name = sellerLabel(seller);
             const active = filters.sellerCustomerId === seller.sellerCustomerId;
@@ -284,19 +286,19 @@ export function SupervisionPage() {
         </section>
 
         </> : <section className="supervision-week-summary" aria-label="Seleção semanal">
-          <div><p className="supervision-eyebrow">Follow-ups e lembretes comerciais</p><h2>{publishedWeek?.label ?? (view.loading ? "Seleção da semana" : "Nenhuma semana publicada")}</h2>
+          <div><h2>{publishedWeek?.label ?? (view.loading ? "Seleção da semana" : "Nenhuma semana publicada")}</h2>
           <p>{publishedWeek ? `${publishedWeek.followupCount} follow-ups · ${publishedWeek.reminderCount} lembretes` : view.loading ? "Carregando seleção…" : "As seleções serão exibidas aqui após a publicação."}</p></div>
-          <label>Semana<select aria-label="Semana de follow-ups" value={view.weekly?.selectedWeekId ?? "latest"} onChange={event => view.changeFilters({ ...filters, followupWeek: event.target.value })}>
+          <label><span>Semana</span><select aria-label="Semana de follow-ups" value={view.weekly?.selectedWeekId ?? "latest"} onChange={event => view.changeFilters({ ...filters, followupWeek: event.target.value })}>
             {!view.weekly?.weeks.length ? <option value="latest">Última seleção publicada</option> : view.weekly.weeks.map(week => <option key={week.id} value={week.id}>{week.label}</option>)}
           </select></label>
         </section>}
-        <section className="supervision-inbox" aria-label="Caixa de entrada da supervisão">
-          <div className="supervision-filters"><label className="supervision-search">Buscar cliente<span><Search size={14} aria-hidden="true" /><input key={filters.search ?? ""} type="search" placeholder="Nome ou telefone" defaultValue={filters.search ?? ""}
+        <section className="supervision-inbox" aria-label="Caixa de entrada da supervisão" ref={inbox}>
+          <div className="supervision-filters"><label className="supervision-search"><span className="supervision-filter-caption">Buscar cliente</span><span><Search size={14} aria-hidden="true" /><input key={filters.search ?? ""} type="search" placeholder="Nome ou telefone" defaultValue={filters.search ?? ""}
               onKeyDown={event => { if (event.key === "Enter") view.changeFilters({ ...filters, search: event.currentTarget.value.trim() || undefined, waiting: undefined, nextAction: false, unread: false, status: event.currentTarget.value.trim() ? "all" : filters.status }); }}
               onBlur={event => { const value = event.currentTarget.value.trim() || undefined; if (value !== filters.search) view.changeFilters({ ...filters, search: value, waiting: undefined, nextAction: false, unread: false, status: value ? "all" : filters.status }); }} /></span></label>
-            <label>Vendedor<select value={filters.sellerCustomerId ?? ""} onChange={event => view.changeFilters({ ...filters, sellerCustomerId: event.target.value || undefined })}><option value="">Todos os vendedores</option>{sellers.map(seller => <option key={seller.sellerCustomerId} value={seller.sellerCustomerId}>{sellerLabel(seller)}</option>)}</select></label>
-            {!weeklyMode ? <><label>Conversas<select value={filters.status} onChange={event => view.changeFilters({ ...filters, status: event.target.value as typeof filters.status, waiting: undefined })}><option value="active">Ativas</option><option value="closed">Encerradas</option><option value="all">Todas</option></select></label>
-            <label>Período das não lidas<select value={unreadPeriod} onChange={event => view.changeFilters({ ...filters, unreadPeriod: event.target.value as SupervisionUnreadPeriod })}>{Object.entries(unreadPeriodLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+            <label><span className="supervision-filter-caption">Vendedor</span><select title="Vendedor" value={filters.sellerCustomerId ?? ""} onChange={event => view.changeFilters({ ...filters, sellerCustomerId: event.target.value || undefined })}><option value="">Todos os vendedores</option>{sellers.map(seller => <option key={seller.sellerCustomerId} value={seller.sellerCustomerId}>{sellerLabel(seller)}</option>)}</select></label>
+            {!weeklyMode ? <><label><span className="supervision-filter-caption">Conversas</span><select title="Conversas" value={filters.status} onChange={event => view.changeFilters({ ...filters, status: event.target.value as typeof filters.status, waiting: undefined })}><option value="active">Ativas</option><option value="closed">Encerradas</option><option value="all">Todas</option></select></label>
+            <label><span className="supervision-filter-caption">Período das não lidas</span><select title="Período das não lidas" value={unreadPeriod} onChange={event => view.changeFilters({ ...filters, unreadPeriod: event.target.value as SupervisionUnreadPeriod })}>{Object.entries(unreadPeriodLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
             <div className="supervision-toggle-group" aria-label="Indicadores">
               {insights ? <button type="button" className={`supervision-filter-waiting${filters.waiting ? " is-active" : ""}`} aria-pressed={!!filters.waiting} onClick={() => view.changeFilters({ ...filters, status: "active", nextAction: false, unread: false, waiting: filters.waiting ? undefined : true })}>Esperando resposta</button> : null}
               <button type="button" className={`supervision-filter-pending${filters.nextAction ? " is-active" : ""}`} aria-pressed={filters.nextAction} onClick={() => view.changeFilters({ ...filters, nextAction: !filters.nextAction, waiting: undefined })}>Próxima ação</button>
@@ -311,8 +313,8 @@ export function SupervisionPage() {
                 return <button type="button" key={conversationKey(conversation)} className={`supervision-conversation${isSelected ? " is-selected" : ""}${needsHumanAttention(conversation) ? " has-pending" : ""}${conversation.waitingSince ? ` is-waiting is-${waitTone(conversation.waitingSince, now)}` : ""}`} aria-pressed={isSelected} onClick={() => view.selectConversation(conversation)}>
                   <div className="supervision-contact-line"><span className="supervision-avatar" aria-hidden="true">{initials(contactDisplayName(conversation))}</span><strong>{contactDisplayName(conversation)}</strong>
                     {conversation.waitingSince ? <WaitBadge since={conversation.waitingSince} now={now} /> : <time dateTime={conversation.lastMessageAt ?? undefined} title={conversation.lastMessageAt ? fullTime(conversation.lastMessageAt) : undefined}>{time(conversation.lastMessageAt)}</time>}</div>
-                  <p className="supervision-seller-line">{sellerLabel(conversation)}{weeklyMode && conversation.channelPhoneNumber ? ` · ${conversation.channelPhoneNumber}` : ""}</p>
-                  {conversation.weeklyFollowup ? <span className="supervision-week-kind">{conversation.weeklyFollowup.kind === "follow_up" ? "Follow-up ao cliente" : "Lembrete ao vendedor"}</span> : null}
+                  <p className="supervision-seller-line">{sellerLabel(conversation)}{weeklyMode && conversation.channelPhoneNumber ? ` · ${conversation.channelPhoneNumber}` : ""}
+                    {conversation.weeklyFollowup ? <span className={`supervision-week-kind is-${conversation.weeklyFollowup.kind}`}>{conversation.weeklyFollowup.kind === "follow_up" ? "Follow-up ao cliente" : "Lembrete ao vendedor"}</span> : null}</p>
                   <p className="supervision-preview">{conversation.lastMessagePreview ?? "Conversa sem mensagens"}</p>
                   {!weeklyMode ? <NextAction text={conversation.nextActionText} /> : null}
                   <div className="supervision-conversation-flags"><PendingAlert conversation={conversation} />{conversation.unreadCount > 0 ? <span className="supervision-unread">{conversation.unreadCount} não lida{conversation.unreadCount > 1 ? "s" : ""}</span> : null}{conversation.status === "closed" ? <span className="supervision-closed">Encerrada</span> : null}</div>
@@ -329,7 +331,7 @@ export function SupervisionPage() {
                   <div className="supervision-thread-flags"><WaitBadge since={displayedConversation.waitingSince} now={now} />
                     <WaitingDismiss conversation={displayedConversation} getToken={getToken} onChanged={view.refresh} /><PendingAlert conversation={displayedConversation} /></div>
                   {!weeklyMode ? <NextAction text={displayedConversation.nextActionText} /> : null}
-                </div><button type="button" aria-label="Fechar conversa" onClick={() => view.selectConversation(null)}><X size={20} /></button></header>
+                </div><button type="button" className="supervision-thread-close" aria-label="Fechar conversa" onClick={() => view.selectConversation(null)}><X size={20} /></button></header>
                 {view.threadError ? <div className="supervision-error" role="alert">{view.threadError}<button type="button" onClick={view.refresh}>Tentar novamente</button></div> : null}
                 <ThreadHistory lastMessageId={thread?.messages.at(-1)?.id}>{thread?.messages.map(message => <ThreadMessage key={message.id} message={message} getToken={getToken} transport={transport} />)}
                   {!thread ? <p className="supervision-empty" role="status">{view.threadLoading ? "Carregando histórico…" : "Histórico indisponível."}</p> : !thread.messages.length ? <p className="supervision-empty">Esta conversa ainda não tem mensagens.</p> : null}</ThreadHistory>

@@ -26,24 +26,26 @@ export function OutboundReviewPanel({ getToken, refreshKey }: { getToken: () => 
 
   if (items.length === 0) return null;
   return (
-    <section className="context-card" aria-label="Envios em revisão" style={{ margin: '0 16px 12px' }}>
-      <div className="context-card-title">Envios em revisão ({items.length})</div>
-      <p className="list-note">A conexão não confirmou estes envios. Confira no WhatsApp do cliente e diga se a mensagem chegou. Nada é reenviado automaticamente.</p>
-      {error ? <p className="error-note" role="alert">{error}</p> : null}
-      <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'grid', gap: 8 }}>
-        {items.map((item) => (
-          <li key={item.id} data-dispatch-id={item.id} style={{ display: 'grid', gap: 6 }}>
-            <div>
-              <strong>{KIND_LABEL[item.kind] ?? item.kind}</strong> para {item.destination} · {new Date(item.createdAt).toLocaleString('pt-BR')}
-              {item.preview ? <div className="list-note">“{item.preview}”</div> : null}
-            </div>
-            <div className="channel-row-actions">
-              <button className="secondary-button" type="button" disabled={busyId === item.id} onClick={() => void resolve(item, true)}>Chegou ao cliente</button>
-              <button className="secondary-button" type="button" disabled={busyId === item.id} onClick={() => void resolve(item, false)}>Não chegou</button>
-            </div>
-          </li>
-        ))}
-      </ul>
-    </section>
+    <details className="context-card" aria-label="Envios em revisão" style={{ margin: '0 16px 12px', display: 'block' }}>
+      <summary className="context-card-title" style={{ cursor: 'pointer', fontSize: 12 }}>Envios em revisão ({items.length})</summary>
+      <div style={{ display: 'grid', gap: 8, marginTop: 12 }}>
+        <p className="list-note">A conexão não confirmou estes envios. Confira no WhatsApp do cliente e diga se a mensagem chegou. Nada é reenviado automaticamente.</p>
+        {error ? <p className="error-note" role="alert">{error}</p> : null}
+        <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'grid', gap: 8 }}>
+          {items.map((item) => (
+            <li key={item.id} data-dispatch-id={item.id} style={{ display: 'grid', gap: 6 }}>
+              <div>
+                <strong>{KIND_LABEL[item.kind] ?? item.kind}</strong> para {item.destination} · {new Date(item.createdAt).toLocaleString('pt-BR')}
+                {item.preview ? <div className="list-note">“{item.preview}”</div> : null}
+              </div>
+              <div className="channel-row-actions">
+                <button className="secondary-button" type="button" disabled={busyId === item.id} onClick={() => void resolve(item, true)}>Chegou ao cliente</button>
+                <button className="secondary-button" type="button" disabled={busyId === item.id} onClick={() => void resolve(item, false)}>Não chegou</button>
+              </div>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </details>
   );
 }

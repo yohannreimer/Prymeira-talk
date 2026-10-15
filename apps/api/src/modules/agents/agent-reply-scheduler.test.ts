@@ -45,6 +45,18 @@ function buildPrisma(overrides: Record<string, any> = {}) {
 }
 
 describe("createAgentReplyScheduler", () => {
+  it("does not recreate the pending queue when reset happens during settings lookup", async () => {
+    const prisma = buildPrisma();
+    prisma.workspaceMirror.findUnique.mockImplementation(async () => {
+      prisma.conversation.findUnique.mockResolvedValue({ ...buildConversation(), activeAgentSession: null, activeAgentSessionId: null, historyResetAt: new Date() });
+      return null;
+    });
+    const scheduler = createAgentReplyScheduler({ prisma, agentRuntime: { runForMessage: vi.fn() } });
+    expect(await scheduler.scheduleActiveSessionForMessage({ workspaceId: ids.workspace, conversationId: ids.conversation, messageId: ids.firstMessage })).toEqual({ scheduled: false });
+    expect(prisma.aiAgentPendingReply.upsert).not.toHaveBeenCalled();
+    scheduler.stop();
+  });
+
   it('does not enqueue autonomous replies in an assisted channel', async () => {
     const prisma = buildPrisma({ conversation: { findUnique: vi.fn().mockResolvedValue({ ...buildConversation(), channel: { encryptedConfig: { assistant: { mode: 'automatic' } } } }) } });
     const scheduler = createAgentReplyScheduler({ prisma, agentRuntime: { runForMessage: vi.fn() } });

@@ -75,7 +75,7 @@
 .supervision-thread-header h2 { font-size:15px; margin:0; }
 .supervision-thread-header p { color:var(--color-text-secondary); font-size:11px; margin:5px 0; }
 .supervision-thread-header .supervision-pending { margin-top:6px; }
-.supervision-thread-header button { display:grid; place-items:center; border:0; background:transparent; padding:4px; color:var(--color-text-secondary); }
+.supervision-thread-close { display:grid; place-items:center; border:0; background:transparent; padding:4px; color:var(--color-text-secondary); }
 .supervision-history { flex:1; overflow:auto; padding:22px 24px; display:flex; flex-direction:column; align-items:flex-start; gap:12px; }
 .supervision-message { max-width:85%; border:1px solid #e1e9e2; border-radius:10px 10px 10px 2px; padding:10px 12px; background:white; box-shadow:0 1px 2px #24564a08; font-size:12px; }
 .supervision-message.is-outbound { align-self:flex-end; border-color:#d4e4d8; border-radius:10px 10px 2px 10px; background:#e9f3e8; }
@@ -217,7 +217,6 @@ button.supervision-tile:hover { border-color:#b7d3c8; box-shadow:0 6px 18px #245
 /* The operator-published weekly selection shares the current conversation viewer. */
 .supervision-tabs { display:flex; gap:8px; margin-bottom:20px; flex-wrap:wrap; }
 .supervision-tabs button { border:1px solid var(--sup-line,#d9e4e7); background:#fff; color:#31515f; border-radius:10px; padding:11px 18px; font:inherit; cursor:pointer; }
-.supervision-tabs button[aria-pressed="true"] { background:#087e77; border-color:#087e77; color:#fff; }
 .supervision-week-summary { display:flex; justify-content:space-between; gap:20px; align-items:center; padding:22px; border:1px solid #d9e4e7; border-radius:14px; background:#fff; margin-bottom:20px; }
 .supervision-week-summary h2 { margin:6px 0; color:#163747; font-size:26px; }
 .supervision-week-summary p { margin:6px 0; color:#607580; }
@@ -228,5 +227,114 @@ button.supervision-tile:hover { border-color:#b7d3c8; box-shadow:0 6px 18px #245
 .supervision-week-suggestion.is-seller_reminder { background:#fff4dd; }
 .supervision-week-suggestion h3 { margin:0 0 7px; font-size:13px; color:#163747; }
 .supervision-week-suggestion p { margin:0; font-size:14px; line-height:1.5; white-space:pre-wrap; color:#233d47; }
-.supervision-use-suggestion { border:1px solid #087e77; color:#087e77; background:#fff; padding:7px 12px; border-radius:8px; margin-bottom:8px; cursor:pointer; }
 @media (max-width:700px) { .supervision-week-summary { align-items:stretch; flex-direction:column; } }
+
+/* ── Compact layout (2026-10-14): one toolbar line, slim summary strips, and an inbox that fills the screen so the
+   open conversation is the biggest thing on the page. ─────────────────────────────────────────────────────────── */
+.supervision-header { height:52px; padding:0 24px; }
+.supervision-brand strong { font-size:19px; }
+.supervision-brand-mark { width:30px; height:30px; border-radius:8px; }
+.supervision-brand-mark svg { width:18px; height:18px; }
+.supervision-content { max-width:1720px; padding:14px 24px 16px; }
+
+.supervision-title-row { align-items:center; gap:18px; margin-bottom:12px; }
+.supervision-title { display:flex; align-items:baseline; gap:10px; min-width:0; }
+.supervision-title-row h1 { font-size:19px; letter-spacing:-.4px; white-space:nowrap; }
+.supervision-title .supervision-eyebrow { margin:0; font-size:11px; letter-spacing:.6px; color:var(--color-text-secondary); white-space:nowrap; }
+.supervision-tabs { margin:0 auto 0 8px; gap:2px; padding:3px; background:#e2e9e3; border-radius:10px; flex-wrap:nowrap; }
+.supervision-tabs button { border:0; background:transparent; color:var(--color-text-secondary); padding:6px 14px; border-radius:8px; font-size:13px; font-weight:600; white-space:nowrap; }
+.supervision-tabs button[aria-pressed="true"] { background:white; color:var(--color-brand-600); box-shadow:0 1px 2px #1e2a2526; }
+.supervision-refresh { display:flex; align-items:center; gap:10px; }
+.supervision-refresh small { font-size:11px; white-space:nowrap; }
+.supervision-refresh button { padding:6px 11px; font-size:13px; }
+
+.supervision-pulse { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:10px; }
+.supervision-tile { flex:1 1 220px; flex-direction:row; align-items:center; gap:7px; padding:8px 12px; border-radius:10px; min-width:0; }
+.supervision-tile > svg { flex-shrink:0; color:var(--color-text-secondary); }
+.supervision-tile strong { font-size:19px; letter-spacing:-.4px; }
+.supervision-tile-label { font-size:13px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0; }
+.supervision-tile small, .supervision-tile .supervision-period-label { margin-left:auto; font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0; }
+.supervision-tile.is-late > svg { color:#b42318; }
+
+.supervision-summary { margin-bottom:12px; }
+.supervision-sellers { grid-template-columns:repeat(auto-fill, minmax(290px, 1fr)); gap:8px; }
+.supervision-seller { gap:7px; padding:9px 12px; border-radius:10px; }
+.supervision-seller > header { gap:8px; }
+.supervision-seller-avatar { width:28px; height:28px; font-size:11px; }
+.supervision-seller .supervision-seller-button { flex-direction:row; align-items:baseline; gap:7px; padding:0; }
+.supervision-seller .supervision-seller-button strong { font-size:14px; flex-shrink:0; max-width:60%; }
+.supervision-seller .supervision-seller-button small { font-size:11px; min-width:0; }
+.supervision-seller-state { padding:2px 8px; font-size:11px; }
+.supervision-seller-stats { display:flex; gap:6px; }
+.supervision-stat { flex:1; flex-direction:row; align-items:baseline; gap:5px; padding:4px 8px; border-radius:7px; }
+.supervision-stat strong { font-size:15px; }
+.supervision-stat span { font-size:11.5px; }
+.supervision-seller > footer { font-size:11.5px; white-space:nowrap; overflow:hidden; }
+.supervision-seller > footer span { overflow:hidden; text-overflow:ellipsis; }
+.supervision-seller > footer svg { flex-shrink:0; }
+
+.supervision-week-summary { padding:10px 16px; margin-bottom:12px; border-radius:10px; gap:14px; border-color:var(--color-border); }
+.supervision-week-summary > div { display:flex; align-items:baseline; gap:12px; flex-wrap:wrap; }
+.supervision-week-summary h2 { margin:0; font-size:16px; color:var(--color-text-primary); }
+.supervision-week-summary p { margin:0; font-size:13px; color:var(--color-text-secondary); }
+.supervision-week-summary label { display:flex; align-items:center; gap:8px; font-size:12px; color:var(--color-text-secondary); }
+.supervision-week-summary select { padding:6px 8px; font-size:13px; border-color:var(--color-border); }
+
+/* The inbox is exactly one screen tall: opening a conversation scrolls it into place and the chat gets every pixel. */
+.supervision-inbox { margin-top:0; display:flex; flex-direction:column; height:calc(100vh - 16px); min-height:540px; scroll-margin-top:8px; }
+.supervision-filters { flex:none; gap:8px; padding:9px 12px; align-items:center; }
+.supervision-filters .supervision-filter-caption { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; padding:0; border:0; }
+.supervision-filters select { min-width:0; padding:6px 26px 6px 9px; }
+.supervision-search input { width:180px; padding:6px 0; }
+.supervision-toggle-group { gap:6px; flex-wrap:wrap; }
+.supervision-toggle-group button { padding:6px 10px; }
+.supervision-columns { flex:1; min-height:0; height:auto; grid-template-columns:minmax(280px, 340px) minmax(0, 1fr); }
+
+.supervision-queue-heading { padding:9px 14px; }
+.supervision-conversation { padding:9px 14px 9px 12px; }
+.supervision-avatar { width:28px; height:28px; font-size:10.5px; }
+.supervision-contact-line { gap:8px; }
+.supervision-contact-line strong { font-size:13.5px; }
+.supervision-wait { padding:2px 7px; font-size:11px; }
+.supervision-seller-line { display:flex; flex-wrap:wrap; align-items:center; gap:4px 8px; margin:2px 0 2px 36px; font-size:11px; }
+.supervision-week-kind { margin:0; padding:1px 7px; border-radius:999px; background:#e3f1ef; font-size:11px; }
+.supervision-week-kind.is-seller_reminder { background:#fff1d6; color:#8a5a05; }
+.supervision-preview { margin:0 0 0 36px; font-size:12.5px; }
+.supervision-conversation .supervision-next-action { margin:6px 0 0 36px; padding:5px 8px; font-size:12px; }
+.supervision-conversation .supervision-conversation-flags { margin:4px 0 0 36px; }
+.supervision-conversation-flags:empty { display:none; }
+
+.supervision-thread-header { padding:10px 18px; align-items:center; }
+.supervision-thread-header > div { display:flex; flex-wrap:wrap; align-items:center; gap:4px 12px; }
+.supervision-thread-header h2 { font-size:16px; }
+.supervision-thread-header p { font-size:12px; }
+.supervision-thread-header .supervision-next-action { flex-basis:100%; margin:2px 0 0; padding:6px 9px; }
+.supervision-thread-close:hover { color:var(--color-text-primary); }
+.supervision-history { padding:16px 22px; gap:8px; }
+.supervision-message { max-width:min(72%, 760px); font-size:14px; }
+.supervision-week-suggestion { padding:10px 18px; }
+.supervision-week-suggestion h3 { margin:0 0 4px; font-size:12px; }
+.supervision-reply { gap:6px; padding:8px 14px 10px; }
+.supervision-reply-note { font-size:11.5px; }
+.supervision-reply-row { align-items:stretch; }
+.supervision-reply textarea { min-height:40px; padding:9px 12px; }
+.supervision-reply button { padding:0 16px; }
+.supervision-reply .supervision-use-suggestion { flex-shrink:0; border:1px solid #9fc7b8; background:var(--color-brand-50); color:var(--color-brand-600); font-weight:700; }
+.supervision-thread-empty { padding:24px; }
+
+@media(max-width:900px) {
+  .supervision-title-row { flex-wrap:wrap; }
+  .supervision-tabs { order:3; margin:0; }
+  .supervision-title .supervision-eyebrow { display:none; }
+}
+@media(max-width:650px) {
+  .supervision-content { padding:12px 10px; }
+  .supervision-header { height:52px; }
+  .supervision-tile { flex-basis:calc(50% - 4px); }
+  .supervision-tile small { display:none; }
+  .supervision-inbox { height:calc(100vh - 16px); }
+  .supervision-columns { display:block; height:auto; flex:1; min-height:0; }
+  .supervision-message { max-width:90%; }
+  .supervision-reply-note { display:none; }
+}
+.supervision-thread-flags .supervision-dismiss, .supervision-thread-flags .supervision-dismissed button { font-size:11.5px; }

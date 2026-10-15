@@ -241,6 +241,46 @@ function buildPrisma(overrides: Record<string, any> = {}) {
 }
 
 describe("createAgentRuntime", () => {
+  it("fences a direct normal run when reset commits during generation", async () => {
+    const prisma = buildPrisma();
+    const provider = { generate: vi.fn(async () => {
+      vi.mocked(prisma.message.findFirst).mockResolvedValue({ ...baseMessage, hiddenByReset: true });
+      vi.mocked(prisma.conversation.findUnique).mockResolvedValue({ ...baseConversation, historyResetAt: new Date() });
+      return { reply: "Old answer", confidence: 1, actions: [{ type: "add_tag", tagId: "tag_allowed_ai" }], handoff: { required: false, reason: null } };
+    }) };
+    const sendText = vi.fn();
+    const result = await createAgentRuntime({ prisma, provider, evolution: { mode: "real", client: { sendText } } })
+      .runForMessage({ workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation, messageId: ids.message, trigger: "automation" });
+    expect(result.status).toBe("skipped");
+    expect(sendText).not.toHaveBeenCalled();
+    expect(prisma.conversationTag.upsert).not.toHaveBeenCalled();
+    expect(prisma.message.create).not.toHaveBeenCalled();
+    expect(prisma.aiAgentSession.update).not.toHaveBeenCalled();
+    expect(prisma.aiAgentRun.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects hidden activation and audio anchors without recreating operational state", async () => {
+    const prisma = buildPrisma();
+    vi.mocked(prisma.message.findFirst).mockResolvedValue({ ...baseMessage, type: "audio", hiddenByReset: true });
+    const runtime = createAgentRuntime({ prisma, provider: buildProvider({ reply: "Answer", confidence: 1, actions: [], handoff: { required: false, reason: null } }) });
+    expect((await runtime.activateForMessage({ workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation, messageId: ids.message })).status).toBe("skipped");
+    expect((await runtime.prepareAudioMessage({ workspaceId: ids.workspace, messageId: ids.message })).status).toBe("skipped");
+    expect(prisma.aiAgentSession.upsert).not.toHaveBeenCalled();
+    expect(prisma.message.update).not.toHaveBeenCalled();
+  });
+
+  it("treats a post-reset visible message as fresh without querying old provider history", async () => {
+    const prisma = buildPrisma();
+    vi.mocked(prisma.aiAgent.findFirst).mockResolvedValue({ ...baseAgent, behaviorConfig: { onlyNewConversations: true } });
+    vi.mocked(prisma.conversation.findUnique).mockResolvedValue({ ...baseConversation, historyResetAt: new Date(now.getTime() - 1000) });
+    const chatHistory = { hasPriorMessages: vi.fn().mockResolvedValue(true) };
+    const result = await createAgentRuntime({ prisma, provider: buildProvider({ reply: "Answer", confidence: 1, actions: [], handoff: { required: false, reason: null } }), chatHistory })
+      .activateForMessage({ workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation, messageId: ids.message });
+    expect(result.status).toBe("completed");
+    expect(chatHistory.hasPriorMessages).not.toHaveBeenCalled();
+    expect(prisma.message.count).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ hiddenByReset: false }) }));
+  });
+
   it("shares the last 20 messages and a source beyond the first 50 with both JEV calls", async () => {
     const current = { ...baseMessage, body: "10mm" };
     const earlier = Array.from({ length: 19 }, (_, index) => ({
@@ -1544,6 +1584,7 @@ describe("createAgentRuntime", () => {
       where: {
         workspaceId: ids.workspace,
         conversationId: ids.conversation,
+        hiddenByReset: false,
         NOT: { status: "pending", metadata: { path: ["source"], equals: "followup_review" } }
       },
       orderBy: [{ createdAt: "desc" }],
@@ -1911,6 +1952,7 @@ describe("createAgentRuntime", () => {
         workspaceId: ids.workspace,
         conversationId: ids.conversation,
         id: { not: ids.message },
+        hiddenByReset: false,
         createdAt: { lt: now }
       }
     });
@@ -2810,7 +2852,7 @@ it("continues after a material answer without requiring a document for its own p
     });
 
     expect(result).toEqual({ status: "handoff_requested", runId: ids.run });
-    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(prisma.$transaction).toHaveBeenCalledWith(expect.any(Function), { isolationLevel: "ReadCommitted" });
     expect(prisma.message.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         body: "Vou consultar essas informações e já te dou um retorno."

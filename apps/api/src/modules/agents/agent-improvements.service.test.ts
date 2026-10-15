@@ -108,10 +108,12 @@ function buildPrisma(): MockPrisma & AgentImprovementsPrismaLike {
 
   prisma.$transaction.mockImplementation(async (callback: (tx: {
     aiKnowledgeSource: MockPrisma["aiKnowledgeSource"];
-    aiAgentImprovement: Pick<MockPrisma["aiAgentImprovement"], "update">;
+    aiAgentImprovement: Pick<MockPrisma["aiAgentImprovement"], "update" | "create">;
+    message: MockPrisma["message"];
   }) => Promise<unknown>) => callback({
     aiKnowledgeSource: prisma.aiKnowledgeSource,
-    aiAgentImprovement: { update: prisma.aiAgentImprovement.update }
+    aiAgentImprovement: { update: prisma.aiAgentImprovement.update, create: prisma.aiAgentImprovement.create },
+    message: prisma.message
   }));
 
   return prisma as MockPrisma & AgentImprovementsPrismaLike;
@@ -126,6 +128,17 @@ function normalizer(result: Awaited<ReturnType<AgentImprovementNormalizer["norma
 }
 
 describe("createAgentImprovementsService", () => {
+  it("does not recreate a proposal when reset hides the source during detection", async () => {
+    const prisma = buildPrisma();
+    const assessment = detector({ outcome: "suggest", kind: "not_sold", confidence: 0.96 });
+    assessment.assess = vi.fn(async () => {
+      prisma.message.findFirst.mockResolvedValue(null);
+      return { outcome: "suggest" as const, kind: "not_sold" as const, confidence: 0.96 };
+    });
+    const service = createAgentImprovementsService(prisma, { detector: assessment });
+    await expect(service.observeHumanReply({ workspaceId, conversationId, messageId: humanReplyId })).resolves.toEqual({ created: false, reason: "conversation_reset" });
+    expect(prisma.aiAgentImprovement.create).not.toHaveBeenCalled();
+  });
   it("learns from a paused handoff and preserves the complete multi-message request", async () => {
     const prisma = buildPrisma();
     const request = { ...customerMessage, id: "00000000-0000-4000-8000-000000000310", body: "Quanto está uma barra de 10 mm e 12 m?", createdAt: new Date("2026-09-22T13:54:00.000Z") };

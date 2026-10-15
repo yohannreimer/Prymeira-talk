@@ -277,6 +277,7 @@ export class IngressApplicationService {
     private async recoveredPresentation(tx: Tx, receipt: IngressReceipt, event: Exclude<NormalizedMessagingEvent, { kind: 'control' }>, result: CanonicalStoreResult, source: TrustedMessagingContext) {
         if (event.kind === 'message' && result.outcome === 'created' && result.messageId && result.conversationId) {
             const message = await tx.message.findUniqueOrThrow({ where: { id: result.messageId } });
+            if (message.hiddenByReset) return;
             if (message.direction === 'inbound')
                 await tx.conversation.update({ where: { workspaceId_id: { workspaceId: receipt.workspaceId, id: result.conversationId } }, data: { unreadCount: { increment: 1 }, hiddenUntilReply: false } });
             await selectConversationPreviewInTransaction(tx, source, { conversationId: result.conversationId, messageId: message.id, preview: event.content.preview, selection: 'new_message' });
@@ -285,6 +286,10 @@ export class IngressApplicationService {
     }
     /** Everything that follows a successful canonical persist. Shared by first application and recertification. */
     private async afterPersist(tx: Tx, receipt: IngressReceipt, eventIndex: number, event: Exclude<NormalizedMessagingEvent, { kind: 'control' }>, result: CanonicalStoreResult, source: TrustedMessagingContext) {
+        if (result.messageId) {
+            const sourceMessage = await tx.message.findFirst({ where: { workspaceId: receipt.workspaceId, id: result.messageId }, select: { hiddenByReset: true } });
+            if (sourceMessage?.hiddenByReset) return;
+        }
         event = wellFormedPresentation(event);
         if (result.conversationId)
             await lockProspectingConversation(tx, source.workspaceId, result.conversationId);
@@ -403,7 +408,7 @@ export class IngressApplicationService {
         const message = await tx.message.findUniqueOrThrow({ where: { id: result.messageId! } });
         // Exact hidden campaign on a new inbox lane. Existing visible conversations
         // remain visible; an old echo cannot conceal a customer reply.
-        const inbound = await tx.message.count({ where: { workspaceId, conversationId: conversation.id, direction: 'inbound' } });
+        const inbound = await tx.message.count({ where: { workspaceId, conversationId: conversation.id, direction: 'inbound', hiddenByReset: false } });
         if (!inbound && !conversation.lastMessageAt)
             await tx.conversation.update({ where: { id: conversation.id }, data: { hiddenUntilReply: true } });
         await selectConversationPreviewInTransaction(tx, event.context, { conversationId: conversation.id, messageId: message.id, preview: event.content.preview, selection: 'echo' });

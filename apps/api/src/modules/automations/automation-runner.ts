@@ -1,3 +1,4 @@
+import { enterCanonicalWorkspaceTransaction } from "../messaging/canonical-boundary.js";
 import {
   automationFlowSchema,
   getAutomationBlock,
@@ -39,6 +40,7 @@ interface MessageRecord {
   id: string;
   workspaceId: string;
   conversationId: string;
+  hiddenByReset?: boolean;
   providerMessageId?: string | null;
   providerEventId?: string | null;
   direction: "inbound" | "outbound";
@@ -61,6 +63,7 @@ interface ConversationRecord {
   assignedUserId?: string | null;
   departmentId?: string | null;
   priority: string;
+  historyResetAt?: DateLike | null;
   lastMessageAt?: DateLike | null;
   lastMessagePreview?: string | null;
   unreadCount: number;
@@ -474,6 +477,7 @@ async function createOutboundText(
       sentByUserId: null
     }
   });
+  if (!await sourceStillCurrent(options, context)) return;
   await options.prisma.conversation.update({
     where: {
       workspaceId_id: {
@@ -526,6 +530,7 @@ async function createOutboundMedia(
       sentByUserId: null
     }
   });
+  if (!await sourceStillCurrent(options, context)) return;
   await options.prisma.conversation.update({
     where: {
       workspaceId_id: {
@@ -675,6 +680,7 @@ async function executeNode(
       update: {}
     });
     try {
+      if (!await sourceStillCurrent(options, context)) return { result: resultFor(node, "skipped", { message: "Conversation history was reset." }), stop: true };
       await options.prisma.conversationTag.create({
         data: {
           workspaceId: context.message.workspaceId,
@@ -705,6 +711,7 @@ async function executeNode(
       where: { workspaceId: context.message.workspaceId, name: tagName }
     });
     if (tag) {
+      if (!await sourceStillCurrent(options, context)) return { result: resultFor(node, "skipped", { message: "Conversation history was reset." }), stop: true };
       await options.prisma.conversationTag.deleteMany({
         where: {
           workspaceId: context.message.workspaceId,
@@ -732,6 +739,7 @@ async function executeNode(
       return { result: resultFor(node, "failed", { error: "Board stage was not found." }), stop: true };
     }
 
+    if (!await sourceStillCurrent(options, context)) return { result: resultFor(node, "skipped", { message: "Conversation history was reset." }), stop: true };
     await options.prisma.contactBoardMembership.upsert({
       where: {
         workspaceId_contactId_boardId: {
@@ -761,7 +769,8 @@ async function executeNode(
       return { result: resultFor(node, "failed", { error: "User ID is required." }), stop: true };
     }
 
-    await options.prisma.conversation.update({
+    if (!await sourceStillCurrent(options, context)) return { result: resultFor(node, "skipped", { message: "Conversation history was reset." }), stop: true };
+  await options.prisma.conversation.update({
       where: { workspaceId_id: { workspaceId: context.message.workspaceId, id: context.conversation.id } },
       data: { assignedUserId: userId }
     });
@@ -770,7 +779,8 @@ async function executeNode(
 
   if (node.type === "change_priority") {
     const priority = configValue(node, ["priority"]) ?? "normal";
-    await options.prisma.conversation.update({
+    if (!await sourceStillCurrent(options, context)) return { result: resultFor(node, "skipped", { message: "Conversation history was reset." }), stop: true };
+  await options.prisma.conversation.update({
       where: { workspaceId_id: { workspaceId: context.message.workspaceId, id: context.conversation.id } },
       data: { priority }
     });
@@ -797,7 +807,8 @@ async function executeNode(
   }
 
   if (node.type === "close_conversation") {
-    await options.prisma.conversation.update({
+    if (!await sourceStillCurrent(options, context)) return { result: resultFor(node, "skipped", { message: "Conversation history was reset." }), stop: true };
+  await options.prisma.conversation.update({
       where: { workspaceId_id: { workspaceId: context.message.workspaceId, id: context.conversation.id } },
       data: { status: "closed" }
     });
@@ -904,6 +915,7 @@ async function triggerMatches(
         workspaceId: context.message.workspaceId,
         conversationId: context.message.conversationId,
         direction: "inbound",
+        hiddenByReset: false,
         id: { not: context.message.id }
       }
     });
@@ -917,6 +929,7 @@ async function triggerMatches(
         workspaceId: context.message.workspaceId,
         conversationId: context.message.conversationId,
         direction: "inbound",
+        hiddenByReset: false,
         id: { not: context.message.id },
         createdAt: { lt: toDate(context.message.createdAt) }
       },
@@ -944,22 +957,63 @@ async function triggerMatches(
   return false;
 }
 
+async function sourceStillCurrent(options: AutomationRunnerOptions, context: ExecuteContext) {
+  const source = await options.prisma.message.findUnique({ where: { id: context.message.id }, include: { conversation: true } });
+  const epoch = (value: DateLike | null | undefined) => value ? toDate(value).getTime() : null;
+  return Boolean(source && !source.hiddenByReset && source.workspaceId === context.message.workspaceId &&
+    epoch(source.conversation?.historyResetAt) === epoch(context.conversation.historyResetAt));
+}
+
+function fencedFlowOptions(options: AutomationRunnerOptions, context: ExecuteContext): AutomationRunnerOptions {
+  const prisma = { ...options.prisma };
+  const methods: Record<string, string[]> = {
+    message: ["create"], conversation: ["update", "updateMany"], tag: ["upsert"],
+    conversationTag: ["create", "deleteMany"], contactBoardMembership: ["upsert"], contactNote: ["create"], automationRun: ["upsert"]
+  };
+  for (const [model, writes] of Object.entries(methods)) {
+    const delegate = (options.prisma as any)[model];
+    (prisma as any)[model] = { ...delegate };
+    for (const method of writes) {
+      (prisma as any)[model][method] = async (args: unknown) => {
+        const write = async (db: AutomationRunnerPrisma) => {
+          const current = await sourceStillCurrent({ ...options, prisma: db }, context);
+          if (!current && model === "message" && method === "create") {
+            const record = args as { data: Record<string, unknown> };
+            // A send already accepted by the provider remains a hidden transport fact.
+            if (record.data.status === "sent") return db.message.create({ data: { ...record.data, hiddenByReset: true } });
+          }
+          if (!current) throw new Error("Conversation history was reset.");
+          return (db as any)[model][method](args);
+        };
+        const transactional = options.prisma as AutomationRunnerPrisma & { $transaction?: (work: (tx: AutomationRunnerPrisma) => Promise<unknown>, options: { isolationLevel: "ReadCommitted" }) => Promise<unknown> };
+        return transactional.$transaction ? transactional.$transaction(async tx => {
+          if (typeof (tx as any).$queryRaw === "function") await enterCanonicalWorkspaceTransaction(tx as any, context.message.workspaceId);
+          return write(tx);
+        }, { isolationLevel: "ReadCommitted" }) : write(options.prisma);
+      };
+    }
+  }
+  return { ...options, prisma };
+}
+
 async function executeFlow(
   options: AutomationRunnerOptions,
   context: ExecuteContext,
   flow: AutomationFlowDefinition,
   triggerNode: AutomationNodeDefinition
 ) {
+  const fenced = fencedFlowOptions(options, context);
   const results: ActionResult[] = [];
   let current: AutomationNodeDefinition | null = triggerNode;
   let steps = 0;
 
   while (current && steps < MAX_GRAPH_STEPS) {
+    if (!await sourceStillCurrent(options, context)) break;
     steps += 1;
 
     let execution: Awaited<ReturnType<typeof executeNode>>;
     try {
-      execution = await executeNode(options, context, current);
+      execution = await executeNode(fenced, context, current);
     } catch (error) {
       results.push(resultFor(current, "failed", { error: sanitizeError(error) }));
       break;
@@ -1011,7 +1065,7 @@ async function loadContext(options: AutomationRunnerOptions, input: RunForInboun
     }
   });
 
-  if (!message || message.workspaceId !== input.workspaceId || message.direction !== "inbound") {
+  if (!message || message.hiddenByReset || message.workspaceId !== input.workspaceId || message.direction !== "inbound") {
     return null;
   }
 
@@ -1065,7 +1119,7 @@ async function recordAutomationRun(
   result: unknown,
   recordedInput: unknown = runInput(context)
 ) {
-  const run = await options.prisma.automationRun.upsert({
+  const run = await fencedFlowOptions(options, context).prisma.automationRun.upsert({
     where: {
       workspaceId_ruleId_eventKey: {
         workspaceId: input.workspaceId,
@@ -1127,6 +1181,7 @@ export function createAutomationRunner(options: AutomationRunnerOptions) {
       const runs: AutomationRunRecord[] = [];
 
       for (const rule of rules) {
+        if (!await sourceStillCurrent(options, context)) break;
         const flow = flowFromRule(rule);
         if (!flow) {
           continue;
@@ -1179,6 +1234,7 @@ export function createAutomationRunner(options: AutomationRunnerOptions) {
           triggerNodeId: triggerNode.id,
           actionResults: results
         };
+        if (!await sourceStillCurrent(options, context)) break;
         const run = await recordAutomationRun(options, input, context, rule, runStatus(results), result);
         runs.push(run);
       }
@@ -1223,6 +1279,7 @@ export function createAutomationRunner(options: AutomationRunnerOptions) {
         actionResults: results
       };
 
+      if (!await sourceStillCurrent(options, context)) return null;
       return recordAutomationRun(
         options,
         input,

@@ -10,6 +10,91 @@ const sessions: TalkSession[] = [];
 const session = () => { const value = new TalkSession('user:session:w', 'w'); sessions.push(value); return value; };
 afterEach(() => { for (const value of sessions.splice(0)) value.clear(); vi.useRealTimers(); });
 
+describe('conversation reset boundary', () => {
+  const cutoff = '2026-10-14T22:00:00.000Z';
+  const reset = (id = 'c1', at = cutoff) => conversation(id, {
+    historyResetAt: at, lastMessageAt: null, lastMessagePreviewAt: null,
+    lastMessagePreview: null, lastMessage: null, sourceCampaign: null, unreadCount: 0
+  } as Partial<ConversationDto>);
+
+  it('loads post-reset history on first opening after a page reload', async () => {
+    const cache = session(); const key = cache.key('messages', 'c1');
+    await cache.client.fetchQuery({ queryKey: cache.key('conversations', 'all', 'all', ''),
+      queryFn: () => cache.readConversations(async () => [reset()]) });
+    const fresh = { ...message('form'), type: 'system' as const, createdAt: '2026-10-14T22:00:01.000Z' };
+    const reply = { ...message('reply'), direction: 'outbound' as const, createdAt: '2026-10-14T22:00:02.000Z' };
+    const read = vi.fn(async () => [message('old'), fresh, reply]);
+    const rows = await cache.client.fetchQuery({ queryKey: key, queryFn: () => cache.readMessages('c1', read) });
+    expect(read).toHaveBeenCalledOnce();
+    expect(rows).toEqual([fresh, reply]);
+  });
+
+  it('clears another browser session history, context, card and pending alerts for only the reset target', () => {
+    const cache = session();
+    const list = cache.key('conversations', 'all', 'all', '');
+    cache.client.setQueryData(list, [conversation('c1', { lastMessage: { id: 'old', direction: 'inbound', status: 'read', createdAt: message('old').createdAt } }), conversation('c2')]);
+    cache.client.setQueryData(cache.key('messages', 'c1'), [message('old')]);
+    cache.client.setQueryData(cache.key('messages', 'c2'), [message('other', 'c2')]);
+    cache.client.setQueryData(cache.key('context', 'c1'), { notes: [{ body: 'old memory' }], tags: [{ name: 'campaign' }] });
+    cache.event(event('conversation.updated', reset()));
+    expect(cache.client.getQueryData(cache.key('messages', 'c1'))).toEqual([]);
+    expect(cache.client.getQueryData<MessageDto[]>(cache.key('messages', 'c2'))?.map(row => row.id)).toEqual(['other']);
+    expect(cache.client.getQueryData(cache.key('context', 'c1'))).toBeUndefined();
+    expect(cache.client.getQueryData<ConversationDto[]>(list)?.find(row => row.id === 'c1')?.lastMessage).toBeNull();
+  });
+
+  it.each(['HTTP', 'commit'])('keeps a pre-reset HTTP history empty when reset arrives during %s', async timing => {
+    const cache = session(); const key = cache.key('messages', 'c1');
+    let finish!: (rows: MessageDto[]) => void;
+    const pending = cache.client.fetchQuery({ queryKey: key, queryFn: () => cache.readMessages('c1', () => new Promise(resolve => { finish = resolve; })) });
+    if (timing === 'HTTP') cache.event(event('conversation.updated', reset()));
+    finish([message('old')]);
+    if (timing === 'commit') queueMicrotask(() => cache.event(event('conversation.updated', reset())));
+    await pending;
+    expect(cache.client.getQueryData(key)).toEqual([]);
+  });
+
+  it('rejects stale conversation responses and old message frames without losing a new post-reset message', async () => {
+    const cache = session(); const list = cache.key('conversations', 'all', 'all', '');
+    cache.client.setQueryData(list, [conversation('c1')]);
+    cache.client.setQueryData(cache.key('messages', 'c1'), []);
+    cache.event(event('conversation.updated', reset()));
+    cache.event(event('message.created', message('old')));
+    cache.event(event('message.updated', message('old')));
+    cache.event(event('conversation.updated', conversation('c1', { lastMessagePreview: 'old preview', unreadCount: 8 })));
+    const fresh = { ...message('fresh'), createdAt: '2026-10-14T22:00:01.000Z' };
+    cache.event(event('message.created', fresh));
+    const rows = await cache.readConversations(async () => [conversation('c1', { lastMessagePreview: 'stale HTTP' })]);
+    expect(rows[0].lastMessagePreview).not.toBe('stale HTTP');
+    expect(cache.client.getQueryData<MessageDto[]>(cache.key('messages', 'c1'))?.map(row => row.id)).toEqual(['fresh']);
+    expect(cache.client.getQueryData<ConversationDto[]>(list)?.[0].unreadCount).toBe(0);
+  });
+
+  it('keeps the newest reset across repeated resets and rejects hidden rows even with a newer clock', async () => {
+    const cache = session(); const list = cache.key('conversations', 'all', 'all', '');
+    cache.client.setQueryData(list, [conversation('c1')]);
+    cache.client.setQueryData(cache.key('messages', 'c1'), []);
+    cache.event(event('conversation.updated', reset()));
+    cache.event(event('conversation.updated', reset('c1', '2026-10-14T22:01:00.000Z')));
+    cache.event(event('conversation.updated', reset()));
+    cache.event(event('message.created', { ...message('between'), createdAt: '2026-10-14T22:00:30.000Z' }));
+    const hidden = { ...message('hidden'), hiddenByReset: true, createdAt: '2026-10-14T22:02:00.000Z' } as MessageDto;
+    expect(await cache.readMessages('c1', async () => [hidden])).toEqual([]);
+    expect(cache.client.getQueryData(cache.key('messages', 'c1'))).toEqual([]);
+    expect(cache.client.getQueryData<ConversationDto[]>(list)?.[0]).toMatchObject({ historyResetAt: '2026-10-14T22:01:00.000Z' });
+  });
+
+  it('does not restore a contact context read that started before the reset', async () => {
+    const cache = session(); const key = cache.key('context', 'c1');
+    let finish!: (context: { notes: string[] }) => void;
+    const pending = cache.client.fetchQuery({ queryKey: key, queryFn: () => cache.readContext('c1', () => new Promise<{ notes: string[] }>(resolve => { finish = resolve; })) });
+    cache.event(event('conversation.updated', reset()));
+    finish({ notes: ['old memory'] });
+    await expect(pending).rejects.toBeDefined();
+    expect(cache.client.getQueryData(key)).toBeUndefined();
+  });
+});
+
 describe('session query cache', () => {
   it.each(['HTTP', 'commit'])('keeps distinct local sends with identical content when the second arrives during %s', async timing => {
     const cache = session(); const key = cache.key('messages', 'c1');

@@ -53,6 +53,8 @@ export interface MeetingScheduler {
     attendeeEmail?: string | null;
     notes?: string | null;
     now?: Date;
+    /** Revalidate the initiating conversation after reads and immediately before each Calendar mutation. */
+    stillCurrent?: () => Promise<boolean>;
   }): Promise<MeetingBookingResult>;
 }
 
@@ -104,11 +106,13 @@ export function createGoogleCalendarMeetingScheduler(input: {
     return token.value;
   }
 
-  async function google<T>(method: string, url: string, body?: unknown): Promise<T> {
+  async function google<T>(method: string, url: string, body?: unknown, stillCurrent?: () => Promise<boolean>): Promise<T> {
+    const bearer = await accessToken();
+    if (stillCurrent && !await stillCurrent()) throw new Error("Conversation history was reset.");
     const response = await request(url, {
       method,
       headers: {
-        authorization: `Bearer ${await accessToken()}`,
+        authorization: `Bearer ${bearer}`,
         ...(body === undefined ? {} : { "content-type": "application/json" })
       },
       ...(body === undefined ? {} : { body: JSON.stringify(body) })
@@ -164,7 +168,7 @@ export function createGoogleCalendarMeetingScheduler(input: {
       };
     },
 
-    async book({ conversationId, startsAt, contactName, contactPhone, attendeeEmail, notes, now = new Date() }) {
+    async book({ conversationId, startsAt, contactName, contactPhone, attendeeEmail, notes, now = new Date(), stillCurrent }) {
       const start = Date.parse(startsAt);
       if (!Number.isFinite(start) || !candidateStarts(config, now).includes(start)) {
         return { status: "unavailable", reason: "Horário fora da agenda disponível.", availableSlots: await freeSlots(now) };
@@ -192,7 +196,7 @@ export function createGoogleCalendarMeetingScheduler(input: {
         ...(email ? { attendees: [{ email, ...(contactName ? { displayName: contactName } : {}) }] } : {}),
         conferenceData: { createRequest: { requestId: randomUUID(), conferenceSolutionKey: { type: "hangoutsMeet" } } },
         extendedProperties: { private: { [CONVERSATION_PROPERTY]: conversationId } }
-      });
+      }, stillCurrent);
       if (!meetLinkOf(event) && event.conferenceData?.createRequest?.status?.statusCode === "pending" && event.id) {
         await new Promise((resolve) => setTimeout(resolve, 1500));
         event = await google<GoogleEvent>("GET", `${calendarPath}/events/${encodeURIComponent(event.id)}`);
@@ -202,7 +206,7 @@ export function createGoogleCalendarMeetingScheduler(input: {
       const replacedEventIds: string[] = [];
       for (const old of previous) {
         if (!old.id || old.id === event.id) continue;
-        await google("DELETE", `${calendarPath}/events/${encodeURIComponent(old.id)}?sendUpdates=all`);
+        await google("DELETE", `${calendarPath}/events/${encodeURIComponent(old.id)}?sendUpdates=all`, undefined, stillCurrent);
         replacedEventIds.push(old.id);
       }
 

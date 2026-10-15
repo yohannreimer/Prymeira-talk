@@ -36,6 +36,7 @@ type MockPrisma = {
     update: ReturnType<typeof vi.fn<NonNullable<PrismaLike["message"]["update"]>>>;
     create: ReturnType<typeof vi.fn<PrismaLike["message"]["create"]>>;
     findMany: ReturnType<typeof vi.fn<PrismaLike["message"]["findMany"]>>;
+    updateMany: ReturnType<typeof vi.fn<PrismaLike["message"]["updateMany"]>>;
     deleteMany: ReturnType<typeof vi.fn<PrismaLike["message"]["deleteMany"]>>;
   };
   conversationFollowup: {
@@ -198,6 +199,7 @@ function createMockPrisma(overrides: {
             createdAt: new Date("2026-05-20T12:00:00.000Z")
           }
         ]),
+      updateMany: vi.fn<PrismaLike["message"]["updateMany"]>().mockResolvedValue({ count: 1 }),
       deleteMany: vi.fn<PrismaLike["message"]["deleteMany"]>().mockResolvedValue({ count: 1 })
     },
     conversationFollowup: {
@@ -1542,6 +1544,7 @@ describe("conversations service", () => {
       where: {
         workspaceId: "workspace_a",
         conversationId: "conv_1",
+        hiddenByReset: false,
         NOT: { status: "pending", metadata: { path: ["source"], equals: "followup_review" } }
       },
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
@@ -2036,91 +2039,43 @@ describe("conversations service", () => {
     expect(crmResult.crmAction?.status).toBe("queued");
   });
 
-  it("resets all selected conversation context while preserving its identity", async () => {
-    const prisma = createMockPrisma({
-      findNotes: vi.fn<PrismaLike["contactNote"]["findMany"]>().mockResolvedValue([])
-    });
-    const service = createConversationsService(prisma);
-
-    const result = await service.resetConversation({
-      workspaceId: "workspace_a",
-      conversationId: "conv_1",
-      actorUserId: "user_1"
-    });
-
-    const scope = { workspaceId: "workspace_a", conversationId: "conv_1" };
-    expect(prisma.$transaction).toHaveBeenCalledOnce();
-    expect(prisma.aiAgentPendingReply.deleteMany).toHaveBeenCalledWith({ where: scope });
-    expect(prisma.aiAgentRun.deleteMany).toHaveBeenCalledWith({ where: scope });
-    expect(prisma.aiActionLog.deleteMany).toHaveBeenCalledWith({ where: scope });
-    expect(prisma.conversationFollowup.deleteMany).toHaveBeenCalledWith({ where: scope });
-    expect(prisma.message.deleteMany).toHaveBeenCalledWith({ where: scope });
-    expect(prisma.conversationTag.deleteMany).toHaveBeenCalledWith({ where: scope });
-    expect(prisma.contactNote.deleteMany).toHaveBeenCalledWith({
-      where: { workspaceId: "workspace_a", contactId: "contact_1" }
-    });
-    expect(prisma.aiAgentSession.deleteMany).toHaveBeenCalledWith({ where: scope });
-    expect(prisma.conversation.update).toHaveBeenCalledWith(expect.objectContaining({
-      data: expect.objectContaining({
-        status: "open",
-        assignedUserId: null,
-        departmentId: null,
-        lastMessageAt: null,
-        lastMessagePreview: null,
-        unreadCount: 0,
-        priority: "normal",
-        aiControlStatus: "agent_allowed",
-        activeAgentSessionId: null
+  it("resets the selected scope without deleting ledger-bound messages", async () => {
+    const prisma = createMockPrisma({ findNotes: vi.fn<PrismaLike["contactNote"]["findMany"]>().mockResolvedValue([]) });
+    const result = await createConversationsService(prisma).resetConversation({ workspaceId: "workspace_a", conversationId: "conv_1", actorUserId: "user_1" });
+    const scope = { workspaceId: "workspace_a", conversationId: { in: ["conv_1"] } };
+    expect(prisma.$transaction).toHaveBeenCalledWith(expect.any(Function), { isolationLevel: "ReadCommitted" });
+    expect(prisma.message.deleteMany).not.toHaveBeenCalled();
+    expect(prisma.message.updateMany).toHaveBeenCalledWith({ where: scope, data: { hiddenByReset: true } });
+    for (const store of [prisma.aiAgentPendingReply, prisma.aiAgentRun, prisma.aiActionLog, prisma.conversationFollowup, prisma.conversationTag, prisma.aiAgentSession]) {
+      expect(store.deleteMany).toHaveBeenCalledWith({ where: scope });
+    }
+    expect(prisma.contactNote.deleteMany).toHaveBeenCalledWith({ where: { workspaceId: "workspace_a", contactId: { in: ["contact_1"] } } });
+    expect(prisma.conversation.update).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({
+      historyResetAt: expect.any(Date), status: "open", aiControlStatus: "agent_allowed", hiddenUntilReply: false,
+      activeAgentSessionId: null, lastMessageAt: null, lastMessagePreviewAt: null, lastMessagePreview: null,
+      waitingDismissedAt: null, unreadCount: 0
+    }) }));
+    expect(prisma.auditLog.create).toHaveBeenCalledWith({ data: expect.objectContaining({
+      action: "conversation.demo_reset", targetId: "conv_1", metadata: expect.objectContaining({
+        conversationIds: ["conv_1"], contactIds: ["contact_1"], hiddenMessageCount: 1
       })
-    }));
-    expect(prisma.auditLog.create).toHaveBeenCalledWith({
-      data: {
-        workspaceId: "workspace_a",
-        actorUserId: "user_1",
-        action: "conversation.demo_reset",
-        targetType: "conversation",
-        targetId: "conv_1",
-        metadata: {}
-      }
-    });
-    expect(result.conversation.id).toBe("conv_1");
+    }) });
+    expect(result.conversation).toMatchObject({ id: "conv_1", lastMessage: null });
     expect(result.context.notes).toEqual([]);
   });
 
-  it("deletes FK-bound followups before their anchor messages and sessions during reset", async () => {
+  it("clears followups before sessions while retaining the anchor UUID", async () => {
     const order: string[] = [];
-    let followupExists = true;
     const prisma = createMockPrisma();
-    prisma.conversationFollowup.deleteMany.mockImplementation(async () => {
-      order.push("followups");
-      followupExists = false;
-      return { count: 1 };
-    });
-    prisma.message.deleteMany.mockImplementation(async () => {
-      order.push("messages");
-      if (followupExists) {
-        throw Object.assign(new Error("Followup anchor foreign key blocks message deletion"), { code: "P2003" });
-      }
-      return { count: 1 };
-    });
+    prisma.conversationFollowup.deleteMany.mockImplementation(async () => { order.push("followups"); return { count: 1 }; });
     prisma.aiAgentSession.deleteMany.mockImplementation(async () => {
-      order.push("sessions");
-      if (followupExists) {
-        throw Object.assign(new Error("Followup session foreign key blocks session deletion"), { code: "P2003" });
-      }
-      return { count: 1 };
+      expect(order).toContain("followups"); order.push("sessions"); return { count: 1 };
     });
-
-    await expect(createConversationsService(prisma).resetConversation({
-      workspaceId: "workspace_a",
-      conversationId: "conv_1",
-      actorUserId: "user_1"
-    })).resolves.toMatchObject({ conversation: { id: "conv_1" } });
-
-    expect(order).toEqual(expect.arrayContaining(["followups", "messages", "sessions"]));
-    expect(order.indexOf("followups")).toBeLessThan(order.indexOf("messages"));
-    expect(order.indexOf("followups")).toBeLessThan(order.indexOf("sessions"));
+    await expect(createConversationsService(prisma).resetConversation({ workspaceId: "workspace_a", conversationId: "conv_1", actorUserId: "user_1" })).resolves.toMatchObject({ conversation: { id: "conv_1" } });
+    expect(prisma.message.deleteMany).not.toHaveBeenCalled();
+    expect(order).toEqual(["followups", "sessions"]);
   });
+
 });
 
 describe("conversation routes", () => {

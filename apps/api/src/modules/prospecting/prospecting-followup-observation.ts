@@ -11,7 +11,7 @@ export async function markProspectingFollowupObserved(db: unknown, messageId: st
   const mark = async (tx: Store) => {
     await tx.$queryRaw`SELECT id FROM messages WHERE id = ${messageId}::uuid FOR UPDATE`;
     const message = await tx.message.findUnique({ where: { id: messageId } });
-    if (!message || asRecord(message.metadata).prospectingFollowupObservation !== "pending") return;
+    if (!message || message.hiddenByReset || asRecord(message.metadata).prospectingFollowupObservation !== "pending") return;
     await tx.message.update({ where: { id: messageId }, data: { metadata: {
       ...asRecord(message.metadata), prospectingFollowupObservation: "observed" } as Prisma.InputJsonObject } });
   };
@@ -21,7 +21,7 @@ export async function markProspectingFollowupObserved(db: unknown, messageId: st
 export async function replayProspectingFollowupObservations(db: unknown, observer: ConversationFollowupsObserver | undefined, batchSize: number) {
   const store = db as Store;
   if (!observer || !store.campaignProspectingReservation) return;
-  const pending = await store.message.findMany({ where: { direction: "outbound", status: "sent", AND: [
+  const pending = await store.message.findMany({ where: { hiddenByReset: false, direction: "outbound", status: "sent", AND: [
     { metadata: { path: ["source"], equals: "ai_agent" } },
     { metadata: { path: ["prospectingDispatch"], equals: "confirmed" } },
     { metadata: { path: ["prospectingFollowupObservation"], equals: "pending" } }

@@ -69,7 +69,7 @@ export function createAssistantScheduler(prisma: PrismaClient, dependencies: {
       const state = await prisma.assistantConversationState.findUnique({ where: { workspaceId_conversationId: { workspaceId: input.workspaceId, conversationId: input.conversationId } } });
       if (state?.status !== 'ready') return;
       const [message, suggestion] = await Promise.all([
-        prisma.message.findFirst({ where: { workspaceId: input.workspaceId, id: input.messageId }, select: { body: true, type: true, sentByUserId: true, metadata: true } }),
+        prisma.message.findFirst({ where: { workspaceId: input.workspaceId, id: input.messageId, hiddenByReset: false }, select: { body: true, type: true, sentByUserId: true, metadata: true } }),
         prisma.assistantSuggestion.findFirst({ where: { workspaceId: input.workspaceId, conversationId: input.conversationId, revision: state.revision }, select: { id: true, body: true } })
       ]);
       const reply = message?.type === 'text' ? message.body?.trim() : null;

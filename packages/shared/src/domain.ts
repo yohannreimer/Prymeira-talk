@@ -261,6 +261,8 @@ export const conversationSchema = z.object({
   departmentId: z.string().nullable(),
   lastMessageAt: z.string().datetime().nullable(),
   lastMessagePreviewAt: z.string().datetime().nullable().optional(),
+  /** Older history and work belong to the conversation before this reset. */
+  historyResetAt: z.string().datetime().nullable().optional(),
   lastMessagePreview: z.string().nullable(),
   lastMessage: conversationLastMessageSchema.nullable().optional(),
   unreadCount: z.number().int().min(0),
@@ -428,6 +430,8 @@ export const messageSchema = z.object({
   id: z.string().min(1),
   workspaceId: z.string().min(1),
   conversationId: z.string().min(1),
+  /** Kept for transport integrity, excluded from atendimento and agent context. */
+  hiddenByReset: z.boolean().optional(),
   providerMessageId: z.string().nullable(),
   direction: messageDirectionSchema,
   type: messageTypeSchema,

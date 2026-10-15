@@ -122,7 +122,7 @@ export function createInboxMediaService(options: {
     },
     async media(workspaceId: string, conversationId: string, messageId: string): Promise<Media> {
       const owner = await conversation(workspaceId, conversationId);
-      const message = await options.prisma.message.findFirst({ where: { id: messageId, conversationId, workspaceId },
+      const message = await options.prisma.message.findFirst({ where: { id: messageId, conversationId, workspaceId, hiddenByReset: false },
         select: { type: true, mediaUrl: true, providerMessageId: true } });
       if (!message || !['audio', 'image', 'file'].includes(message.type)) throw new Error('NOT_FOUND');
       if (options.durable) {

@@ -1,5 +1,6 @@
 import { lastMessageKind, messageLocationSchema } from '@prymeira-talk/shared';
-import { lockProspectingConversation } from "../prospecting/prospecting-lock.js";
+import { enterCanonicalWorkspaceTransaction } from "../messaging/canonical-boundary.js";
+import { lockProspectingConversation, lockProspectingConversations } from "../prospecting/prospecting-lock.js";
 import { reserveProspectingOutbound, adoptProspectingOutbound, dispatchProspectingOutbound, confirmProspectingOutbound, cancelProspectingOutbound } from "../prospecting/prospecting-delivery.js";
 import { stopProspectingConversation, autonomousAgentAllowed, releaseEndedProspectingBinding, findProspectingReservation } from "../prospecting/prospecting-policy.js";
 import type { ConversationStatus, Prisma, PrismaClient } from "@prisma/client";
@@ -37,7 +38,8 @@ type ConversationActionErrorCode =
   | "CURRENT_USER_NOT_FOUND"
   | "DEPARTMENT_NOT_FOUND"
   | "BOARD_STAGE_NOT_FOUND"
-  | "HANDOFF_ACTION_NOT_AVAILABLE";
+  | "HANDOFF_ACTION_NOT_AVAILABLE"
+  | "CONVERSATION_RESET_DELIVERY_UNCONFIRMED";
 
 export class ConversationActionError extends Error {
   statusCode = 409 as const;
@@ -120,6 +122,7 @@ export interface ConversationRecord {
   departmentId: string | null;
   lastMessageAt: DateLike | null;
   lastMessagePreviewAt?: DateLike | null;
+  historyResetAt?: DateLike | null;
   lastMessagePreview: string | null;
   unreadCount: number;
   hiddenUntilReply?: boolean;
@@ -211,6 +214,7 @@ export const conversationDtoInclude = {
 } as const;
 
 interface MessageRecord {
+  hiddenByReset?: boolean;
   id: string;
   workspaceId: string;
   conversationId: string;
@@ -397,9 +401,14 @@ function mergeEchoedOutbound(echo: MessageRecord, talk: { metadata?: unknown; me
 
 export interface PrismaLike {
   $queryRaw?: PrismaClient['$queryRaw'];
+  $executeRaw?: PrismaClient['$executeRaw'];
+  meetingReminder?: Pick<PrismaClient['meetingReminder'], 'updateMany'>;
+  conversationInboxTriage?: Pick<PrismaClient['conversationInboxTriage'], 'deleteMany'>;
+  aiAgentImprovement?: Pick<PrismaClient['aiAgentImprovement'], 'deleteMany'>;
   canonicalMessageIdentity?: { findMany(args: { where: Record<string, unknown>; select: { messageId: true; rawId: true } }): Promise<Array<{ messageId: string; rawId: string }>> };
   assistantConversationState?: Pick<PrismaClient['assistantConversationState'], 'deleteMany'>;
   assistantSuggestion?: Pick<PrismaClient['assistantSuggestion'], 'deleteMany'>;
+  assistantReplySample?: Pick<PrismaClient['assistantReplySample'], 'deleteMany'>;
   conversation: {
     findMany(args: ConversationFindManyArgs): Promise<ConversationRecord[]>;
     findUnique(args: ConversationFindUniqueArgs): Promise<(Partial<ConversationRecord> & { id: string }) | null>;
@@ -409,6 +418,7 @@ export interface PrismaLike {
     update?(args: Parameters<PrismaClient['message']['update']>[0]): Promise<MessageRecord>;
     create(args: MessageCreateArgs): Promise<MessageRecord>;
     findMany(args: MessageFindManyArgs): Promise<MessageRecord[]>;
+    updateMany(args: Parameters<PrismaClient['message']['updateMany']>[0]): Promise<{ count: number }>;
     deleteMany(args: MessageDeleteManyArgs): Promise<{ count: number }>;
   };
   conversationFollowup: {
@@ -463,7 +473,7 @@ export interface PrismaLike {
   crmSyncAction: {
     create(args: CrmSyncActionCreateArgs): Promise<{ id: string; status: string }>;
   };
-  $transaction(callback: (tx: PrismaLike) => Promise<unknown>): Promise<unknown>;
+  $transaction(callback: (tx: PrismaLike) => Promise<unknown>, options?: { isolationLevel: "ReadCommitted" }): Promise<unknown>;
 }
 
 interface ConversationsServiceOptions {
@@ -534,7 +544,9 @@ export async function withLastMessages(prisma: Pick<PrismaLike, '$queryRaw'>, wo
           metadata->'attachment'->>'mimeType' AS mime_type, left(media_url, 64) AS media_url,
           left(coalesce(nullif(trim(metadata->'groupSender'->>'name'), ''), split_part(metadata->'groupSender'->>'jid', '@', 1)), 120) AS sender_name FROM messages
         WHERE workspace_id = ${workspaceId} AND conversation_id = c.id
-          AND NOT (status = 'pending' AND metadata->>'source' = 'followup_review')
+          AND hidden_by_reset = false
+          AND NOT (status = 'pending' AND coalesce(metadata->>'source', '') = 'followup_review')
+          AND coalesce(metadata->>'campaignDuplicateAudit', '') <> 'true'
         ORDER BY created_at DESC, id DESC LIMIT 1
       ) m`;
     const latest = new Map(rows.map(row => [row.conversation_id, {
@@ -574,6 +586,7 @@ export function toConversationDto(record: ConversationRecord): ConversationDto {
     assignedUserId: record.assignedUserId,
     departmentId: record.departmentId,
     lastMessageAt: record.lastMessageAt ? toIsoString(record.lastMessageAt) : null,
+    historyResetAt: record.historyResetAt ? toIsoString(record.historyResetAt) : null,
     lastMessagePreviewAt: record.lastMessagePreviewAt ? toIsoString(record.lastMessagePreviewAt) : null,
     lastMessagePreview: record.lastMessagePreview,
     unreadCount: record.unreadCount,
@@ -659,6 +672,7 @@ function mapMessageDto(record: MessageRecord, publicTalkUrl?: string): MessageDt
     id: record.id,
     workspaceId: record.workspaceId,
     conversationId: record.conversationId,
+    hiddenByReset: Boolean(record.hiddenByReset),
     providerMessageId: record.providerMessageId ?? null,
     direction: record.direction,
     type: record.type,
@@ -1587,78 +1601,81 @@ export function createConversationsService(
       conversationId: string;
       actorUserId: string | null;
     }): Promise<ConversationActionResultDto> {
-      const existing = await prisma.conversation.findUnique({
-        where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.conversationId } },
-        select: { id: true, contactId: true }
-      });
-
-      if (!existing) {
-        throw new ConversationNotFoundError();
-      }
-
-      await prisma.$transaction(async (tx) => {
-        await stopProspectingConversation(tx, input.workspaceId, input.conversationId, "conversation_reset");
-        await releaseEndedProspectingBinding(tx, input);
-        await tx.conversation.update({
+      const conversation = await prisma.$transaction(async (tx) => {
+        // Canonical writers use the workspace fence before any conversation/reservation locks.
+        if (tx.$queryRaw && tx.$executeRaw) {
+          await enterCanonicalWorkspaceTransaction(tx as unknown as Prisma.TransactionClient, input.workspaceId);
+        }
+        const existing = await tx.conversation.findUnique({
           where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.conversationId } },
-          data: {
-            status: "open",
-            assignedUserId: null,
-            departmentId: null,
-            lastMessageAt: null,
-            lastMessagePreview: null,
-            customerServiceWindowExpiresAt: null,
-            unreadCount: 0,
-            priority: "normal",
-            aiControlStatus: "agent_allowed",
-            aiControlUpdatedAt: new Date(),
-            aiControlUpdatedById: input.actorUserId,
-            activeAgentSessionId: null
+          select: { id: true, contactId: true, retiredIntoConversationId: true, historyResetAt: true }
+        });
+        if (!existing) throw new ConversationNotFoundError();
+        const retired = await tx.conversation.findMany({
+          where: { workspaceId: input.workspaceId, retiredIntoConversationId: input.conversationId },
+          select: { id: true, contactId: true, historyResetAt: true }
+        });
+        const conversationIds = [existing.id, ...retired.map(row => row.id)];
+        const contactIds = [...new Set([existing.contactId!, ...retired.map(row => row.contactId)])];
+        await lockProspectingConversations(tx, conversationIds.map(conversationId => ({ workspaceId: input.workspaceId, conversationId })));
+        for (const conversationId of conversationIds) {
+          const reservation = await findProspectingReservation(tx, input.workspaceId, conversationId);
+          if (reservation && !reservation.confirmedAt) {
+            throw new ConversationActionError("CONVERSATION_RESET_DELIVERY_UNCONFIRMED",
+              "A entrega da campanha ainda não foi confirmada. Verifique o resultado do envio antes de resetar a conversa.");
           }
+        }
+        const scope = { workspaceId: input.workspaceId, conversationId: { in: conversationIds } };
+        // A reset must advance every scoped boundary even if a server clock moved backwards.
+        const previousBoundary = Math.max(0, ...[existing, ...retired].map(row => row.historyResetAt
+          ? new Date(row.historyResetAt).getTime() : 0));
+        const resetAt = new Date(Math.max(Date.now(), previousBoundary + 1));
+        for (const conversationId of conversationIds) {
+          await stopProspectingConversation(tx, input.workspaceId, conversationId, "conversation_reset");
+          await releaseEndedProspectingBinding(tx, { ...input, conversationId });
+          await tx.conversation.update({
+            where: { workspaceId_id: { workspaceId: input.workspaceId, id: conversationId } },
+            data: {
+              historyResetAt: resetAt,
+              ...(conversationId === input.conversationId && !(existing as { retiredIntoConversationId?: string | null }).retiredIntoConversationId
+                ? { status: "open", aiControlStatus: "agent_allowed", hiddenUntilReply: false }
+                : { status: "closed", aiControlStatus: "human_controlled", hiddenUntilReply: true }),
+              assignedUserId: null, departmentId: null,
+              lastMessageAt: null, lastMessagePreviewAt: null, lastMessagePreview: null,
+              waitingDismissedAt: null, customerServiceWindowExpiresAt: null,
+              unreadCount: 0, priority: "normal",
+              aiControlUpdatedAt: resetAt, aiControlUpdatedById: input.actorUserId,
+              activeAgentSessionId: null
+            }
+          });
+        }
+        const hiddenMessages = await tx.message.updateMany({ where: scope, data: { hiddenByReset: true } });
+        await tx.meetingReminder?.updateMany({ where: { ...scope, status: { in: ["scheduled", "processing"] } },
+          data: { status: "cancelled", lockedAt: null, error: "conversation_reset" } });
+        await tx.aiAgentPendingReply.deleteMany({ where: scope });
+        await tx.aiAgentRun.deleteMany({ where: scope });
+        await tx.aiActionLog.deleteMany({ where: scope });
+        await tx.assistantConversationState?.deleteMany({ where: scope });
+        await tx.assistantSuggestion?.deleteMany({ where: scope });
+        await tx.assistantReplySample?.deleteMany({ where: scope });
+        await tx.aiAgentImprovement?.deleteMany({ where: scope });
+        await tx.conversationFollowup.deleteMany({ where: scope });
+        await tx.conversationInboxTriage?.deleteMany({ where: scope });
+        await tx.conversationTag.deleteMany({ where: scope });
+        await tx.contactNote.deleteMany({ where: { workspaceId: input.workspaceId, contactId: { in: contactIds } } });
+        await tx.aiAgentSession.deleteMany({ where: scope });
+        await tx.auditLog.create({ data: {
+          workspaceId: input.workspaceId, actorUserId: input.actorUserId,
+          action: "conversation.demo_reset", targetType: "conversation", targetId: input.conversationId,
+          metadata: { historyResetAt: resetAt.toISOString(), conversationIds, contactIds, hiddenMessageCount: hiddenMessages.count }
+        } });
+        return tx.conversation.findUnique({
+          where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.conversationId } },
+          include: conversationDtoInclude
         });
-        await tx.aiAgentPendingReply.deleteMany({
-          where: { workspaceId: input.workspaceId, conversationId: input.conversationId }
-        });
-        await tx.aiAgentRun.deleteMany({
-          where: { workspaceId: input.workspaceId, conversationId: input.conversationId }
-        });
-        await tx.aiActionLog.deleteMany({
-          where: { workspaceId: input.workspaceId, conversationId: input.conversationId }
-        });
-        await tx.assistantConversationState?.deleteMany({ where: { workspaceId: input.workspaceId, conversationId: input.conversationId } });
-        await tx.assistantSuggestion?.deleteMany({ where: { workspaceId: input.workspaceId, conversationId: input.conversationId } });
-        await tx.conversationFollowup.deleteMany({
-          where: { workspaceId: input.workspaceId, conversationId: input.conversationId }
-        });
-        await tx.message.deleteMany({
-          where: { workspaceId: input.workspaceId, conversationId: input.conversationId }
-        });
-        await tx.conversationTag.deleteMany({
-          where: { workspaceId: input.workspaceId, conversationId: input.conversationId }
-        });
-        await tx.contactNote.deleteMany({
-          where: { workspaceId: input.workspaceId, contactId: existing.contactId }
-        });
-        await tx.aiAgentSession.deleteMany({
-          where: { workspaceId: input.workspaceId, conversationId: input.conversationId }
-        });
-        await tx.auditLog.create({
-          data: {
-            workspaceId: input.workspaceId,
-            actorUserId: input.actorUserId,
-            action: "conversation.demo_reset",
-            targetType: "conversation",
-            targetId: input.conversationId,
-            metadata: {}
-          }
-        });
-      });
-
-      const conversation = await findConversation(input);
-      return {
-        conversation: toConversationDto(conversation),
-        context: await buildContactContext(conversation)
-      };
+      }, { isolationLevel: "ReadCommitted" }) as ConversationRecord | null;
+      assertConversationRecord(conversation);
+      return { conversation: { ...toConversationDto(conversation), lastMessage: null }, context: await buildContactContext(conversation) };
     },
 
     async listMessages(input: {
