@@ -9,6 +9,8 @@ import { lockProspectingConversation } from "../prospecting/prospecting-lock.js"
 import { findProspectingOutboundEcho } from "../prospecting/prospecting-delivery.js";
 import { observeProspectingInbound } from "../prospecting/prospecting-lifecycle.js";
 import type { FastifyPluginAsync } from "fastify";
+import { normalizeChatAddress } from '../messaging/whatsapp-identity.js';
+import type { EvolutionRuntime } from './evolution-runtime.js';
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { ChannelDto } from "@prymeira-talk/shared";
 import { z } from "zod";
@@ -44,6 +46,7 @@ import type { EvolutionHistorySource } from "./evolution-history.js";
 import { decryptEncryptedMessageEdit, extractEncryptedMessageEdit, isEncryptedControlEnvelope } from "./evolution-message-edit.js";
 
 export interface EvolutionRoutesOptions {
+  physicalEvolution?: EvolutionRuntime;
   waha?: WahaRuntime;
   /** Durable private copy of attachments, filled best-effort right after the message is saved. */
   durableMedia?: Pick<import('../conversations/message-media.js').MessageMediaService, 'prepare'>;
@@ -159,8 +162,10 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
   app,
   options
 ) => {
-  const describeChannel = (channel: Channel) => app.prisma.channelConnection
-    ? createChannelConnectionsService(app.prisma, { waha: options.waha }).describe(channel)
+  const channelConnections = app.prisma?.channelConnection
+    ? createChannelConnectionsService(app.prisma, { waha: options.waha, evolution: options.physicalEvolution }) : null;
+  const describeChannel = (channel: Channel) => channelConnections
+    ? channelConnections.reconcile({ workspaceId: channel.workspaceId, channelId: channel.id })
     : Promise.resolve(toChannelDto(channel));
   const automationRunner = createAutomationRunner({
     prisma: app.prisma as unknown as AutomationRunnerPrisma,
@@ -188,6 +193,21 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
     if (options.delegatedWorkspaces === '*' || options.delegatedWorkspaces?.has(workspaceId)) {
       request.log.warn({ event: 'evolution_webhook_delegated_to_ingress', workspaceId }, 'Legacy Evolution webhook refused: this workspace is served by the ingress.');
       return reply.code(409).send({ ok: false, error: 'delegated_to_ingress' });
+    }
+
+    if (!['connection.update', 'qrcode.updated', 'messages.edited', 'messages.upsert', 'messages.update', 'send.message'].includes(normalizedEvent)) return { ok: true, ignored: true };
+
+    // The provider namespace is global, including legacy webhook entry points.
+    const owners = await app.prisma.channel.findMany({ where: { providerKey: envelope.data.instance }, take: 2 });
+    if (!owners.length) return reply.code(404).send({ ok: false, error: 'channel_not_found' });
+    if (owners.length !== 1 || owners[0]!.workspaceId !== workspaceId) return reply.code(409).send({ ok: false, error: 'physical_source_ambiguous' });
+    const sourceChannel = owners[0]!;
+    if (app.prisma.channelConnection) {
+      const physicalOwners = await app.prisma.channelConnection.findMany({ where: { provider: 'evolution', sessionName: envelope.data.instance } });
+      if (physicalOwners.some(owner => owner.workspaceId !== workspaceId || owner.channelId !== sourceChannel.id)) return reply.code(409).send({ ok: false, error: 'physical_source_ambiguous' });
+      const primary = physicalOwners.find(owner => owner.provider === 'evolution');
+      if (!['connection.update', 'qrcode.updated'].includes(normalizedEvent) && sourceChannel.verifiedMessagingPhoneNumber &&
+        primary?.verifiedPhoneNumber !== sourceChannel.verifiedMessagingPhoneNumber) return reply.code(409).send({ ok: false, error: 'source_identity_mismatch' });
     }
 
     const editData = envelope.data.data;
@@ -267,6 +287,7 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
       }
 
       const state = body.data.data?.state ?? body.data.data?.status;
+      const status = mapConnectionState(state);
       const channel = await app.prisma.channel.update({
         where: {
           workspaceId_provider_providerKey: {
@@ -275,7 +296,7 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
             providerKey: body.data.instance
           }
         },
-        data: { status: mapConnectionState(state) }
+        data: channelConnections ? {} : { status }
       }).catch((error: unknown) => {
         if (isPrismaKnownRequestErrorCode(error, "P2025")) {
           return null;
@@ -288,11 +309,14 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
         return reply.code(404).send({ ok: false, error: "channel_not_found" });
       }
 
-      if (app.prisma.channelConnection) await app.prisma.channelConnection.upsert({
+      if (app.prisma.channelConnection) {
+        const physical = await app.prisma.channelConnection.upsert({
         where: { workspaceId_channelId_provider: { workspaceId, channelId: channel.id, provider: 'evolution' } },
-        create: { workspaceId, channelId: channel.id, provider: 'evolution', sessionName: channel.providerKey, status: channel.status, eligible: channel.status === 'connected' },
-        update: { status: channel.status, eligible: channel.status === 'connected', ...(channel.status === 'connected' ? { connectedAt: new Date() } : { health: 'unknown' as const }) }
+        create: { workspaceId, channelId: channel.id, provider: 'evolution', sessionName: channel.providerKey, status, eligible: status === 'connected' && !channel.verifiedMessagingPhoneNumber && !options.physicalEvolution },
+        update: { status, eligible: status === 'connected' && !channel.verifiedMessagingPhoneNumber && !options.physicalEvolution, ...(status === 'connected' ? { connectedAt: new Date() } : { health: 'unknown' as const }) }
       });
+        if (status === 'connected' && channelConnections && options.physicalEvolution) await channelConnections.refresh({ workspaceId, channelId: channel.id, connectionId: physical.id });
+      }
 
       app.realtime.publish({
         type: "channel.updated",
@@ -322,7 +346,7 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
             providerKey: body.data.instance
           }
         },
-        data: { status: "connecting" }
+        data: channelConnections ? {} : { status: "connecting" }
       }).catch((error: unknown) => {
         if (isPrismaKnownRequestErrorCode(error, "P2025")) {
           return null;
@@ -754,7 +778,7 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
         const client = options.evolutionClient;
         const providerId = payload.data.key.id;
         await options.durableMedia.prepare({ workspaceId, messageId: message.id,
-          fetchers: client?.fetchMedia ? [{ name: 'evolution', fetch: async () => ({ mediaUrl: await client.fetchMedia!({ instanceName: payload.instance, id: providerId }) }) }] : [] })
+          fetchers: client?.fetchMedia ? [{ name: 'evolution', fetch: async () => ({ mediaUrl: await client.fetchMedia!({ workspaceId, channelId: sourceChannel.id, instanceName: payload.instance, id: providerId, key: { identityFormat: 'whatsapp_stanza', nativeId: providerId, nativeChatAddress: payload.data.key.remoteJid, nativeSenderParticipant: payload.data.key.participant ?? '', rawId: providerId, chatAddress: normalizeChatAddress(payload.data.key.remoteJid), direction: payload.data.key.fromMe ? 'outbound' : 'inbound', senderParticipant: isGroup ? normalizeChatAddress(payload.data.key.participant) : '' } }) }) }] : [] })
           .catch((error: unknown) => { request.log.warn({ err: error, messageId: message.id }, 'Durable media preparation failed.'); });
       }
 

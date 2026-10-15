@@ -112,7 +112,7 @@ describe.skipIf(!url)('permanent conversation reset with real PostgreSQL ledger 
       await tx.conversationFollowup.deleteMany({ where });
       // The former reset still failed after removing operational FK dependencies.
       await tx.message.deleteMany({ where });
-    })).rejects.toMatchObject({ code: 'P2003', meta: { constraint: 'ingress_progress_message_fkey' } });
+    })).rejects.toMatchObject({ code: 'P2003', meta: { constraint: expect.stringMatching(/^(ingress_progress_message_fkey|outbound_intents_workspace_id_conversation_id_message_id_fkey)$/) } });
     const response = await resetRoute(f);
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({ conversation: { id: f.conversation.id, contactId: f.contact.id, channelId: f.channel.id, lastMessage: null, lastMessageAt: null, lastMessagePreviewAt: null, lastMessagePreview: null, unreadCount: 0, activeAgentSessionStatus: null, status: 'open', aiControlStatus: 'agent_allowed', hiddenUntilReply: false }, context: { notes: [], tags: [] } });

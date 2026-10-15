@@ -251,3 +251,29 @@ describe("automation webhook routes", () => {
     }
   });
 });
+
+
+it('still acknowledges a durably queued form if the immediate in-memory wakeup is lost', async () => {
+  const service = createService(), app = Fastify({ logger: false });
+  await app.register(automationWebhookRoutes, { service: service as unknown as AutomationWebhookService, schedule: () => { throw Error('synthetic process wakeup lost'); } });
+  try {
+    expect((await app.inject({ method: 'POST', url: `/webhooks/automations/${token}`, payload: { whatsapp: '47999991234' } })).statusCode).toBe(202);
+    expect(service.claimSubmission).toHaveBeenCalledTimes(1);
+  } finally { await app.close(); }
+});
+
+it('starts recovery from persisted submissions when the API process starts', async () => {
+  const processDueSubmissions = vi.fn(async () => ({ processed: 0 }));
+  const { app } = await buildRoutesApp(createService({ processDueSubmissions }));
+  try { await app.ready(); expect(processDueSubmissions).toHaveBeenCalledOnce(); }
+  finally { await app.close(); }
+});
+
+it('does not accept a submission when its durable claim cannot commit', async () => {
+  const service = createService({ claimSubmission: vi.fn().mockRejectedValue(Error('synthetic database unavailable')) });
+  const { app, tasks } = await buildRoutesApp(service);
+  try {
+    expect((await app.inject({ method: 'POST', url: `/webhooks/automations/${token}`, payload: { whatsapp: '47999991234' } })).statusCode).toBe(500);
+    expect(tasks).toHaveLength(0);
+  } finally { await app.close(); }
+});

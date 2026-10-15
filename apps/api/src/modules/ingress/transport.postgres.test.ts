@@ -31,7 +31,7 @@ describe.skipIf(!databaseUrl || !brokerUrl)('isolated ingress PostgreSQL + actua
   const apps: ReturnType<typeof createIngressHttp>[] = [];
   const children: ChildProcess[] = [];
   beforeAll(async () => {
-    readIngressEnvironment({ INGRESS_TRANSPORT_STAGE: 'isolated-1a', DATABASE_URL: databaseUrl, INGRESS_AMQP_URL: brokerUrl,
+    readIngressEnvironment({ TALK_TEST_POSTGRES_PORT: process.env.TALK_TEST_POSTGRES_PORT, TALK_TEST_AMQP_PORT: process.env.TALK_TEST_AMQP_PORT, INGRESS_TRANSPORT_STAGE: 'isolated-1a', DATABASE_URL: databaseUrl, INGRESS_AMQP_URL: brokerUrl,
       INGRESS_NAMESPACE: 'talk.isolated.test', INGRESS_WORKSPACE_ALLOWLIST: 'fixture', INGRESS_PRIVATE_ROOT: '/private/tmp/unused' });
     db = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
     root = await mkdtemp('/private/tmp/talk-ingress-'); files = new IngressPrivateStore(root); await files.initialize();
@@ -387,7 +387,7 @@ describe.skipIf(!databaseUrl || !brokerUrl)('isolated ingress PostgreSQL + actua
   it('replaces the actual runtime publisher after silence and bounds shutdown with both sessions silent', async () => {
     const f = await fixture(), response = await f.submit(), id = response.json().receiptId;
     const startedConsumers = vi.spyOn(IngressTransportConsumer, 'start');
-    const config = readIngressEnvironment({ INGRESS_TRANSPORT_STAGE: 'isolated-1a', DATABASE_URL: databaseUrl, INGRESS_AMQP_URL: brokerUrl,
+    const config = readIngressEnvironment({ TALK_TEST_POSTGRES_PORT: process.env.TALK_TEST_POSTGRES_PORT, TALK_TEST_AMQP_PORT: process.env.TALK_TEST_AMQP_PORT, INGRESS_TRANSPORT_STAGE: 'isolated-1a', DATABASE_URL: databaseUrl, INGRESS_AMQP_URL: brokerUrl,
       INGRESS_NAMESPACE: f.namespace, INGRESS_PRIVATE_ROOT: root, INGRESS_WORKSPACE_ALLOWLIST: f.workspaceId });
     const runtime = await createIngressRuntime(config, true);
     try {

@@ -6,7 +6,7 @@ import type { WahaMessage } from '../waha/waha.client.js';
 import { importChatCanonical } from './channel-history-canonical.js';
 import { normalizeChatAddress } from '../messaging/whatsapp-identity.js';
 import { rolloutDiagnostics } from './rollout-diagnostics.js';
-import { pairedConnections, compareProviderHistories, importConnectionHistory, recoverConnectionGap, wahaChatAddress, wahaHistorySweep, type ProviderHistoryDeps } from './provider-history.js';
+import { pairedConnections, recoverGapsSweep, compareProviderHistories, importConnectionHistory, recoverConnectionGap, wahaChatAddress, wahaHistorySweep, type ProviderHistoryDeps } from './provider-history.js';
 
 const databaseUrl = process.env.MESSAGING_TEST_DATABASE_URL;
 const PHONE = '5547999990003', PN = `${PHONE}@s.whatsapp.net`, CUS = `${PHONE}@c.us`, LID = '323456789012345@lid';
@@ -17,12 +17,13 @@ describe.skipIf(!databaseUrl)('provider history and gap recovery on PostgreSQL',
   const workspaces: string[] = [];
   beforeAll(() => {
     const target = new URL(databaseUrl!);
-    if (target.hostname !== '127.0.0.1' || target.port !== '55439' || target.pathname !== '/messaging_test') throw new Error('Only the owned local messaging_test database is permitted');
+    if (target.hostname !== '127.0.0.1' || target.port !== (process.env.TALK_TEST_POSTGRES_PORT ?? '55439') || target.pathname !== '/messaging_test') throw new Error('Only the owned local messaging_test database is permitted');
     db = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
   });
   afterAll(async () => {
     if (!db) return;
     const where = { workspaceId: { in: workspaces } };
+    await db.ingressEffect.deleteMany({ where });
     await db.canonicalChatAuthorityResolution.deleteMany({ where });
     await db.canonicalAction.deleteMany({ where }); await db.canonicalRecipientReceipt.deleteMany({ where });
     await db.canonicalAddressEvidence.deleteMany({ where }); await db.canonicalObservation.deleteMany({ where });
@@ -45,9 +46,11 @@ describe.skipIf(!databaseUrl)('provider history and gap recovery on PostgreSQL',
   const wa = (id: string, text: string, atMs: number, chat = CUS, fromMe = false): WahaMessage => ({ id: `${fromMe}_${chat}_${id}`, from: fromMe ? undefined : chat, to: fromMe ? chat : undefined, fromMe, body: text, timestamp: Math.floor(atMs / 1000) });
   const deps = (input: { evolution?: HistoryRecord[]; waha?: Record<string, WahaMessage[]>; wahaChats?: Array<Record<string, unknown>> }): ProviderHistoryDeps => ({
     evolution: { recentChats: vi.fn(async () => ({ chats: [{ remoteJid: PN, phoneJid: PN, pushName: 'Bia', profilePicUrl: null }], unresolvedLids: 0 })),
-      recentMessages: vi.fn(async () => input.evolution ?? []) },
+      recentMessages: vi.fn(async () => input.evolution ?? []),
+      recoveryChats: vi.fn(async () => ({ chats: [{ remoteJid: PN, phoneJid: PN, pushName: 'Bia', profilePicUrl: null }], unresolvedLids: 0 })),
+      recoveryMessages: vi.fn(async () => input.evolution ?? []) },
     waha: { getChats: vi.fn(async ({ offset }: { offset: number }) => offset ? [] : (input.wahaChats ?? Object.keys(input.waha ?? {}).map(id => ({ id, name: 'Bia (WAHA)', timestamp: Math.floor(NOW / 1000) })))),
-      getMessages: vi.fn(async ({ chatId }: { chatId: string }) => input.waha?.[chatId] ?? []) }
+      getMessages: vi.fn(async ({ chatId, offset = 0, limit = 100 }: { chatId: string; offset?: number; limit?: number }) => (input.waha?.[chatId] ?? []).slice(offset, offset + limit)) }
   } as unknown as ProviderHistoryDeps);
 
   it('keeps healthy same-number WAHA recoverable when Evolution is disconnected, but not during its new pairing', async () => {
@@ -55,7 +58,7 @@ describe.skipIf(!databaseUrl)('provider history and gap recovery on PostgreSQL',
     await db.channelConnection.update({ where: { id: f.evolution.id }, data: { status: 'disconnected', eligible: false } });
     expect((await pairedConnections(db, { workspaceIds: [f.workspaceId] })).map(c => c.id)).toEqual([f.waha.id]);
     await db.channelConnection.update({ where: { id: f.evolution.id }, data: { lifecycleGeneration: 1 } });
-    expect(await pairedConnections(db, { workspaceIds: [f.workspaceId] })).toEqual([]);
+    expect((await pairedConnections(db, { workspaceIds: [f.workspaceId] })).map(c => c.id)).toEqual([f.waha.id]);
     await db.channelConnection.update({ where: { id: f.evolution.id }, data: { lifecycleGeneration: 2, verifiedPhoneNumber: '5511999990000' } });
     expect(await pairedConnections(db, { workspaceIds: [f.workspaceId] })).toEqual([]);
   });
@@ -111,6 +114,18 @@ describe.skipIf(!databaseUrl)('provider history and gap recovery on PostgreSQL',
     expect(await recoverConnectionGap(db, sources, connection, { now: NOW })).toMatchObject({ advanced: false });
   });
 
+  it('imports a fresh WAHA-only channel despite pending Evolution history, then enables deferred gap recovery', async () => {
+    const f = await fixture();
+    await db.channelConnection.delete({ where: { id: f.evolution.id } });
+    await db.channel.update({ where: { id: f.channel.id }, data: { verifiedMessagingPhoneNumber: f.waha.verifiedPhoneNumber, historyImportStatus: 'pending' } });
+    const source = { ...deps({ waha: { [CUS]: [wa('WA-ONLY', 'synthetic fixture', NOW - 60_000)] } }), evolution: null };
+    expect(await recoverGapsSweep(db, source, { workspaceIds: [f.workspaceId], deferWahaUntilImported: true })).toEqual({ recovered: 0 });
+    expect(await wahaHistorySweep(db, source, { workspaceIds: [f.workspaceId] })).toEqual({ imported: 1 });
+    expect(await db.channelConnection.findUniqueOrThrow({ where: { id: f.waha.id } })).toMatchObject({ historyImportedAt: expect.any(Date) });
+    expect(await db.message.count({ where: { workspaceId: f.workspaceId } })).toBe(1);
+    await recoverGapsSweep(db, source, { workspaceIds: [f.workspaceId], deferWahaUntilImported: true });
+    expect((await db.channelConnection.findUniqueOrThrow({ where: { id: f.waha.id } })).recoveredThroughAt).toBeInstanceOf(Date);
+  });
   it('compares both providers by exact message id without writing anything', async () => {
     const f = await fixture();
     const sources = deps({ evolution: [evo('A', 'a', NOW - 9_000), evo('B', 'b', NOW - 8_000)], waha: { [CUS]: [wa('A', 'a', NOW - 9_000), wa('C', 'c', NOW - 7_000)] } });

@@ -1,6 +1,9 @@
 import { enterCanonicalWorkspaceTransaction } from "../messaging/canonical-boundary.js";
+import { lockProspectingConversation } from '../prospecting/prospecting-lock.js';
 import { markProspectingFollowupObserved } from "../prospecting/prospecting-followup-observation.js";
-import { ownsAgentReplyClaim, type AgentReplyClaim } from "./agent-reply-claim.js";
+import { ownsAgentReplyClaim, type AgentReplyClaim, type RecoveredReplyFailureHandoff } from "./agent-reply-claim.js";
+import { AgentGenerationFailure, AgentProviderUnavailable } from './agent-generation-failure.js';
+import { canonicalEvolutionMediaKey } from '../messaging/canonical-media-source.js';
 import { observeProspectingAudioRefusal, isLiveProspectingAudio } from "../prospecting/prospecting-lifecycle.js";
 import { isExplicitProspectingRefusal } from "../prospecting/prospecting-refusal.js";
 import { reserveProspectingOutbound, dispatchProspectingOutbound } from "../prospecting/prospecting-delivery.js";
@@ -104,6 +107,7 @@ type ConversationRecord = {
   channelId?: string | null;
   aiControlStatus: string;
   activeAgentSessionId?: string | null;
+  activeAgentSession?: { id: string; agentId: string; status: string; handoffReason?: string | null } | null;
   historyResetAt?: Date | string | null;
   contact?: {
     id?: string;
@@ -216,6 +220,8 @@ export type AgentRuntimeResult = {
   runId?: string;
   sessionId?: string;
   message?: string;
+  /** Set only for a model generation failure before all actions/dispatch. */
+  retryable?: boolean;
 };
 
 type AgentRuntimeEvolution = {
@@ -271,6 +277,8 @@ const agentInclude = {
 export function createAgentRuntime(input: {
   prisma: AgentRuntimePrismaLike;
   provider: AgentProvider;
+  /** Production disables a fallback when workspace AI configuration is unavailable. */
+  allowFallbackProvider?: boolean;
   providerFactory?: (settings: Extract<OpenAiCompatibleSettings, { active: true }>) => AgentProvider;
   mediaResolver?: typeof resolveAgentMedia;
   mediaPreparer?: typeof prepareInboundMedia;
@@ -315,6 +323,52 @@ export function createAgentRuntime(input: {
       if (!await currentAnchor(db, message, epoch)) throw new ConversationResetError();
       return work(db);
     }, { isolationLevel: "ReadCommitted" });
+  }
+
+  async function ownsActivation(db: AgentRuntimePrismaLike, expected: ConversationRecord, agentId: string,
+    replyClaim?: AgentReplyClaim, expectedSessionId?: string | null, expectedGeneration?: string) {
+    // The workspace fence orders canonical writers; the row lock also orders
+    // human takeover, which uses the conversation lock outside that fence.
+    await lockProspectingConversation(db, expected.workspaceId, expected.id);
+    const current = await db.conversation.findUnique({ where: { workspaceId_id: {
+      workspaceId: expected.workspaceId, id: expected.id } }, include: { channel: true, activeAgentSession: true } });
+    return Boolean(current && current.aiControlStatus === expected.aiControlStatus &&
+      (current.activeAgentSessionId ?? null) === (expected.activeAgentSessionId ?? null) &&
+      await autonomousAgentAllowed(db, { workspaceId: expected.workspaceId, conversationId: expected.id, agentId,
+        sessionId: expectedSessionId, expectedGeneration, channelConfig: current.channel?.encryptedConfig,
+        aiControlStatus: current.aiControlStatus }) &&
+      (expectedSessionId === undefined || ((current.activeAgentSessionId ?? null) === expectedSessionId &&
+        (!expectedSessionId || (current.activeAgentSession?.id === expectedSessionId && current.activeAgentSession.status === 'active')))) &&
+      await ownsAgentReplyClaim(db, expected.workspaceId, replyClaim));
+  }
+
+  async function handoffForReplyFailure(failure: {
+    workspaceId: string; conversationId: string; agentId: string; messageId: string;
+    sessionId?: string | null; replyClaim?: AgentReplyClaim; reason: string;
+  }) {
+    const message = await prisma.message.findFirst({ where: { workspaceId: failure.workspaceId,
+      conversationId: failure.conversationId, id: failure.messageId, hiddenByReset: false } });
+    const conversation = await prisma.conversation.findUnique({ where: { workspaceId_id: {
+      workspaceId: failure.workspaceId, id: failure.conversationId } } });
+    if (!message || message.hiddenByReset || !conversation ||
+      (failure.sessionId && conversation.activeAgentSessionId !== failure.sessionId)) return;
+    const changed = await resetFence(message, resetEpoch(conversation), async db => {
+      if (!await ownsAgentReplyClaim(db, failure.workspaceId, failure.replyClaim)) return false;
+      const current = await db.conversation.findUnique({ where: { workspaceId_id: {
+        workspaceId: failure.workspaceId, id: failure.conversationId } } });
+      if (!current || (failure.sessionId && current.activeAgentSessionId !== failure.sessionId)) return false;
+      await db.conversation.update({ where: { workspaceId_id: { workspaceId: failure.workspaceId, id: failure.conversationId } },
+        data: { aiControlStatus: 'human_controlled', aiControlUpdatedAt: new Date(), aiControlUpdatedById: null } });
+      await stopProspectingConversation(db, failure.workspaceId, failure.conversationId, failure.reason);
+      if (current.activeAgentSessionId) await db.aiAgentSession.update({ where: { workspaceId_id: {
+        workspaceId: failure.workspaceId, id: current.activeAgentSessionId } },
+        data: { status: 'handoff_requested', handoffReason: failure.reason, handoffActionCompletedAt: null } });
+      return true;
+    });
+    if (changed) {
+      await publishConversationUpdated(failure.workspaceId, failure.conversationId);
+      input.handoffBriefService?.schedule({ workspaceId: failure.workspaceId, conversationId: failure.conversationId });
+    }
   }
 
 
@@ -481,6 +535,22 @@ export function createAgentRuntime(input: {
   }
 
   return {
+    async notifyReplyFailureHandoff(failure: RecoveredReplyFailureHandoff) {
+      // Recovery already committed the state change under its expired-claim lock.
+      // This callback only notifies, and ignores a newer session or a reset.
+      const current = await prisma.conversation.findUnique({ where: { workspaceId_id: {
+        workspaceId: failure.workspaceId, id: failure.conversationId } }, include: { activeAgentSession: true } }) as
+        (ConversationRecord & { activeAgentSession?: { id: string; agentId: string; status: string; handoffReason?: string | null } | null }) | null;
+      const anchor = await prisma.message.findFirst({ where: { workspaceId: failure.workspaceId,
+        conversationId: failure.conversationId, id: failure.messageId, hiddenByReset: false } });
+      if (!anchor || anchor.hiddenByReset || current?.aiControlStatus !== 'human_controlled' ||
+          current.activeAgentSessionId !== failure.sessionId || current.activeAgentSession?.id !== failure.sessionId ||
+          current.activeAgentSession.agentId !== failure.agentId || current.activeAgentSession.status !== 'handoff_requested' ||
+          current.activeAgentSession.handoffReason !== failure.reason) return;
+      await publishConversationUpdated(failure.workspaceId, failure.conversationId);
+      input.handoffBriefService?.schedule({ workspaceId: failure.workspaceId, conversationId: failure.conversationId });
+    },
+    handoffForReplyFailure,
     async prepareAudioMessage(prepareInput: { workspaceId: string; messageId: string }) {
       const message = await prisma.message.findFirst({
         where: {
@@ -572,7 +642,9 @@ export function createAgentRuntime(input: {
         });
 
         if (!freshness.ok) {
-          await resetFence(message, epoch, db => db.conversation.update({
+          const rejected = await resetFence(message, epoch, async db => {
+            if (!await ownsActivation(db, conversation, activeAgent.id)) return false;
+            await db.conversation.update({
             where: {
               workspaceId_id: {
                 workspaceId: runInput.workspaceId,
@@ -583,7 +655,10 @@ export function createAgentRuntime(input: {
               aiControlStatus: "human_controlled",
               activeAgentSessionId: null
             }
-          })).catch(error => { if (error instanceof ConversationResetError) return null; throw error; });
+            });
+            return true;
+          }).catch(error => { if (error instanceof ConversationResetError) return false; throw error; });
+          if (!rejected) return { status: 'skipped', message: 'Agent activation was superseded.' };
           if (!await currentAnchor(prisma, message, epoch)) return { status: "skipped", message: "Conversation history was reset." };
           if (message.direction === "inbound") {
             await input.inboxTriage?.observeMessage({
@@ -606,6 +681,7 @@ export function createAgentRuntime(input: {
         ? { instruction: runInput.instruction.trim() }
         : {};
       const session = await resetFence(message, epoch, async db => {
+        if (!await ownsActivation(db, conversation, activeAgent.id)) return null;
         const session = await db.aiAgentSession.upsert({
           where: {
             workspaceId_agentId_conversationId: {
@@ -642,7 +718,7 @@ export function createAgentRuntime(input: {
 
         return session;
       }).catch(error => { if (error instanceof ConversationResetError) return null; throw error; });
-      if (!session) return { status: "skipped", message: "Conversation history was reset." };
+      if (!session) return { status: "skipped", message: "Agent activation was superseded or conversation history was reset." };
 
       return {
         status: "completed",
@@ -660,6 +736,7 @@ export function createAgentRuntime(input: {
       instruction?: string | null;
       prospectingGeneration?: string | null;
       replyClaim?: AgentReplyClaim;
+      sessionId?: string | null;
     }): Promise<AgentRuntimeResult> {
       if (!await ownsAgentReplyClaim(prisma, runInput.workspaceId, runInput.replyClaim)) return { status: "skipped", message: "Agent reply queue ownership changed." };
       const [activeAgent, conversation, message] = await Promise.all([
@@ -821,6 +898,7 @@ export function createAgentRuntime(input: {
       let deferredProspectingHandoff: string | null = null;
 
       const session = await resetFence(message, epoch, async db => {
+        if (!await ownsActivation(db, conversation, agent.id, runInput.replyClaim, runInput.sessionId, prospectingGeneration)) return null;
         const session = await db.aiAgentSession.upsert({
           where: {
             workspaceId_agentId_conversationId: {
@@ -857,7 +935,7 @@ export function createAgentRuntime(input: {
 
         return session;
       }).catch(error => { if (error instanceof ConversationResetError) return null; throw error; });
-      if (!session) return { status: "skipped", message: "Conversation history was reset." };
+      if (!session) return { status: "skipped", message: "Agent reply session changed or conversation history was reset." };
       try {
 
         const recentMessages = await prisma.message.findMany({
@@ -969,6 +1047,8 @@ export function createAgentRuntime(input: {
         const providerSettings = await resolveOpenAiCompatibleSettings(prisma, {
           workspaceId: runInput.workspaceId
         });
+        if (!providerSettings.active && (input.allowFallbackProvider === false ||
+          (input.evolution?.mode === 'real' && provider.mode === 'simulated'))) throw new AgentProviderUnavailable();
         if (prospecting) {
           // A newer text anchor must not hide an opt-out in an earlier audio in
           // the same burst, including audio received while dispatch was pending.
@@ -989,8 +1069,14 @@ export function createAgentRuntime(input: {
           } catch (error) {
             const fetchMedia = input.evolution?.mode === "real" ? input.evolution.client?.fetchMedia : undefined;
             const instanceName = conversation.channel?.provider === "evolution" ? conversation.channel.providerKey : null;
-            if (!fetchMedia || !instanceName || !entry.providerMessageId) throw error;
-            const mediaUrl = await fetchMedia({ instanceName, id: entry.providerMessageId });
+            if (!fetchMedia || !instanceName) throw error;
+            const key = await canonicalEvolutionMediaKey(prisma as Parameters<typeof canonicalEvolutionMediaKey>[0], {
+              workspaceId: runInput.workspaceId, messageId: entry.id,
+              channelId: conversation.channelId ?? conversation.channel?.id, instanceName });
+            const id = key?.nativeId ?? entry.providerMessageId;
+            if (!id) throw error;
+            const mediaUrl = await fetchMedia({ instanceName, id, ...(key ? { key } : {}),
+              workspaceId: runInput.workspaceId, channelId: conversation.channelId ?? conversation.channel?.id });
             return await mediaResolver({ ...args, mediaUrl });
           }
         };
@@ -1374,7 +1460,7 @@ export function createAgentRuntime(input: {
                 : {}),
               ...(meetingScheduling ? { meetingScheduling } : {})
             }
-          });
+          }).catch(error => { throw new AgentGenerationFailure(error); });
           providerOutput = await generateReply();
           const repeatedQuestion = prospecting && providerOutput.reply
             ? findRepeatedQuestion(providerOutput.reply, conversationContext.messages
@@ -1485,7 +1571,7 @@ export function createAgentRuntime(input: {
         const confidenceThreshold = readConfidenceThreshold(agent.handoffConfig);
         const beforeActions = await prisma.conversation.findUnique({ where: { workspaceId_id: { workspaceId: runInput.workspaceId, id: conversation.id } }, include: { channel: true } });
         if (!await ownsAgentReplyClaim(prisma, runInput.workspaceId, runInput.replyClaim)) return { status: "skipped", message: "Agent reply queue ownership changed." };
-        if (!beforeActions || !await autonomousAgentAllowed(prisma, { workspaceId: runInput.workspaceId, conversationId: conversation.id, agentId: agent.id, sessionId: session.id, expectedGeneration: prospectingGeneration, channelConfig: beforeActions.channel?.encryptedConfig, aiControlStatus: beforeActions.aiControlStatus })) return { status: 'skipped', message: 'Human review is required.' };
+        if (!beforeActions || (runInput.sessionId && beforeActions.activeAgentSessionId !== session.id) || !await autonomousAgentAllowed(prisma, { workspaceId: runInput.workspaceId, conversationId: conversation.id, agentId: agent.id, sessionId: session.id, expectedGeneration: prospectingGeneration, channelConfig: beforeActions.channel?.encryptedConfig, aiControlStatus: beforeActions.aiControlStatus })) return { status: 'skipped', message: 'Human review is required.' };
         // Booking is an external side effect, so it runs only after the autonomy checks above.
         let meetingResult: AgentToolExecutionResult | null = null;
         if (providerOutput.actions.some((action) => action.type === "schedule_meeting")) {
@@ -1584,7 +1670,7 @@ export function createAgentRuntime(input: {
         if (outboundReply && allowedActions.includes("send_message") && (!prospecting || !handoffReason || prospectingHandoffReply)) {
           const beforeSend = await prisma.conversation.findUnique({ where: { workspaceId_id: { workspaceId: runInput.workspaceId, id: conversation.id } }, include: { channel: true } });
           if (!await ownsAgentReplyClaim(prisma, runInput.workspaceId, runInput.replyClaim)) return { status: "skipped", message: "Agent reply queue ownership changed." };
-          if (!beforeSend || (prospecting ? !await autonomousAgentAllowed(prisma, { workspaceId: runInput.workspaceId, conversationId: conversation.id, agentId: agent.id, sessionId: session.id, expectedGeneration: prospectingGeneration }) : blocksAutonomousAgent(beforeSend.channel?.encryptedConfig) || (beforeSend.aiControlStatus === 'human_controlled' && !handoffReason))) return { status: 'skipped', message: 'Human review is required.' };
+          if (!beforeSend || (runInput.sessionId && beforeSend.activeAgentSessionId !== session.id) || (prospecting ? !await autonomousAgentAllowed(prisma, { workspaceId: runInput.workspaceId, conversationId: conversation.id, agentId: agent.id, sessionId: session.id, expectedGeneration: prospectingGeneration }) : blocksAutonomousAgent(beforeSend.channel?.encryptedConfig) || (beforeSend.aiControlStatus === 'human_controlled' && !handoffReason))) return { status: 'skipped', message: 'Human review is required.' };
           const bubbles = readReplyInBubbles(agent.behaviorConfig)
             ? splitReplyIntoBubbles(outboundReply) : [outboundReply];
           let lastOutboundMessage: MessageRecord | null = null;
@@ -1754,7 +1840,14 @@ export function createAgentRuntime(input: {
           errorMessage
         });
 
-        return { status: "failed", runId: run.id, message: errorMessage };
+        const retryable = error instanceof AgentGenerationFailure && error.retryable && Boolean(runInput.replyClaim);
+        if (!retryable && (error instanceof AgentGenerationFailure || error instanceof AgentProviderUnavailable)) {
+          await handoffForReplyFailure({ workspaceId: runInput.workspaceId, conversationId: conversation.id,
+            agentId: agent.id, messageId: message.id, sessionId: session.id,
+            replyClaim: runInput.replyClaim, reason: errorMessage });
+          return { status: 'handoff_requested', runId: run.id, message: errorMessage };
+        }
+        return { status: "failed", runId: run.id, message: errorMessage, ...(retryable ? { retryable: true } : {}) };
       }
     }
   };

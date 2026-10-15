@@ -49,7 +49,8 @@ const baseContact = {
 };
 
 function createMockPrisma(overrides: MockPrismaOverrides = {}): MockPrisma & PrismaLike {
-  return {
+  let operation: any = null;
+  const prisma = {
     contact: {
       findUnique:
         overrides.contact?.findUnique ??
@@ -71,6 +72,13 @@ function createMockPrisma(overrides: MockPrismaOverrides = {}): MockPrisma & Pri
       findMany: overrides.crmSyncAction?.findMany ?? vi.fn().mockResolvedValue([baseAction])
     }
   } as MockPrisma & PrismaLike;
+  prisma.crmLeadSync = {
+    upsert: vi.fn(async ({ create }: any) => { operation ??= { id: "sync", remoteContactId: null, remoteCompanyId: null, remoteLeadId: null, leaseToken: null, leaseUntil: null, lastError: null, ...create }; return { ...operation }; }),
+    findUnique: vi.fn(async () => ({ ...operation })),
+    updateMany: vi.fn(async ({ data }: any) => { Object.assign(operation, data); return { count: 1 }; })
+  } as never;
+  prisma.$transaction = vi.fn(async (fn: any) => fn(prisma));
+  return prisma;
 }
 
 async function buildCrmApp(input: {

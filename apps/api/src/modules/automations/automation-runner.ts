@@ -1,4 +1,5 @@
 import { enterCanonicalWorkspaceTransaction } from "../messaging/canonical-boundary.js";
+import { claimAutomationExecution, type AutomationExecution } from './automation-execution.js';
 import {
   automationFlowSchema,
   getAutomationBlock,
@@ -24,7 +25,7 @@ export interface AutomationRuleRecord {
   updatedAt: DateLike;
 }
 
-interface AutomationRunRecord {
+export interface AutomationRunRecord {
   id: string;
   workspaceId: string;
   ruleId: string;
@@ -34,6 +35,8 @@ interface AutomationRunRecord {
   result: unknown;
   createdAt: DateLike;
   updatedAt: DateLike;
+  executionToken?: string | null;
+  leaseUntil?: DateLike | null;
 }
 
 interface MessageRecord {
@@ -105,19 +108,24 @@ export interface AutomationRunnerPrisma {
         };
       };
       create: {
+        id?: string;
         workspaceId: string;
         ruleId: string;
         eventKey: string;
         status: string;
         input: unknown;
         result: unknown;
+        executionToken?: string | null;
+        leaseUntil?: Date | null;
       };
       update: {
-        status: string;
-        input: unknown;
-        result: unknown;
+        status?: string;
+        input?: unknown;
+        result?: unknown;
       };
     }): Promise<AutomationRunRecord>;
+    updateMany?(args: unknown): Promise<{ count: number }>;
+    findMany?(args: unknown): Promise<AutomationRunRecord[]>;
   };
   message: {
     findUnique(args: unknown): Promise<MessageRecord | null>;
@@ -198,6 +206,7 @@ export interface AutomationRunnerAgentReplyScheduler {
 
 export interface AutomationRunnerOptions {
   prisma: AutomationRunnerPrisma;
+  onRecoveryError?: (failure: { id: string; code: string }) => void;
   agentRuntime?: AutomationRunnerAgentRuntime;
   agentReplyScheduler?: AutomationRunnerAgentReplyScheduler;
   evolution?: AutomationRunnerEvolution;
@@ -230,7 +239,7 @@ export interface RunForWebhookEventInput {
   runInput?: Record<string, unknown>;
 }
 
-interface ActionResult {
+export interface ActionResult {
   nodeId: string;
   type: string;
   label: string;
@@ -1000,7 +1009,8 @@ async function executeFlow(
   options: AutomationRunnerOptions,
   context: ExecuteContext,
   flow: AutomationFlowDefinition,
-  triggerNode: AutomationNodeDefinition
+  triggerNode: AutomationNodeDefinition,
+  lease?: AutomationExecution
 ) {
   const fenced = fencedFlowOptions(options, context);
   const results: ActionResult[] = [];
@@ -1013,7 +1023,8 @@ async function executeFlow(
 
     let execution: Awaited<ReturnType<typeof executeNode>>;
     try {
-      execution = await executeNode(fenced, context, current);
+      execution = lease ? await lease.step(steps - 1, current.id, () => executeNode(fenced, context, current!))
+        : await executeNode(fenced, context, current);
     } catch (error) {
       results.push(resultFor(current, "failed", { error: sanitizeError(error) }));
       break;
@@ -1117,9 +1128,11 @@ async function recordAutomationRun(
   rule: AutomationRuleRecord,
   status: string,
   result: unknown,
-  recordedInput: unknown = runInput(context)
+  recordedInput: unknown = runInput(context),
+  execution?: AutomationExecution
 ) {
-  const run = await fencedFlowOptions(options, context).prisma.automationRun.upsert({
+  const run = execution ? await execution.finish(status, result, recordedInput)
+    : await fencedFlowOptions(options, context).prisma.automationRun.upsert({
     where: {
       workspaceId_ruleId_eventKey: {
         workspaceId: input.workspaceId,
@@ -1162,7 +1175,35 @@ async function recordAutomationRun(
 }
 
 export function createAutomationRunner(options: AutomationRunnerOptions) {
-  return {
+  const runner = {
+    /** Recovery of inbound runs whose process died outside a durable ingress
+     * handler. Per-node checkpoints still decide whether replay is safe. */
+    async recoverDueRuns(input: { now?: Date; limit?: number } = {}): Promise<string[]> {
+      if (!options.prisma.automationRun.findMany || !options.prisma.automationRun.updateMany) return [];
+      const at = input.now ?? new Date();
+      const rows = await options.prisma.automationRun.findMany({ where: { status: 'running',
+        OR: [{ executionToken: { not: null }, leaseUntil: { lte: at } }, { executionToken: null, updatedAt: { lte: new Date(at.getTime() - 5 * 60_000) } }],
+        input: { path: ['source'], equals: 'evolution_webhook' } }, orderBy: { createdAt: 'asc' }, take: input.limit ?? 20 });
+      const recovered: string[] = [];
+      for (const row of rows) {
+        const payload = isRecord(row.input) ? row.input : {};
+        if (typeof payload.messageId !== 'string') continue;
+        try {
+          const runs = await runner.runForInboundMessage({ workspaceId: row.workspaceId, messageId: payload.messageId,
+            eventKey: row.eventKey, automationId: row.ruleId });
+          if (!runs.length) await options.prisma.automationRun.updateMany({ where: { workspaceId: row.workspaceId,
+            id: row.id, status: 'running', executionToken: row.executionToken, ...(row.executionToken ? { leaseUntil: { lte: at } } : { updatedAt: row.updatedAt }) },
+            data: { status: 'skipped', executionToken: null, leaseUntil: null,
+              result: { reason: 'source_reset_or_rule_disabled', previous: row.result } } });
+          recovered.push(row.id);
+        } catch (error) {
+          if ((error as { code?: string }).code !== 'AUTOMATION_EXECUTION_BUSY') {
+            options.onRecoveryError?.({ id: row.id, code: (error as { code?: string }).code ?? 'RECOVERY_FAILED' });
+          }
+        }
+      }
+      return recovered;
+    },
     async runForInboundMessage(input: RunForInboundMessageInput) {
       const context = await loadContext(options, input);
       if (!context) {
@@ -1195,9 +1236,14 @@ export function createAutomationRunner(options: AutomationRunnerOptions) {
           continue;
         }
 
-        const triggerNode = (
+        const claim = await claimAutomationExecution(options.prisma, { workspaceId: input.workspaceId,
+          ruleId: rule.id, eventKey: input.eventKey, input: runInput(context), flow });
+        if (!claim.claimed) { runs.push(claim.run); continue; }
+        try {
+        const frozenTriggers = claim.flow.nodes.filter(node => getAutomationBlock(node.type)?.category === 'trigger');
+        const triggerNode = claim.firstNodeId ? frozenTriggers.find(node => node.id === claim.firstNodeId) : (
           await Promise.all(
-            triggerNodes.map(async (node) => ({
+            frozenTriggers.map(async (node) => ({
               node,
               matches: await triggerMatches(options, context, node)
             }))
@@ -1221,12 +1267,12 @@ export function createAutomationRunner(options: AutomationRunnerOptions) {
               })
             ]
           };
-          const run = await recordAutomationRun(options, input, context, rule, "skipped", result);
+          const run = await recordAutomationRun(options, input, context, rule, "skipped", result, runInput(context), claim);
           runs.push(run);
           continue;
         }
 
-        const results = await executeFlow(options, context, flow, triggerNode);
+        const results = await executeFlow(options, context, claim.flow, triggerNode, claim);
 
         const result = {
           mode: "real",
@@ -1235,8 +1281,9 @@ export function createAutomationRunner(options: AutomationRunnerOptions) {
           actionResults: results
         };
         if (!await sourceStillCurrent(options, context)) break;
-        const run = await recordAutomationRun(options, input, context, rule, runStatus(results), result);
+        const run = await recordAutomationRun(options, input, context, rule, runStatus(results), result, runInput(context), claim);
         runs.push(run);
+        } finally { claim.close(); }
       }
 
       return runs;
@@ -1263,7 +1310,13 @@ export function createAutomationRunner(options: AutomationRunnerOptions) {
         variables: input.variables,
         outboundBlockedReason: input.outboundBlockedReason ?? null
       };
-      const results = await executeFlow(options, context, flow, triggerNode);
+      const claim = await claimAutomationExecution(options.prisma, { workspaceId: input.workspaceId,
+        ruleId: input.rule.id, eventKey: input.eventKey, input: input.runInput ?? runInput(context), flow });
+      if (!claim.claimed) return claim.run;
+      try {
+      const frozenTrigger = claim.flow.nodes.find(node => node.type === 'trigger_webhook');
+      if (!frozenTrigger) throw new Error('Webhook trigger missing from durable flow.');
+      const results = await executeFlow(options, context, claim.flow, frozenTrigger, claim);
       const outboundBlocked = Boolean(
         context.outboundBlockedReason &&
           results.some((result) => result.status === "skipped" && OUTBOUND_BLOCK_TYPES.has(result.type))
@@ -1294,8 +1347,11 @@ export function createAutomationRunner(options: AutomationRunnerOptions) {
           conversationId: context.conversation.id,
           contactId: context.conversation.contactId,
           ...input.runInput
-        }
+        },
+        claim
       );
+      } finally { claim.close(); }
     }
   };
+  return runner;
 }

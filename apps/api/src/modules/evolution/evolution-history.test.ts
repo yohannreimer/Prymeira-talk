@@ -267,3 +267,28 @@ describe('new channel history', () => {
     expect(result.chats.map(chat => chat.remoteJid)).toEqual([jid]);
   });
 });
+
+describe('exhausted recovery reads', () => {
+  it('reads more than 200 chats even when the server caps each response at 37', async () => {
+    const chats = Array.from({ length: 205 }, (_, i) => ({ remoteJid: `1555000${String(i).padStart(4, '0')}@s.whatsapp.net` }));
+    const fetch = vi.fn(async (_url: unknown, init?: RequestInit) => { const input = JSON.parse(String(init?.body)); return Response.json(chats.slice(input.skip, input.skip + 37)); });
+    const source = createEvolutionHistorySource({ baseUrl: 'https://evolution.invalid', apiKey: 'synthetic', fetch });
+    expect((await source.recoveryChats({ instanceName: 'fixture', from, to: end })).chats).toHaveLength(205);
+    expect(fetch).toHaveBeenCalledTimes(14);
+  });
+  it('reads all message pages under one fixed window before certifying them', async () => {
+    const messages = Array.from({ length: 173 }, (_, i) => row(String(i), end.getTime() - i * 1000));
+    const fetch = vi.fn(async (_url: unknown, init?: RequestInit) => { const input = JSON.parse(String(init?.body)); return Response.json({ messages: { records: messages.slice((input.page - 1) * 100, input.page * 100), pages: 2, total: messages.length } }); });
+    const source = createEvolutionHistorySource({ baseUrl: 'https://evolution.invalid', apiKey: 'synthetic', fetch });
+    expect(await source.recoveryMessages({ instanceName: 'fixture', remoteJid: jid, from, to: end })).toHaveLength(173);
+    expect(fetch).toHaveBeenCalledTimes(4);
+  });
+  it.each([
+    { records: [row('a')], total: 2 },
+    { records: [row('a')], total: 2, pages: 1 },
+    { records: [], total: 2, pages: 2 }
+  ])('rejects unknown or truncated message exhaustion: %j', async messages => {
+    const source = createEvolutionHistorySource({ baseUrl: 'https://evolution.invalid', apiKey: 'synthetic', fetch: vi.fn(async () => Response.json({ messages })) });
+    await expect(source.recoveryMessages({ instanceName: 'fixture', remoteJid: jid, from, to: end })).rejects.toThrow(/HISTORY_(SHAPE|PAGINATION)/);
+  });
+});

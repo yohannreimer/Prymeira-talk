@@ -183,6 +183,7 @@ describe("createAgentReplyScheduler", () => {
     expect(agentRuntime.runForMessage).toHaveBeenCalledWith({
       workspaceId: ids.workspace,
       agentId: ids.agent,
+      sessionId: ids.session,
       conversationId: ids.conversation,
       messageId: ids.firstMessage,
       trigger: "automation",
@@ -279,6 +280,7 @@ describe("createAgentReplyScheduler", () => {
     expect(agentRuntime.runForMessage).toHaveBeenCalledWith({
       workspaceId: ids.workspace,
       agentId: ids.agent,
+      sessionId: ids.session,
       conversationId: ids.conversation,
       messageId: ids.secondMessage,
       trigger: "automation",

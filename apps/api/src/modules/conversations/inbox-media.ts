@@ -1,3 +1,4 @@
+import { canonicalEvolutionMediaKey } from '../messaging/canonical-media-source.js';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -153,11 +154,11 @@ export function createInboxMediaService(options: {
           resolved = await resolve({ mediaUrl: message.mediaUrl, policy: storedPolicy });
         }
         catch {
-          // Messages written by the canonical ingress keep the WhatsApp id on their identity, not on the message row.
-          const whatsappId = message.providerMessageId || (await options.prisma.canonicalMessageIdentity?.findFirst({
-            where: { workspaceId, messageId }, select: { rawId: true } }).catch(() => null))?.rawId;
-          if (owner.channel.provider !== 'evolution' || !whatsappId || !options.client?.fetchMedia) throw new Error('MEDIA_UNAVAILABLE');
-          const mediaUrl = await options.client.fetchMedia({ instanceName: owner.channel.providerKey, id: whatsappId });
+          if (owner.channel.provider !== 'evolution' || !options.client?.fetchMedia) throw new Error('MEDIA_UNAVAILABLE');
+          const exact = await canonicalEvolutionMediaKey(options.prisma, { workspaceId, messageId, instanceName: owner.channel.providerKey });
+          const whatsappId = exact?.nativeId ?? message.providerMessageId;
+          if (!whatsappId) throw new Error('MEDIA_UNAVAILABLE');
+          const mediaUrl = await options.client.fetchMedia({ instanceName: owner.channel.providerKey, id: whatsappId, ...(exact ? { key: exact } : {}) });
           resolved = await resolve({ mediaUrl, policy });
         }
         return message.type === 'audio' ? convert(resolved) : { bytes: resolved.bytes,

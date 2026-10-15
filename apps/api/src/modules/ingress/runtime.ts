@@ -43,8 +43,8 @@ export function readIngressEnvironment(env: NodeJS.ProcessEnv = process.env) {
   const db = new URL(databaseUrl), broker = new URL(amqpUrl);
   const vhost = decodeURIComponent(broker.pathname);
   if (!production) {
-    if (db.hostname !== '127.0.0.1' || db.port !== '55439' || !['/messaging_test','/campaign_test','/assistant_pilot_test','/leads_task2_test'].includes(db.pathname)) throw new Error('Owned isolated PostgreSQL required');
-    if (broker.protocol !== 'amqp:' || broker.hostname !== '127.0.0.1' || broker.port !== '56739' || vhost !== '/talk_test') throw new Error('Owned isolated RabbitMQ required');
+    if (db.hostname !== '127.0.0.1' || db.port !== (env.TALK_TEST_POSTGRES_PORT ?? '55439') || !['/messaging_test','/campaign_test','/assistant_pilot_test','/leads_task2_test'].includes(db.pathname)) throw new Error('Owned isolated PostgreSQL required');
+    if (broker.protocol !== 'amqp:' || broker.hostname !== '127.0.0.1' || broker.port !== (env.TALK_TEST_AMQP_PORT ?? '56739') || vhost !== '/talk_test') throw new Error('Owned isolated RabbitMQ required');
   } else {
     if (!['postgres:', 'postgresql:'].includes(db.protocol) || !db.hostname) throw new Error('Production ingress requires a PostgreSQL DATABASE_URL');
     if (/_test$/.test(db.pathname)) throw new Error('Production ingress refuses a test database');

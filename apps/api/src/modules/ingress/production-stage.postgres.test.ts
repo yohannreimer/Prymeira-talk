@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { PrismaClient } from '@prisma/client';
 import amqp from 'amqplib';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { createExactEvolutionMediaFixture } from '../../test/evolution-media-fixture.js';
 import { transportTopology } from './broker.js';
 
 const databaseUrl = process.env.REHEARSAL_DATABASE_URL, brokerUrl = process.env.INGRESS_TEST_AMQP_URL;
@@ -31,9 +32,9 @@ describe.skipIf(!databaseUrl || !brokerUrl)('ingress in the production stage (re
     if (new URL(databaseUrl!).pathname !== '/talk_rehearsal') throw new Error('Only the local rehearsal database is permitted');
     db = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
     root = await realpath(await mkdtemp(join(tmpdir(), 'talk-prod-rehearsal-')));
-    evolutionApi = http.createServer((req, res) => { req.resume(); req.on('end', () => { res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ base64: PNG.toString('base64'), mimetype: 'image/png' })); }); });
-    await new Promise<void>(resolve => evolutionApi.listen(0, '127.0.0.1', resolve));
     workspaceId = `rehearsal-${randomUUID()}`; instance = `inst-${randomUUID()}`;
+    evolutionApi = createExactEvolutionMediaFixture({ sessionName: instance, key: { id: 'PROD-MEDIA-1', remoteJid: '15550001111@s.whatsapp.net', fromMe: false }, bytes: PNG }).server;
+    await new Promise<void>(resolve => evolutionApi.listen(0, '127.0.0.1', resolve));
     const channel = await db.channel.create({ data: { workspaceId, provider: 'evolution', providerKey: instance, status: 'connected' } });
     await db.channelConnection.create({ data: { workspaceId, channelId: channel.id, provider: 'evolution', sessionName: instance, status: 'connected', health: 'healthy', eligible: true, verifiedPhoneNumber: '15550008888' } });
     const env = { ...process.env, DATABASE_URL: databaseUrl, INGRESS_TRANSPORT_STAGE: 'production', INGRESS_AMQP_URL: brokerUrl, INGRESS_NAMESPACE: namespace,

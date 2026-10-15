@@ -58,6 +58,8 @@ export interface AgentProviderInput {
 }
 
 export interface AgentProvider {
+  /** Simulation must be explicitly recognizable before it can reach a real channel. */
+  mode?: 'simulated';
   generate(input: AgentProviderInput): Promise<AgentOutput>;
 }
 
@@ -730,6 +732,7 @@ function buildAllowedTagsContextBlock(value: unknown) {
 
 export function createSimulatedAgentProvider(): AgentProvider {
   return {
+    mode: 'simulated',
     async generate(input) {
       const messageBody =
         typeof input.context.messageBody === "string" ? input.context.messageBody : "";

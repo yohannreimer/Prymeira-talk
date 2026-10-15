@@ -1,7 +1,8 @@
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
 import Fastify from "fastify";
-import { reportFailure } from './observability/glitchtip.js';
+import { failureCode, reportFailure } from './observability/glitchtip.js';
+import { readOperationalHealth } from "./observability/operational-health.js";
 import type { AppEnv } from "./env.js";
 import { authContextPlugin } from "./plugins/auth-context.js";
 import type { AuthContextPluginOptions } from "./plugins/auth-context.js";
@@ -228,6 +229,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
 
   const evolutionRuntime = createEvolutionRuntime({
     mode: env.EVOLUTION_MODE,
+    messagingEnabled: env.WAHA_ENABLED && Boolean(env.WAHA_API_BASE_URL && env.WAHA_API_KEY),
     publicTalkUrl: env.PUBLIC_TALK_URL,
     localTalkUrl: env.LOCAL_TALK_URL,
     apiBaseUrl: env.EVOLUTION_API_BASE_URL,
@@ -238,16 +240,25 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   const rollout = env.WAHA_ROLLOUT_WORKSPACES;
   const inRollout = (workspaceId: string) => rollout === '*' || rollout.has(workspaceId);
   const wahaRuntime = createWahaRuntime({ enabled: env.WAHA_ENABLED, baseUrl: env.WAHA_API_BASE_URL, apiKey: env.WAHA_API_KEY, webhookBaseUrl: env.WAHA_WEBHOOK_BASE_URL, webhookHmacKey: env.WAHA_WEBHOOK_HMAC_KEY, allows: inRollout });
+  const channelConnections = options.prismaEnabled === false ? undefined
+    : createChannelConnectionsService(app.prisma, { waha: wahaRuntime, evolution: evolutionRuntime });
+  app.get('/operations/health', async (request, reply) => {
+    if (!request.talk?.workspaceId) return reply.code(401).send({ error: 'Authentication required.' });
+    reply.header('Cache-Control', 'private, no-store');
+    if (options.prismaEnabled === false) return reply.code(503).send({ status: 'unavailable', database: { status: 'unavailable' } });
+    try { return await readOperationalHealth(app.prisma, { workspaceId: request.talk.workspaceId }); }
+    catch { return reply.code(503).send({ status: 'unavailable', database: { status: 'unavailable' } }); }
+  });
   // Opt-in single outbound router: every sender already sends through evolutionRuntime.client, so wrapping it here
   // routes human, AI, automation, follow-up and campaign sends through one journal and one failover policy.
   let outboundJournal: ReturnType<typeof createOutboundDispatchJournal> | undefined;
-  if (options.prismaEnabled !== false && env.OUTBOUND_ROUTER_ENABLED && evolutionRuntime.client) {
+  if (options.prismaEnabled !== false && evolutionRuntime.mode === "real" && evolutionRuntime.client) {
     outboundJournal = createOutboundDispatchJournal(app.prisma);
     evolutionRuntime.client = createOutboundRouter({
       base: evolutionRuntime.client, waha: wahaRuntime.client, db: app.prisma, campaignPrisma: app.prisma, journal: outboundJournal,
       probe: createDeliveryProbe({ waha: wahaRuntime.client, history: { recentMessages: (input) => { if (!evolutionHistorySource) throw new Error('HISTORY_UNAVAILABLE'); return evolutionHistorySource.recentMessages(input); } } }),
       logger: app.log,
-      routes: inRollout
+      routes: workspaceId => (env.OUTBOUND_ROUTER_ENABLED || wahaRuntime.enabled) && inRollout(workspaceId)
     });
     const sweeper = setInterval(() => { void outboundJournal!.sweepStale().catch((error: unknown) => app.log.warn({ err: error }, 'Outbound journal sweep failed')); }, 60_000);
     sweeper.unref();
@@ -339,7 +350,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   contactNameRecoveryScheduler?.start();
   if (contactNameRecoveryScheduler) app.addHook("onClose", async () => { await contactNameRecoveryScheduler.stop(); });
   const channelWatchdog = env.CHANNEL_WATCHDOG_ENABLED && options.prismaEnabled !== false &&
-    evolutionRuntime.mode === "real" && evolutionRuntime.client
+    evolutionRuntime.mode === "real" && evolutionRuntime.providerConfigured !== false && evolutionRuntime.client
     ? createChannelWatchdog({
         prisma: app.prisma as unknown as ChannelWatchdogPrisma,
         evolution: {
@@ -348,6 +359,16 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
           publicWebhookUrl: evolutionRuntime.publicWebhookUrl
         },
         publish: (event) => app.realtime.publish(event),
+        refreshPrimary: env.CHANNEL_HEALTH_MONITOR_ENABLED ? undefined : async (row) => {
+          const channel = await app.prisma.channel.findFirstOrThrow({ where: { workspaceId: row.workspaceId, id: row.id } });
+          const primary = await channelConnections!.ensurePrimary(channel);
+          const result = await channelConnections!.refresh({ workspaceId: row.workspaceId, channelId: row.id, connectionId: primary.id });
+          app.realtime.publish({ type: 'channel.updated', workspaceId: row.workspaceId, payload: result.channel });
+        },
+        describeChannel: async (row) => {
+          const channel = await app.prisma.channel.findFirstOrThrow({ where: { workspaceId: row.workspaceId, id: row.id } });
+          return channelConnections!.describe(channel);
+        },
         intervalMs: env.CHANNEL_WATCHDOG_INTERVAL_SECONDS * 1000,
         dryRun: env.CHANNEL_WATCHDOG_DRY_RUN,
         log: app.log
@@ -470,6 +491,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
       : createAgentRuntime({
           prisma: app.prisma as unknown as Parameters<typeof createAgentRuntime>[0]["prisma"],
           provider: createSimulatedAgentProvider(),
+          allowFallbackProvider: evolutionRuntime.mode !== 'real',
           replyPreflight,
           evolution: evolutionRuntime,
           chatHistory: evolutionHistorySource,
@@ -507,7 +529,8 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
       : {
           async createPendingOutboundMessage(deliveryInput) {
             const meta = await resolveMetaRuntime(app.prisma, {
-              workspaceId: deliveryInput.workspaceId
+              workspaceId: deliveryInput.workspaceId,
+              expectedEvolutionWebhook: { webhookUrl: evolutionRuntime.publicWebhookUrl(deliveryInput.workspaceId), webhookSecret: evolutionRuntime.webhookSecret }
             });
             return createConversationsService(
               app.prisma as unknown as ConversationsPrismaLike,
@@ -617,6 +640,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
     { remoteJid: input.remoteJid, phoneJid: input.identity, pushName: input.pushName, profilePicUrl: null }, 30);
   };
   await app.register(evolutionRoutes, {
+    physicalEvolution: evolutionRuntime,
     waha: wahaRuntime,
     messageHistory: evolutionHistorySource,
     historyBackfill,
@@ -634,17 +658,30 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
     durableMediaWorkspaces: inRollout,
     evolutionClient: evolutionRuntime.client
   });
-  // Durable ingress effects: the observable consequences of a message accepted by the new ingress (assistant,
-  // agent, follow-ups, triage, automations, realtime). Off by default; the legacy webhook does them inline.
+  const automationRunner = options.prismaEnabled === false ? undefined : createAutomationRunner({
+    prisma: app.prisma as unknown as AutomationRunnerPrisma,
+    agentRuntime, agentReplyScheduler, evolution: evolutionRuntime, realtime: app.realtime,
+    boardRules: createBoardRulesService(app.prisma as unknown as BoardRulesPrismaLike),
+    onRecoveryError: failure => app.log.warn({ event: 'automation_recovery_failed', runId: failure.id, code: failure.code }, 'Automation recovery needs attention')
+  });
+  if (automationRunner) {
+    let stopped = false;
+    let recovering: Promise<unknown> | undefined;
+    const recover = () => {
+      if (stopped || recovering) return;
+      recovering = automationRunner.recoverDueRuns({ limit: 50 })
+        .catch(error => app.log.warn({ event: 'automation_recovery_failed', code: failureCode(error) }, 'Automation recovery failed'))
+        .finally(() => { recovering = undefined; });
+    };
+    recover();
+    const recoveryTimer = setInterval(recover, 15_000); recoveryTimer.unref();
+    app.addHook('onClose', async () => { stopped = true; clearInterval(recoveryTimer); await recovering; });
+  }
+  // Durable ingress effects reuse the same resumable automation runner.
   if (options.prismaEnabled !== false && env.EFFECTS_ENABLED) {
-    const automationRunner = createAutomationRunner({
-      prisma: app.prisma as unknown as AutomationRunnerPrisma,
-      agentRuntime, agentReplyScheduler, evolution: evolutionRuntime, realtime: app.realtime,
-      boardRules: createBoardRulesService(app.prisma as unknown as BoardRulesPrismaLike)
-    });
     const handlers = createEffectHandlers({
       db: app.prisma, realtime: app.realtime, assistantScheduler, handoffBriefService, inboxTriage, followupService,
-      agentImprovements, agentRuntime, agentReplyScheduler, automationRunner, historyBackfill,
+      agentImprovements, agentRuntime, agentReplyScheduler, automationRunner: automationRunner!, historyBackfill,
       groupSubject: async ({ provider, sessionName, groupJid }) => provider === 'waha'
         ? (await wahaRuntime.client?.getGroup({ session: sessionName, groupId: groupJid }))?.subject ?? null
         : (await evolutionRuntime.client?.getGroupInfo?.({ instanceName: sessionName, groupJid }))?.subject ?? null,
@@ -662,6 +699,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   }
   await app.register(metaWebhooksRoutes, { assistantScheduler, handoffBriefService, inboxTriage, delegatedWorkspaces: env.LEGACY_WEBHOOK_DELEGATED_WORKSPACES });
   await app.register(conversationsRoutes, {
+    waha: wahaRuntime,
     publicTalkUrl: env.PUBLIC_TALK_URL,
     evolution: evolutionRuntime,
     messageHistory: evolutionHistorySource,
@@ -700,10 +738,14 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   } });
   // Redundancy health: 15 s probes of both connections, receive-loss detection and writer failover/return.
   if (options.prismaEnabled !== false && env.CHANNEL_HEALTH_MONITOR_ENABLED && wahaRuntime.enabled) {
-    const connections = createChannelConnectionsService(app.prisma, { waha: wahaRuntime, evolution: evolutionRuntime });
+    const connections = channelConnections!;
     const healthMonitor = createChannelHealthMonitor({
       db: app.prisma,
-      probe: (scope) => connections.refresh(scope),
+      probe: async (scope) => {
+        const result = await connections.refresh(scope);
+        app.realtime.publish({ type: 'channel.updated', workspaceId: scope.workspaceId, payload: result.channel });
+        return result;
+      },
       onWriterChange: async (change) => {
         const channel = await app.prisma.channel.findFirst({ where: { workspaceId: change.workspaceId, id: change.channelId } });
         if (channel) app.realtime.publish({ type: 'channel.updated', workspaceId: change.workspaceId, payload: await connections.describe(channel) });
@@ -753,7 +795,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   await app.register(crmRoutes, {
     vinculaApiUrl: env.VINCULA_CRM_API_URL
   });
-  await app.register(settingsRoutes, { handoffBriefService });
+  await app.register(settingsRoutes, { handoffBriefService, evolution: evolutionRuntime });
 
   return app;
 }

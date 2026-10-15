@@ -102,7 +102,7 @@ describe("createEvolutionRuntime", () => {
     expect(runtime.client).not.toBeNull();
   });
 
-  it("falls back to simulated mode when real mode is missing credentials", () => {
+  it("keeps real mode explicit and fails before I/O when Evolution credentials are missing", async () => {
     const runtime = createEvolutionRuntime({
       mode: "real",
       publicTalkUrl: "https://talk.prymeiradigital.com.br",
@@ -112,8 +112,9 @@ describe("createEvolutionRuntime", () => {
       webhookSecret: "replace_me"
     });
 
-    expect(runtime.mode).toBe("simulated");
-    expect(runtime.client).toBeNull();
+    expect(runtime.mode).toBe("real");
+    expect(runtime.client).not.toBeNull();
+    await expect(runtime.client!.sendText({ instanceName: "fixture", number: "15550000001", text: "synthetic" })).rejects.toMatchObject({ code: "EVOLUTION_UNAVAILABLE" });
   });
 
   it("encodes workspace ids in webhook URLs", () => {
@@ -811,4 +812,34 @@ describe("connected phone (fetchInstances counts every message on Evolution's da
     expect(await client.getInstanceIdentity!({ instanceName: "vendas5" })).toBe(owner);
     expect(identityCalls()).toBe(3);
   });
+});
+
+
+describe('exact canonical media acquisition', () => {
+  const key = { identityFormat: 'whatsapp_stanza', nativeId: 'same', rawId: 'same', nativeChatAddress: '15550000001@s.whatsapp.net', chatAddress: '15550000001@s.whatsapp.net', direction: 'inbound', senderParticipant: '', nativeSenderParticipant: null } as const;
+  it('resolves and downloads the full native key despite a native-id collision in another chat', async () => {
+    const exact = { key: { id: 'same', remoteJid: key.nativeChatAddress, fromMe: false }, messageTimestamp: 1700000010, message: { imageMessage: { mimetype: 'image/png' } } };
+    const foreign = { ...exact, key: { ...exact.key, remoteJid: '15550000002@s.whatsapp.net' } };
+    const fetch = vi.fn(async (url: unknown, init?: RequestInit) => String(url).includes('findMessages') ? Response.json({ messages: { pages: 1, records: [foreign, exact] } }) : Response.json({ base64: 'eA==', mimetype: 'image/png' }));
+    const client = createEvolutionClient({ baseUrl: 'https://evolution.invalid', apiKey: 'synthetic', fetch });
+    await expect(client.fetchMedia!({ instanceName: 'inst', id: 'same', key })).resolves.toBe('data:image/png;base64,eA==');
+    expect(JSON.parse(String(fetch.mock.calls[1]?.[1]?.body))).toMatchObject({ message: exact });
+    expect(JSON.parse(String(fetch.mock.calls[0]?.[1]?.body))).toMatchObject({ where: { key: exact.key } });
+  });
+  it('does not download bytes for mismatched direction or group participant', async () => {
+    const fetch = vi.fn(async () => Response.json({ messages: { pages: 1, records: [{ key: { id: 'same', remoteJid: key.nativeChatAddress, fromMe: true }, messageTimestamp: 1700000010, message: {} }] } }));
+    const client = createEvolutionClient({ baseUrl: 'https://evolution.invalid', apiKey: 'synthetic', fetch });
+    await expect(client.fetchMedia!({ instanceName: 'inst', id: 'same', key })).rejects.toThrow('MEDIA_IDENTITY_MISSING');
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+});
+
+it('cancels oversized media while streaming on the canonical exact-key path', async () => {
+  const key = { identityFormat: 'whatsapp_stanza', nativeId: 'bounded', rawId: 'bounded', nativeChatAddress: '15550000001@s.whatsapp.net', chatAddress: '15550000001@s.whatsapp.net', direction: 'inbound', senderParticipant: '', nativeSenderParticipant: null } as const;
+  const cancel = vi.fn(); let chunks = 0;
+  const body = new ReadableStream<Uint8Array>({ pull(controller) { if (chunks++ < 50) controller.enqueue(new Uint8Array(1024 * 1024)); else controller.close(); }, cancel });
+  const fetch = vi.fn(async (url: unknown) => String(url).includes('findMessages') ? Response.json({ messages: { pages: 1, records: [{ key: { id: 'bounded', remoteJid: key.nativeChatAddress, fromMe: false }, messageTimestamp: 1700000010, message: {} }] } }) : new Response(body));
+  const client = createEvolutionClient({ baseUrl: 'https://evolution.invalid', apiKey: 'synthetic', fetch });
+  await expect(client.fetchMedia!({ instanceName: 'fixture', id: 'bounded', key })).rejects.toMatchObject({ code: 'MEDIA_TOO_LARGE' });
+  expect(cancel).toHaveBeenCalledOnce();
 });

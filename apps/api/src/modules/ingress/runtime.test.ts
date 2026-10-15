@@ -21,6 +21,15 @@ describe('ingress environment', () => {
     expect(() => readIngressEnvironment({ ...isolated, INGRESS_TRANSPORT_STAGE: 'staging' } as never)).toThrow(/explicit stage/);
   });
 
+  it('allows explicitly chosen disposable loopback ports without widening host, database or vhost guards', () => {
+    const env = { ...isolated, TALK_TEST_POSTGRES_PORT: '56357', TALK_TEST_AMQP_PORT: '56759',
+      DATABASE_URL: 'postgresql://talk@127.0.0.1:56357/messaging_test', INGRESS_AMQP_URL: 'amqp://test:test@127.0.0.1:56759/talk_test' };
+    expect(readIngressEnvironment(env)).toMatchObject({ stage: 'isolated-1b' });
+    expect(() => readIngressEnvironment({ ...env, DATABASE_URL: 'postgresql://talk@remote:56357/messaging_test' })).toThrow(/Owned isolated PostgreSQL/);
+    expect(() => readIngressEnvironment({ ...env, DATABASE_URL: 'postgresql://talk@127.0.0.1:56357/production' })).toThrow(/Owned isolated PostgreSQL/);
+    expect(() => readIngressEnvironment({ ...env, INGRESS_AMQP_URL: 'amqp://test:test@127.0.0.1:56759/production' })).toThrow(/Owned isolated RabbitMQ/);
+  });
+
   it('accepts the real database and a dedicated Talk vhost in production, applying receipts', () => {
     const config = read();
     expect(config).toMatchObject({ stage: 'production', allowAllWorkspaces: false, privateRoot: '/var/lib/talk/ingress' });

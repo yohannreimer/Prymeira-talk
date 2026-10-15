@@ -1,4 +1,4 @@
-name: Publish Docker images
+name: Validate and publish Docker images
 
 on:
   push:
@@ -6,20 +6,86 @@ on:
       - main
       - master
       - codex/prymeira-talk-foundation
+      - codex/audit-stabilization-20261015
+  pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
-  packages: write
 
 env:
   REGISTRY: ghcr.io
   IMAGE_OWNER: ${{ github.repository_owner }}
 
 jobs:
+  validate:
+    name: Validate exact revision
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: talk_test
+          POSTGRES_PASSWORD: talk_test
+          POSTGRES_DB: postgres
+        ports:
+          - 55439:5432
+        options: >-
+          --health-cmd "pg_isready -U talk_test -d postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+      rabbitmq:
+        image: rabbitmq:3.13-alpine
+        env:
+          RABBITMQ_DEFAULT_USER: talk_test
+          RABBITMQ_DEFAULT_PASS: talk_test
+          RABBITMQ_DEFAULT_VHOST: talk_test
+        ports:
+          - 56739:5672
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    steps:
+      - name: Checkout exact revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.0.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @prymeira-talk/api exec prisma generate --schema prisma/schema.prisma
+      - name: Prepare platform tools and temporary directory
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg poppler-utils
+          sudo install -d -m 1777 /private/tmp
+      - name: Typecheck, unit, builds, migrations and serial PostgreSQL/RabbitMQ integration
+        env:
+          TALK_TEST_DATABASE_ADMIN_URL: postgresql://talk_test:talk_test@127.0.0.1:55439/postgres
+          INGRESS_TEST_AMQP_URL: amqp://talk_test:talk_test@127.0.0.1:56739/talk_test
+        run: node apps/api/scripts/validation/run.mjs
+      - name: Upload validation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: validation-${{ github.sha }}
+          path: validation-artifacts/
+          if-no-files-found: error
+          overwrite: true
+
   publish:
+    needs: validate
+    if: github.event_name != 'pull_request'
     name: Publish ${{ matrix.name }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     strategy:
       fail-fast: false
       matrix:
@@ -30,28 +96,63 @@ jobs:
           - name: web
             image: prymeira-talk-web
             dockerfile: apps/web/Dockerfile
-
     steps:
-      - name: Checkout
+      - name: Checkout exact validated revision
         uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
+        with:
+          ref: ${{ github.sha }}
+      - uses: docker/setup-buildx-action@v3
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and push
+      - name: Build and push immutable revision
+        id: image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ${{ matrix.dockerfile }}
           platforms: linux/amd64
           push: true
-          tags: |
-            ${{ github.event_name == 'push' && format('{0}/{1}/{2}:latest', env.REGISTRY, env.IMAGE_OWNER, matrix.image) || '' }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/${{ matrix.image }}:${{ github.sha }}
+          labels: org.opencontainers.image.revision=${{ github.sha }}
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/${{ matrix.image }}:${{ github.sha }}
+      - name: Record exact image digest
+        env:
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+          IMAGE_NAME: ${{ matrix.name }}
+        run: |
+          mkdir -p validation-artifacts
+          node -e 'require("node:fs").writeFileSync(`validation-artifacts/image-${process.env.IMAGE_NAME}.json`, JSON.stringify({sha:process.env.GITHUB_SHA,digest:process.env.IMAGE_DIGEST}))'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: image-${{ matrix.name }}-${{ github.sha }}
+          path: validation-artifacts/image-${{ matrix.name }}.json
+          if-no-files-found: error
+          overwrite: true
+
+  release:
+    needs: [validate, publish]
+    if: github.event_name != 'pull_request'
+    name: Assemble verified release manifest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: '*-${{ github.sha }}'
+          path: validation-artifacts
+          merge-multiple: true
+      - run: node apps/api/scripts/validation/release-manifest.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ github.sha }}
+          path: validation-artifacts/release-manifest.json
+          if-no-files-found: error
+          overwrite: true

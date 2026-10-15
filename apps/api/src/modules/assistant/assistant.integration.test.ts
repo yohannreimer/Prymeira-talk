@@ -177,7 +177,7 @@ describe.skipIf(!url)('assistant PostgreSQL integration', () => {
       expect((await app.inject({ method: 'POST', url: `/assistant/conversations/${conversationId}/send`, payload: { userId, body: 'spoof' } })).statusCode).toBe(400);
     } finally { await app.close(); }
   });
-  it('explicit conversation reset removes FK-bound followups before their anchor messages and sessions', async () => {
+  it('explicit conversation reset preserves hidden message facts while removing followups and sessions', async () => {
     const session = await db.aiAgentSession.create({
       data: { workspaceId, agentId, conversationId, status: 'active' }
     });
@@ -210,11 +210,14 @@ describe.skipIf(!url)('assistant PostgreSQL integration', () => {
       }
     });
 
+    const preservedMessages = await db.message.findMany({ where: { workspaceId, conversationId }, select: { id: true, body: true, providerMessageId: true, providerEventId: true }, orderBy: { id: "asc" } });
     await createConversationsService(db as unknown as PrismaLike).resetConversation({ workspaceId, conversationId, actorUserId: userId });
     expect(await db.assistantSuggestion.count({ where: { workspaceId, conversationId } })).toBe(0);
     expect(await db.assistantConversationState.count({ where: { workspaceId, conversationId } })).toBe(0);
     expect(await db.conversationFollowup.count({ where: { workspaceId, conversationId } })).toBe(0);
-    expect(await db.message.count({ where: { workspaceId, conversationId } })).toBe(0);
+    expect(preservedMessages.length).toBeGreaterThan(0);
+    expect(await db.message.findMany({ where: { workspaceId, conversationId, hiddenByReset: true }, select: { id: true, body: true, providerMessageId: true, providerEventId: true }, orderBy: { id: "asc" } })).toEqual(preservedMessages);
+    expect(await db.message.count({ where: { workspaceId, conversationId, hiddenByReset: false } })).toBe(0);
     expect(await db.aiAgentSession.count({ where: { workspaceId, conversationId } })).toBe(0);
   });
 });

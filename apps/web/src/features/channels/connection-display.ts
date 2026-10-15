@@ -41,10 +41,13 @@ export function applyQrUpdate(current: ChannelQrResultDto | null, update: QrUpda
 export function connectionSummary(channel: Pick<ChannelDto, 'provider' | 'status' | 'connections' | 'redundancyEnabled'>) {
   const entries = connectionDisplay(channel).filter((entry) => entry.provider === 'evolution' || channel.redundancyEnabled);
   const up = entries.filter((entry) => entry.status === 'connected');
-  const shaky = up.some((entry) => entry.health === 'degraded' || entry.health === 'unhealthy');
+  const usable = up.filter(entry => entry.health !== 'unhealthy' && (entry.connection?.eligible ?? entry.provider === 'evolution'));
+  const shaky = usable.length < up.length || up.some((entry) => entry.health === 'degraded' || entry.health === 'unhealthy');
   const count = `${up.length} de ${entries.length || 1} ${entries.length === 1 ? 'conexão ativa' : 'conexões ativas'}`;
   if (!entries.length || !up.length) return { tone: 'down' as const, count, title: 'WhatsApp desconectado',
     detail: 'Gere o QR Code da conexão principal e escaneie com o celular deste número.' };
+  if (!usable.length) return { tone: 'down' as const, count, title: 'WhatsApp indisponível',
+    detail: 'Nenhuma conexão está disponível para enviar. Confira as conexões e atualize o status.' };
   if (up.length < entries.length) return { tone: 'warning' as const, count, title: 'Uma conexão caiu',
     detail: 'As mensagens seguem pela outra conexão. Gere o QR Code da que caiu para religar.' };
   if (shaky) return { tone: 'warning' as const, count, title: 'Conexão instável', detail: 'As mensagens continuam, mas uma conexão está respondendo mal.' };

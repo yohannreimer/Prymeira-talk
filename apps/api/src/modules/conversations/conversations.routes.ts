@@ -7,6 +7,8 @@ import { z } from "zod";
 import { createBoardRulesService } from "../boards/board-rules.service.js";
 import type { BoardRulesPrismaLike } from "../boards/board-rules.service.js";
 import { toChannelDto } from "../channels/channels.service.js";
+import { createChannelConnectionsService } from '../channels/channel-connections.js';
+import type { WahaRuntime } from '../waha/waha.client.js';
 import { EvolutionClientError, isEvolutionConnectionClosedError } from "../evolution/evolution.client.js";
 import { AgentMediaError } from "../agents/agent-media-resolver.js";
 import type { EvolutionRuntime } from "../evolution/evolution-runtime.js";
@@ -41,6 +43,7 @@ interface ConversationsRoutesOptions {
   assistantScheduler?: import('../assistant/assistant-scheduler.js').AssistantScheduler;
   handoffBriefService?: ReturnType<typeof import('../assistant/handoff-brief-service.js').createHandoffBriefService>;
   evolution?: EvolutionRuntime;
+  waha?: WahaRuntime;
   /** Durable private media copies; omitted until the deployment provides a media store. */
   durableMedia?: Pick<import('./message-media.js').MessageMediaService, 'read'>;
   /** Shared transcription job; omitted until the deployment enables durable media. */
@@ -832,7 +835,8 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
       return sent(404, { code: "MESSAGE_NOT_FOUND", error: "A mensagem respondida não está disponível." });
     }
 
-    const meta = await resolveMetaRuntime(app.prisma, { workspaceId: scope.workspaceId });
+    const meta = await resolveMetaRuntime(app.prisma, { workspaceId: scope.workspaceId,
+      expectedEvolutionWebhook: options.evolution ? { webhookUrl: options.evolution.publicWebhookUrl(scope.workspaceId), webhookSecret: options.evolution.webhookSecret } : undefined });
     const writeService = createConversationsService(app.prisma as unknown as PrismaLike, {
       evolution: options.evolution,
       meta: {
@@ -904,30 +908,25 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
       }, "Evolution rejected an outbound message.");
 
       if (isEvolutionConnectionClosedError(result)) {
-        const degraded = await app.prisma.channel.updateMany({
-          where: {
-            workspaceId: scope.workspaceId,
-            provider: "evolution",
-            status: "connected",
-            conversations: { some: { id: scope.conversationId } }
-          },
-          data: { status: "failed" }
-        }).catch((error: unknown) => {
-          request.log.error({ err: error, conversationId: scope.conversationId }, "Failed to mark Evolution channel as unhealthy after closed connection.");
-          return { count: 0 };
-        });
-        if (degraded.count > 0) {
-          const channel = await app.prisma.channel.findFirst({
-            where: {
-              workspaceId: scope.workspaceId,
-              provider: "evolution",
-              conversations: { some: { id: scope.conversationId } }
+        const channel = await app.prisma.channel.findFirst({ where: { workspaceId: scope.workspaceId,
+          provider: 'evolution', conversations: { some: { id: scope.conversationId } } } }).catch(() => null);
+        if (channel) {
+          try {
+            if (app.prisma.channelConnection) {
+              await app.prisma.channelConnection.updateMany({ where: { workspaceId: scope.workspaceId,
+                channelId: channel.id, provider: 'evolution' }, data: { status: 'failed', eligible: false,
+                  health: 'unknown', lastHealthyAt: null } });
+              const payload = await createChannelConnectionsService(app.prisma, { evolution: options.evolution, waha: options.waha })
+                .reconcile({ workspaceId: scope.workspaceId, channelId: channel.id });
+              app.realtime.publish({ type: 'channel.updated', workspaceId: scope.workspaceId, payload });
+            } else {
+              await app.prisma.channel.updateMany({ where: { workspaceId: scope.workspaceId, id: channel.id }, data: { status: 'failed' } });
+              app.realtime.publish({ type: 'channel.updated', workspaceId: scope.workspaceId,
+                payload: toChannelDto({ ...channel, status: 'failed' }) });
             }
-          }).catch((error: unknown) => {
-            request.log.error({ err: error, conversationId: scope.conversationId }, "Failed to load degraded Evolution channel.");
-            return null;
-          });
-          if (channel) app.realtime.publish({ type: "channel.updated", workspaceId: scope.workspaceId, payload: toChannelDto(channel) });
+          } catch (error) {
+            request.log.error({ err: error, channelId: channel.id }, 'Failed to reconcile channel after provider rejection.');
+          }
         }
         return sent(502, {
           code: "EVOLUTION_CONNECTION_CLOSED",

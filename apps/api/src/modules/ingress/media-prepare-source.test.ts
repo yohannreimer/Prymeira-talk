@@ -11,9 +11,9 @@ describe('media for messages that did not come through an ingress receipt', () =
     expect(fromWaha.useStoredUrl).toBe(false);
     expect(await fromWaha.fetchers[0]!.fetch()).toMatchObject({ mimeType: 'image/png' });
     const fromEvolution = mediaFetchers({ provider: 'evolution', channelProvider: 'evolution', sessionName: 'inst', key, mimeType: null }, { waha: null, evolution });
-    expect(fromEvolution.useStoredUrl).toBe(true);
+    expect(fromEvolution.useStoredUrl).toBe(false);
     await fromEvolution.fetchers[0]!.fetch();
-    expect(evolution.fetchMedia).toHaveBeenCalledWith({ instanceName: 'inst', id: 'ID1' });
+    expect(evolution.fetchMedia).toHaveBeenCalledWith({ instanceName: 'inst', id: 'ID1', key });
   });
   it('when WAHA received it, the channel\'s Evolution is asked next by the same WhatsApp message id', async () => {
     const waha = { mediaExact: vi.fn(async () => ({ kind: 'missing' as const })) };
@@ -22,14 +22,14 @@ describe('media for messages that did not come through an ingress receipt', () =
     expect(fetchers.map(f => f.name)).toEqual(['waha', 'evolution']);
     expect(await fetchers[0]!.fetch()).toBeNull();
     expect(await fetchers[1]!.fetch()).toEqual({ mediaUrl: 'data:image/jpeg;base64,eA==' });
-    expect(evolution.fetchMedia).toHaveBeenCalledWith({ instanceName: 'evo-inst', id: 'ID1' });
+    expect(evolution.fetchMedia).toHaveBeenCalledWith({ instanceName: 'evo-inst', id: 'ID1', key: expect.objectContaining({ nativeId: 'ID1', nativeChatAddress: key.chatAddress }) });
     expect(mediaFetchers({ provider: 'waha', channelProvider: 'evolution', sessionName: 's', key, mimeType: null }, { waha: waha as never, evolution }).fetchers.map(f => f.name)).toEqual(['waha']);
   });
   it('hands the fetchers to the durable media service', async () => {
     const media = { prepare: vi.fn(async () => ({ state: 'stored' as const })) };
     const prepare = createSourceMediaPreparer({ media: media as never, waha: null, evolution: { fetchMedia: vi.fn() } });
     await prepare({ workspaceId: 'w', messageId: 'm', source: { provider: 'evolution', channelProvider: 'evolution', sessionName: 'inst', key, mimeType: null } });
-    expect(media.prepare).toHaveBeenCalledWith({ workspaceId: 'w', messageId: 'm', fetchers: [expect.objectContaining({ name: 'evolution' })], useStoredUrl: true });
+    expect(media.prepare).toHaveBeenCalledWith({ workspaceId: 'w', messageId: 'm', fetchers: [expect.objectContaining({ name: 'evolution' })], useStoredUrl: false });
   });
 });
 

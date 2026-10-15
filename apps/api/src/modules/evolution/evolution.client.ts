@@ -1,3 +1,5 @@
+import { createEvolutionHistorySource } from './evolution-history.js';
+import type { WhatsAppMessageKey } from '../messaging/whatsapp-identity.js';
 import { AgentMediaError } from '../agents/agent-media-resolver.js';
 
 const EVOLUTION_EVENTS = [
@@ -40,7 +42,9 @@ export interface CreateEvolutionClientOptions {
   now?: () => number;
 }
 
-export interface CreateInstanceInput {
+export interface ChannelCommandScope { workspaceId?: string; channelId?: string }
+
+export interface CreateInstanceInput extends ChannelCommandScope {
   instanceName: string;
   webhookUrl: string;
   webhookSecret: string;
@@ -52,7 +56,7 @@ export interface CreateInstanceResult {
   raw: unknown;
 }
 
-export interface ConnectInstanceInput {
+export interface ConnectInstanceInput extends ChannelCommandScope {
   instanceName: string;
 }
 
@@ -64,7 +68,7 @@ export interface ConnectInstanceResult {
 
 export type EvolutionConnectionState = "open" | "connecting" | "close";
 
-export interface SetWebhookInput {
+export interface SetWebhookInput extends ChannelCommandScope {
   instanceName: string;
   webhookUrl: string;
   webhookSecret: string;
@@ -74,7 +78,7 @@ export interface SetWebhookResult {
   raw: unknown;
 }
 
-export interface SendTextInput {
+export interface SendTextInput extends ChannelCommandScope {
   instanceName: string;
   number: string;
   text: string;
@@ -92,27 +96,27 @@ export interface SendTextResult {
   localMessageId?: string;
 }
 
-export interface EditMessageInput {
+export interface EditMessageInput extends ChannelCommandScope {
   instanceName: string;
   id: string;
   remoteJid: string;
   text: string;
 }
 
-export interface DeleteMessageInput {
+export interface DeleteMessageInput extends ChannelCommandScope {
   instanceName: string;
   id: string;
   remoteJid: string;
   fromMe: true;
 }
 
-export interface SendContactInput {
+export interface SendContactInput extends ChannelCommandScope {
   instanceName: string;
   number: string;
   contact: { fullName: string; wuid: string; phoneNumber: string }[];
 }
 
-export interface SendMediaInput {
+export interface SendMediaInput extends ChannelCommandScope {
   instanceName: string;
   number: string;
   mediatype: "image" | "video" | "document";
@@ -127,7 +131,7 @@ export interface SendMediaResult {
   raw: unknown;
 }
 
-export interface SendTemplateInput {
+export interface SendTemplateInput extends ChannelCommandScope {
   instanceName: string;
   number: string;
   name: string;
@@ -156,7 +160,7 @@ export interface EvolutionTemplateRecord {
   components: EvolutionTemplateComponent[];
 }
 
-export interface ListTemplatesInput {
+export interface ListTemplatesInput extends ChannelCommandScope {
   instanceName: string;
 }
 
@@ -165,7 +169,7 @@ export interface ListTemplatesResult {
   raw: unknown;
 }
 
-export interface CheckWhatsappNumbersAvailabilityInput {
+export interface CheckWhatsappNumbersAvailabilityInput extends ChannelCommandScope {
   instanceName: string;
   numbers: string[];
 }
@@ -182,13 +186,14 @@ export interface CheckWhatsappNumbersAvailabilityResult {
 }
 
 export interface EvolutionClient {
+  getWebhook?(input: ConnectInstanceInput): Promise<unknown>;
   getInstanceIdentity?(input: ConnectInstanceInput): Promise<string | null>;
   deleteMessageForEveryone?(input: DeleteMessageInput): Promise<void>;
   editMessage?(input: EditMessageInput): Promise<void>;
-  getGroupInfo?(input: { instanceName: string; groupJid: string }): Promise<{ subject: string | null }>;
-  sendAudio?(input: { instanceName: string; number: string; audio: string }): Promise<SendMediaResult>;
-  fetchProfilePicture?(input: { instanceName: string; number: string }): Promise<string | null>;
-  fetchMedia?(input: { instanceName: string; id: string }): Promise<string>;
+  getGroupInfo?(input: ChannelCommandScope & { instanceName: string; groupJid: string }): Promise<{ subject: string | null }>;
+  sendAudio?(input: ChannelCommandScope & { instanceName: string; number: string; audio: string }): Promise<SendMediaResult>;
+  fetchProfilePicture?(input: ChannelCommandScope & { instanceName: string; number: string }): Promise<string | null>;
+  fetchMedia?(input: ChannelCommandScope & { instanceName: string; id: string; key?: WhatsAppMessageKey }): Promise<string>;
   createInstance(input: CreateInstanceInput): Promise<CreateInstanceResult>;
   connectInstance(input: ConnectInstanceInput): Promise<ConnectInstanceResult>;
   logoutInstance?(input: ConnectInstanceInput): Promise<void>;
@@ -623,6 +628,15 @@ export function createEvolutionClient(options: CreateEvolutionClientOptions): Ev
       }
     },
     async fetchMedia(input) {
+      if (input.key) {
+        if (input.id !== input.key.nativeId) throw new Error('MEDIA_IDENTITY_INCOMPLETE');
+        const found = await createEvolutionHistorySource(options).mediaExact({ instanceName: input.instanceName, key: input.key, purpose: 'serve' }).catch(error => {
+          if (error instanceof Error && ['HISTORY_RESPONSE_LIMIT', 'HISTORY_MEDIA_LIMIT'].includes(error.message)) throw new AgentMediaError('MEDIA_TOO_LARGE', 'Provider media exceeds the response size limit.');
+          throw error;
+        });
+        if (found.kind !== 'resolved') throw new Error(`MEDIA_IDENTITY_${found.kind.toUpperCase()}`);
+        return found.mediaUrl;
+      }
       const data = await post(`/chat/getBase64FromMediaMessage/${encodeURIComponent(input.instanceName)}`, { message: { key: { id: input.id } }, convertToMp4: false }, 15000).catch(error => {
         // An explicit non-media response cannot improve through repeated downloads.
         // Keep the original message and source, and close only the media obligation.
@@ -680,6 +694,10 @@ export function createEvolutionClient(options: CreateEvolutionClientOptions): Ev
       const state = getString(getRecord(responseBody, "instance"), "state") ?? getString(responseBody, "state");
       if (state !== "open") identities.delete(input.instanceName);
       return state === "open" || state === "connecting" || state === "close" ? state : null;
+    },
+
+    async getWebhook(input) {
+      return get(`/webhook/find/${encodeURIComponent(input.instanceName)}`);
     },
 
     async setWebhook(input) {

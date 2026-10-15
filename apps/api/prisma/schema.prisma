@@ -282,6 +282,10 @@ model Channel {
   activeConnectionId            String?         @map("active_connection_id") @db.Uuid
   encryptedConfig               Json            @default("{}") @map("encrypted_config")
   followupConfig                Json            @default("{}") @map("followup_config")
+  /// Exact physical key created or externally attested for this channel. Never inferred from a user-supplied name.
+  providerInstanceClaim         String?         @map("provider_instance_claim")
+  /// Trusted channel identity from an authenticated provider probe; never a user-entered display phone.
+  verifiedMessagingPhoneNumber   String?         @map("verified_messaging_phone_number")
   historyImportStatus           String?         @map("history_import_status")
   historyImportNextAt           DateTime?       @map("history_import_next_at")
   historyImportLeaseToken       String?         @map("history_import_lease_token") @db.Uuid
@@ -376,6 +380,7 @@ model Contact {
   contactTags          ContactTag[]
   broadcastListMembers BroadcastListMember[]
   leadProvenances      LeadContactProvenance[]
+  crmLeadSync          CrmLeadSync?
 
   @@unique([workspaceId, id])
   @@unique([workspaceId, phone])
@@ -974,6 +979,8 @@ model AutomationRun {
   status      String
   input       Json     @default("{}")
   result      Json     @default("{}")
+  executionToken String? @map("execution_token") @db.Uuid
+  leaseUntil DateTime? @map("lease_until") @db.Timestamptz
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 
@@ -982,6 +989,7 @@ model AutomationRun {
   @@unique([workspaceId, id])
   @@unique([workspaceId, ruleId, eventKey])
   @@index([workspaceId, createdAt])
+  @@index([status, leaseUntil])
   @@map("automation_runs")
 }
 
@@ -2102,8 +2110,8 @@ model IngressEffect {
   id             String               @id @default(uuid()) @db.Uuid
   workspaceId    String               @map("workspace_id")
   channelId      String               @map("channel_id") @db.Uuid
-  receiptId      String               @map("receipt_id") @db.Uuid
-  eventIndex     Int                  @map("event_index")
+  receiptId      String?              @map("receipt_id") @db.Uuid
+  eventIndex     Int?                 @map("event_index")
   conversationId String?              @map("conversation_id") @db.Uuid
   messageId      String?              @map("message_id") @db.Uuid
   kind           String
@@ -2119,7 +2127,7 @@ model IngressEffect {
   lastErrorCode  String?              @map("last_error_code")
   completedAt    DateTime?            @map("completed_at") @db.Timestamptz
   result         Json?
-  progress       IngressEventProgress @relation(fields: [workspaceId, channelId, receiptId, eventIndex], references: [workspaceId, channelId, receiptId, eventIndex], onDelete: Cascade, map: "ingress_effects_progress_fkey")
+  progress       IngressEventProgress? @relation(fields: [workspaceId, channelId, receiptId, eventIndex], references: [workspaceId, channelId, receiptId, eventIndex], onDelete: Cascade, map: "ingress_effects_progress_fkey")
   conversation   Conversation?        @relation(fields: [workspaceId, channelId, conversationId], references: [workspaceId, channelId, id], onDelete: NoAction, map: "ingress_effects_conversation_fkey")
   message        Message?             @relation(fields: [workspaceId, conversationId, messageId], references: [workspaceId, conversationId, id], onDelete: NoAction, map: "ingress_effects_message_fkey")
 
@@ -2238,4 +2246,28 @@ model IngressRecertificationRetry {
   @@unique([workspaceId, channelId, receiptId, eventIndex], map: "ingress_recertification_retry_scope_key")
   @@index([nextAttemptAt])
   @@map("ingress_recertification_retries")
+}
+
+
+// One durable external lead operation per scoped contact. Leases never enclose provider I/O in a DB transaction.
+model CrmLeadSync {
+  id               String    @id @default(uuid()) @db.Uuid
+  workspaceId      String    @map("workspace_id")
+  contactId        String    @map("contact_id") @db.Uuid
+  state            String    @default("pending")
+  title            String
+  remoteContactId  String?   @map("remote_contact_id")
+  remoteCompanyId  String?   @map("remote_company_id")
+  remoteLeadId     String?   @map("remote_lead_id")
+  leaseToken       String?   @map("lease_token") @db.Uuid
+  leaseUntil       DateTime? @map("lease_until")
+  lastError        String?   @map("last_error")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+  contact          Contact   @relation(fields: [workspaceId, contactId], references: [workspaceId, id], onDelete: Cascade)
+
+  @@unique([workspaceId, id])
+  @@unique([workspaceId, contactId])
+  @@index([state, leaseUntil])
+  @@map("crm_lead_syncs")
 }

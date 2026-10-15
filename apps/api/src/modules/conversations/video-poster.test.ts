@@ -16,11 +16,12 @@ describe('video poster', () => {
     expect(poster.bytes.subarray(0, 3)).toEqual(Buffer.from([0xff, 0xd8, 0xff]));
   });
   it('asks Evolution with the canonical WhatsApp id when the message row has none (GIFs from the new ingress)', async () => {
-    const fetchMedia = async (input: { instanceName: string; id: string }) => { expect(input).toEqual({ instanceName: 'inst', id: '3EB0GIF' }); return 'data:video/mp4;base64,AAAAGGZ0eXA='; };
+    const key = { identityFormat: 'whatsapp_stanza', nativeId: '3EB0GIF', rawId: '3EB0GIF', nativeChatAddress: '15550000001@s.whatsapp.net', chatAddress: '15550000001@s.whatsapp.net', direction: 'inbound', senderParticipant: '', nativeSenderParticipant: null } as const;
+    const fetchMedia = async (input: { instanceName: string; id: string }) => { expect(input).toEqual({ instanceName: 'inst', id: '3EB0GIF', key }); return 'data:video/mp4;base64,AAAAGGZ0eXA='; };
     const prisma = {
       conversation: { findFirst: async () => ({ contact: { phone: '1' }, channel: { provider: 'evolution', providerKey: 'inst' } }) },
       message: { findFirst: async () => ({ type: 'file', mediaUrl: 'https://mmg.whatsapp.net/o1/v/t24/x', providerMessageId: null }) },
-      canonicalMessageIdentity: { findFirst: async () => ({ rawId: '3EB0GIF' }) }
+      canonicalMessageIdentity: { findFirst: async () => ({ state: 'active', rawId: '3EB0GIF', direction: 'inbound', observations: [{ payload: { key } }] }) }
     };
     const service = createInboxMediaService({ prisma: prisma as never, client: { fetchMedia } as never,
       resolve: (async ({ mediaUrl }: { mediaUrl: string }) => { if (!mediaUrl.startsWith('data:')) throw new Error('remote'); return { bytes: Buffer.from('ftyp'), mimeType: 'video/mp4', source: 'data_url' }; }) as never });

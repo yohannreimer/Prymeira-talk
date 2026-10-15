@@ -474,7 +474,9 @@ export class TalkSession {
     if (event.type === 'channel.updated' || event.type === 'channel.deleted') {
       this.client.setQueryData<ChannelDto[]>(this.key('channels'), rows => rows ? event.type === 'channel.deleted'
         ? rows.filter(row => row.id !== event.payload.channelId)
-        : [...rows.filter(row => row.id !== event.payload.id), event.payload] : rows);
+        : rows.some(row => row.id === event.payload.id)
+          ? rows.map(row => row.id === event.payload.id ? { ...row, ...event.payload } : row)
+          : [...rows, event.payload] : rows);
       // Channel private-review settings are unavailable in conversation DTOs.
       for (const query of this.client.getQueryCache().findAll({ queryKey: this.key('conversations') })) {
         const scope = scopeFromKey(query.queryKey);

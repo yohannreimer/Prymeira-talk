@@ -5,9 +5,9 @@ import { createDeliveryProbe } from './outbound-probes.js';
 const phone = '551188880001';
 const resolved = '12345678901234@lid';
 function fixture() {
-  const connection = { id: 'wa', provider: 'waha', status: 'connected', health: 'healthy', eligible: true, verifiedPhoneNumber: '554700000000', sessionName: 'wa-session' };
-  const db = { channel: { findFirst: vi.fn().mockResolvedValue({ id: 'c', workspaceId: 'w', redundancyEnabled: true, activeConnectionId: 'wa' }) },
-    channelConnection: { findMany: vi.fn().mockResolvedValue([{ ...connection, id: 'evo', provider: 'evolution', status: 'disconnected' }, connection]) } };
+  const connection = { workspaceId: 'w', channelId: 'c', lastHealthyAt: new Date(), id: 'wa', provider: 'waha', status: 'connected', health: 'healthy', eligible: true, verifiedPhoneNumber: '554700000000', sessionName: 'wa-session' };
+  const db = { channel: { findMany: vi.fn().mockResolvedValue([{ id: 'c', workspaceId: 'w', redundancyEnabled: true, activeConnectionId: 'wa' }]) },
+    channelConnection: { findMany: vi.fn().mockResolvedValue([{ ...connection, id: 'evo', provider: 'evolution', status: 'disconnected', sessionName: 'evo' }, connection]) } };
   const journal = { begin: vi.fn().mockResolvedValue('dispatch'), recordAttempt: vi.fn(), accept: vi.fn(), fail: vi.fn(), markUncertain: vi.fn() };
   const base = { sendText: vi.fn(), sendMedia: vi.fn(), sendAudio: vi.fn(), sendContact: vi.fn() };
   const sent = { providerMessageId: 'true_12345678901234@lid_SENT', raw: { id: 'true_12345678901234@lid_SENT' } };
@@ -74,7 +74,7 @@ describe('WAHA destination identity', () => {
     const { client, waha, journal } = fixture();
     waha.sendText.mockRejectedValue(Object.assign(new Error('timeout'), { name: 'TimeoutError' }));
     await expect(client.sendText({ instanceName: 'evo', number: phone, text: 'resposta' })).rejects.toBeInstanceOf(OutboundUncertainError);
-    expect(waha.getMessages).toHaveBeenCalledWith({ session: 'wa-session', chatId: resolved, limit: 20 });
+    expect(waha.getMessages).not.toHaveBeenCalled(); // text alone cannot identify this uncertain dispatch
     expect(waha.sendText).toHaveBeenCalledTimes(1);
     expect(journal.markUncertain).toHaveBeenCalledTimes(1);
   });

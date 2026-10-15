@@ -12,7 +12,7 @@ describe.skipIf(!url)('agent reset fences with real PostgreSQL', () => {
   const workspaces: string[] = [];
   beforeAll(() => {
     const target = new URL(url!);
-    if (target.hostname !== '127.0.0.1' || target.port !== '56346' || target.pathname !== '/messaging_test') throw Error('Owned local messaging_test on 56346 required');
+    if (target.hostname !== '127.0.0.1' || target.port !== (process.env.TALK_TEST_POSTGRES_PORT ?? '55439') || target.pathname !== '/messaging_test') throw Error('Owned local messaging_test on the explicit fixture port required');
     db = new PrismaClient({ datasources: { db: { url } } });
   });
   afterAll(async () => {
@@ -35,6 +35,69 @@ describe.skipIf(!url)('agent reset fences with real PostgreSQL', () => {
   }
   const reset = (f: Awaited<ReturnType<typeof fixture>>) => createConversationsService(db as unknown as PrismaLike).resetConversation({ workspaceId: f.workspaceId, conversationId: f.conversationId, actorUserId: null });
   const output = () => ({ confidence: 1, reply: 'Olá! Como posso ajudar?', actions: [], handoff: { required: false, reason: null } });
+
+  it('preserves human takeover committed during the first-message freshness lookup', async () => {
+    const f = await fixture();
+    await db.aiAgent.update({ where: { id: f.agentId }, data: { behaviorConfig: { onlyNewConversations: true } } });
+    const runtime = createAgentRuntime({ prisma: db as never, provider: { generate: vi.fn() },
+      chatHistory: { hasPriorMessages: vi.fn(async () => {
+        await createConversationsService(db as unknown as PrismaLike).updateAiControl({ ...f, status: 'human_controlled' });
+        return false;
+      }) } });
+    expect((await runtime.activateForMessage(f)).status).toBe('skipped');
+    expect((await db.conversation.findUniqueOrThrow({ where: { id: f.conversationId } })).aiControlStatus).toBe('human_controlled');
+    expect(await db.aiAgentSession.count({ where: { workspaceId: f.workspaceId } })).toBe(0);
+  });
+
+  it('does not clear a replacement session when an older freshness lookup rejects activation', async () => {
+    const f = await fixture();
+    await db.aiAgent.update({ where: { id: f.agentId }, data: { behaviorConfig: { onlyNewConversations: true } } });
+    let replacementId: string | undefined;
+    const runtime = createAgentRuntime({ prisma: db as never, provider: { generate: vi.fn() },
+      chatHistory: { hasPriorMessages: vi.fn(async () => {
+        const replacement = await db.aiAgent.create({ data: { workspaceId: f.workspaceId, name: 'Replacement', systemPrompt: 'New owner' } });
+        const session = await db.aiAgentSession.create({ data: { workspaceId: f.workspaceId, agentId: replacement.id, conversationId: f.conversationId } });
+        replacementId = session.id;
+        await db.conversation.update({ where: { id: f.conversationId }, data: { activeAgentSessionId: session.id } });
+        return true;
+      }) } });
+    expect((await runtime.activateForMessage(f)).status).toBe('skipped');
+    expect(await db.conversation.findUniqueOrThrow({ where: { id: f.conversationId } })).toMatchObject({ aiControlStatus: 'agent_allowed', activeAgentSessionId: replacementId });
+  });
+
+  it('does not restore an old queued agent after a replacement session was activated', async () => {
+    const f = await fixture(), oldSession = await db.aiAgentSession.create({ data: { workspaceId: f.workspaceId, agentId: f.agentId, conversationId: f.conversationId } });
+    const replacement = await db.aiAgent.create({ data: { workspaceId: f.workspaceId, name: 'Replacement', systemPrompt: 'New owner' } });
+    const replacementSession = await db.aiAgentSession.create({ data: { workspaceId: f.workspaceId, agentId: replacement.id, conversationId: f.conversationId } });
+    await db.conversation.update({ where: { id: f.conversationId }, data: { activeAgentSessionId: replacementSession.id } });
+    const token = randomUUID(), queue = await db.aiAgentPendingReply.create({ data: { workspaceId: f.workspaceId, agentId: f.agentId,
+      conversationId: f.conversationId, sessionId: oldSession.id, lastMessageId: f.messageId, status: 'processing', scheduledAt: new Date(), lockedAt: new Date(), claimToken: token } });
+    const generate = vi.fn(), sendText = vi.fn();
+    const runtime = createAgentRuntime({ prisma: db as never, provider: { generate }, evolution: { mode: 'real', client: { sendText } } });
+    expect((await runtime.runForMessage({ ...f, sessionId: oldSession.id, replyClaim: { id: queue.id, token }, trigger: 'automation' })).status).toBe('skipped');
+    expect(generate).not.toHaveBeenCalled(); expect(sendText).not.toHaveBeenCalled();
+    expect((await db.conversation.findUniqueOrThrow({ where: { id: f.conversationId } })).activeAgentSessionId).toBe(replacementSession.id);
+  });
+
+  it('stops a queued reply when the active agent is replaced during generation', async () => {
+    const f = await fixture(), session = await db.aiAgentSession.create({ data: { workspaceId: f.workspaceId, agentId: f.agentId, conversationId: f.conversationId } });
+    await db.conversation.update({ where: { id: f.conversationId }, data: { activeAgentSessionId: session.id } });
+    const token = randomUUID(), queue = await db.aiAgentPendingReply.create({ data: { workspaceId: f.workspaceId, agentId: f.agentId,
+      conversationId: f.conversationId, sessionId: session.id, lastMessageId: f.messageId, status: 'processing', scheduledAt: new Date(), lockedAt: new Date(), claimToken: token } });
+    const sendText = vi.fn(); let replacementId: string | undefined;
+    const generate = vi.fn(async () => {
+      const replacement = await db.aiAgent.create({ data: { workspaceId: f.workspaceId, name: 'Replacement', systemPrompt: 'New owner' } });
+      const next = await db.aiAgentSession.create({ data: { workspaceId: f.workspaceId, agentId: replacement.id, conversationId: f.conversationId } });
+      replacementId = next.id;
+      await db.conversation.update({ where: { id: f.conversationId }, data: { activeAgentSessionId: next.id } });
+      return { ...output(), actions: [{ type: 'create_internal_note', body: 'Stale action' }] };
+    });
+    const runtime = createAgentRuntime({ prisma: db as never, provider: { generate }, evolution: { mode: 'real', client: { sendText } } });
+    expect((await runtime.runForMessage({ ...f, sessionId: session.id, replyClaim: { id: queue.id, token }, trigger: 'automation' })).status).toBe('skipped');
+    expect(generate).toHaveBeenCalledOnce(); expect(sendText).not.toHaveBeenCalled();
+    expect(await db.contactNote.count({ where: { workspaceId: f.workspaceId } })).toBe(0);
+    expect((await db.conversation.findUniqueOrThrow({ where: { id: f.conversationId } })).activeAgentSessionId).toBe(replacementId);
+  });
 
   it('answers a post-reset external form with the instrumented Prisma client used by the API', async () => {
     const f = await fixture(); await reset(f);

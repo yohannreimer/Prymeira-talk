@@ -1,3 +1,4 @@
+import { evolutionWebhookProvesOwnership } from '../evolution/evolution-webhook-ownership.js';
 import { randomUUID } from "node:crypto";
 import type {
   ChannelDto,
@@ -23,6 +24,7 @@ interface ChannelRecord {
   workspaceId: string;
   provider: ChannelDto["provider"];
   providerKey: string;
+  providerInstanceClaim?: string | null;
   phoneNumber: string | null;
   displayName: string | null;
   status: ChannelDto["status"];
@@ -43,8 +45,9 @@ export interface PrismaLike {
   channelConnection?: ConnectionPrisma['channelConnection'];
   channel: {
     findMany(args: {
-      where: { workspaceId: string; archivedAt?: null };
-      orderBy: Array<{ createdAt: "asc" }>;
+      where: { workspaceId?: string; archivedAt?: null; providerKey?: string; provider?: ChannelDto["provider"] };
+      orderBy?: Array<{ createdAt: "asc" }>;
+      take?: number;
     }): Promise<ChannelRecord[]>;
     findFirst(args: {
       where: { workspaceId: string; id: string };
@@ -54,6 +57,7 @@ export interface PrismaLike {
         workspaceId: string;
         provider: ChannelDto["provider"];
         providerKey: string;
+        providerInstanceClaim?: string;
         displayName: string;
         phoneNumber: string | null;
         status: ChannelDto["status"];
@@ -67,6 +71,7 @@ export interface PrismaLike {
       where: { workspaceId_id: { workspaceId: string; id: string } };
       data: {
         status?: ChannelDto["status"];
+        providerInstanceClaim?: string;
         archivedAt?: Date | null;
         historyImportStatus?: string;
         historyImportNextAt?: Date;
@@ -150,6 +155,7 @@ interface ChannelsServiceOptions {
   evolution?: EvolutionRuntime;
   waha?: WahaRuntime;
   metaEvolutionWebhook?: {
+    attestInstance?(instanceName: string): Promise<boolean>;
     client: {
       setWebhook(input: {
         instanceName: string;
@@ -168,6 +174,7 @@ export class ChannelsServiceError extends Error {
   constructor(
     public code:
       | "CHANNEL_NOT_FOUND"
+      | "CHANNEL_PROVIDER_OWNERSHIP_UNVERIFIED"
       | "CHANNEL_DELETE_CONFIRMATION_REQUIRED"
       | "CHANNEL_PROVIDER_KEY_REQUIRED"
       | "CHANNEL_PROVIDER_UNSUPPORTED"
@@ -236,9 +243,7 @@ function slugPart(value: string) {
 }
 
 function createInstanceName(workspaceId: string) {
-  const suffix = randomUUID().slice(0, 8);
-
-  return `talk-${slugPart(workspaceId)}-${Date.now().toString(36)}-${suffix}`;
+  return `talk-${slugPart(workspaceId)}-${randomUUID()}`;
 }
 
 export function createChannelsService(
@@ -250,6 +255,7 @@ export function createChannelsService(
     : null;
   const describe = (record: ChannelRecord) => physical ? physical.describe(record as Channel) : Promise.resolve(toChannelDto(record));
   const resolveMode = async (workspaceId: string): Promise<IntegrationMode> => {
+    if (options.evolution?.mode === "real") return "real";
     const config = await prisma.integrationConfig.findUnique({
       where: {
         workspaceId_provider: {
@@ -281,6 +287,17 @@ export function createChannelsService(
     return channel;
   };
 
+  const ownershipError = () => new ChannelsServiceError('CHANNEL_PROVIDER_OWNERSHIP_UNVERIFIED',
+    'A propriedade desta sessão física não foi comprovada. Verifique as colisões e ateste a instância existente antes de reconectar.', 409);
+  const assertOwnership = async (channel: ChannelRecord) => {
+    const owners = await prisma.channel.findMany({ where: { providerKey: channel.providerKey }, take: 2 });
+    if (owners.length !== 1 || owners[0]!.workspaceId !== channel.workspaceId || owners[0]!.id !== channel.id) throw ownershipError();
+    if (prisma.channelConnection) {
+      const owners = await prisma.channelConnection.findMany({ where: { provider: 'evolution', sessionName: channel.providerKey } });
+      if (owners.some(owner => owner.workspaceId !== channel.workspaceId || owner.channelId !== channel.id)) throw ownershipError();
+    }
+  };
+
   const getEvolutionChannel = async (input: {
     workspaceId: string;
     channelId: string;
@@ -304,6 +321,7 @@ export function createChannelsService(
       );
     }
 
+    await assertOwnership(channel);
     return channel;
   };
 
@@ -336,47 +354,31 @@ export function createChannelsService(
           );
         }
 
+        if (options.metaEvolutionWebhook) {
+          const owners = await prisma.channel.findMany({ where: { providerKey: requestedProviderKey }, take: 2 });
+          if (owners.length || !prisma.channelConnection || !options.metaEvolutionWebhook.attestInstance) throw ownershipError();
+          const physicalOwners = await prisma.channelConnection.findMany({ where: { provider: 'evolution', sessionName: requestedProviderKey } });
+          if (physicalOwners.length || !await options.metaEvolutionWebhook.attestInstance(requestedProviderKey)) throw ownershipError();
+        }
+
         const channel = await prisma.channel.create({
           data: {
             workspaceId: input.workspaceId,
             provider,
             providerKey: requestedProviderKey,
+            ...(options.metaEvolutionWebhook ? { providerInstanceClaim: requestedProviderKey } : {}),
             displayName: input.displayName.trim(),
             phoneNumber: normalizeOptional(input.phoneNumber) ?? null,
             status: "connected"
           }
         });
 
-        if (options.metaEvolutionWebhook) {
-          try {
-            await options.metaEvolutionWebhook.client.setWebhook({
-              instanceName: requestedProviderKey,
-              webhookUrl: options.metaEvolutionWebhook.publicWebhookUrl(input.workspaceId),
-              webhookSecret: options.metaEvolutionWebhook.webhookSecret
-            });
-          } catch {
-            const failedChannel = await prisma.channel.update({
-              where: {
-                workspaceId_id: {
-                  workspaceId: input.workspaceId,
-                  id: channel.id
-                }
-              },
-              data: { status: "failed" }
-            });
-
-            return toChannelDto(failedChannel);
-          }
-        }
-
         return toChannelDto(channel);
       }
 
-      const providerKey =
-        requestedProviderKey ??
-        (options.evolution?.mode === "real" && options.evolution.client
-          ? createInstanceName(input.workspaceId)
-          : `demo-evolution-${Date.now().toString(36)}`);
+      const providerKey = options.evolution?.mode === 'real'
+        ? createInstanceName(input.workspaceId)
+        : `demo-evolution-${randomUUID()}`;
       const primaryId = randomUUID();
       const channel = await prisma.channel.create({
         data: {
@@ -387,7 +389,7 @@ export function createChannelsService(
           phoneNumber: normalizeOptional(input.phoneNumber) ?? null,
           status: "disconnected",
           ...(physical ? { activeConnectionId: primaryId, connections: { create: { id: primaryId, provider: 'evolution' as const, sessionName: providerKey, status: 'disconnected' as const, eligible: false } } } : {}),
-          ...(options.evolution?.mode === "real" ? {
+          ...(options.evolution?.mode === "real" && options.evolution.providerConfigured !== false ? {
             historyImportStatus: "pending",
             historyImportNextAt: new Date(Date.now() + 30_000)
           } : {})
@@ -406,27 +408,31 @@ export function createChannelsService(
       try {
         const evolution = options.evolution;
         const client = evolution?.client;
+        if (evolution?.mode === "real" && !client) throw new ChannelsServiceError("EVOLUTION_QR_UNAVAILABLE", "Evolution não está configurada para gerar QR neste canal.", 503);
 
         if (evolution?.mode === "real" && client) {
           const webhookUrl = evolution.publicWebhookUrl(input.workspaceId);
           let instance;
 
           try {
-            instance = await client
-              .createInstance({
-                instanceName: existingChannel.providerKey,
-                webhookUrl,
-                webhookSecret: evolution.webhookSecret
-              })
-              .catch((error: unknown) => {
-                if (!isEvolutionInstanceNameInUseError(error)) {
-                  throw error;
-                }
-
-                return client.connectInstance({
-                  instanceName: existingChannel.providerKey
-                });
-              });
+            let created = false;
+            try {
+              instance = await client.createInstance({ instanceName: existingChannel.providerKey, webhookUrl, webhookSecret: evolution.webhookSecret });
+              created = true;
+            } catch (error) {
+              if (!isEvolutionInstanceNameInUseError(error)) throw error;
+              if (existingChannel.providerInstanceClaim !== existingChannel.providerKey) {
+                if (!client.getWebhook || !evolutionWebhookProvesOwnership(await client.getWebhook({ instanceName: existingChannel.providerKey }), { webhookUrl, webhookSecret: evolution.webhookSecret })) throw ownershipError();
+                await assertOwnership(existingChannel);
+                await prisma.channel.update({ where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.channelId } }, data: { providerInstanceClaim: existingChannel.providerKey } });
+              }
+              instance = await client.connectInstance({ instanceName: existingChannel.providerKey });
+            }
+            if (instance.instanceName !== existingChannel.providerKey) throw ownershipError();
+            if (created) {
+              await prisma.channel.update({ where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.channelId } },
+                data: { providerInstanceClaim: existingChannel.providerKey } });
+            }
 
             await client.setWebhook({
               instanceName: instance.instanceName,
@@ -467,12 +473,14 @@ export function createChannelsService(
 
           const channel = await completePrimaryLifecycle(input, operation, {
             status: "connecting",
-            historyImportStatus: "pending",
-            historyImportNextAt: new Date(Date.now() + 30_000),
-            historyImportAttempts: 0,
-            historyImportCompletedAt: null,
-            historyImportLeaseToken: null,
-            historyImportLeaseUntil: null
+            ...(evolution.providerConfigured !== false ? {
+              historyImportStatus: "pending",
+              historyImportNextAt: new Date(Date.now() + 30_000),
+              historyImportAttempts: 0,
+              historyImportCompletedAt: null,
+              historyImportLeaseToken: null,
+              historyImportLeaseUntil: null
+            } : {})
           });
 
           const connectionId = physical ? (await physical.ensurePrimary(channel as Channel)).id : undefined;
@@ -559,6 +567,7 @@ export function createChannelsService(
       channelId: string;
     }): Promise<{ channel: ChannelDto }> {
       const existingChannel = await getChannel(input);
+      if (existingChannel.provider === "evolution") await assertOwnership(existingChannel);
       // The second connection (WAHA) stops with the channel: redundancy off ends its session.
       if (physical && existingChannel.provider === "evolution" && (existingChannel as { redundancyEnabled?: boolean }).redundancyEnabled) {
         await physical.setRedundancy({ workspaceId: input.workspaceId, channelId: input.channelId, enabled: false });
@@ -620,6 +629,7 @@ export function createChannelsService(
           409
         );
       }
+      if (channel.provider === 'evolution') await assertOwnership(channel);
       // The WAHA session (second connection) is stopped and removed before the channel rows go.
       if (physical && channel.provider === 'evolution') await physical.deleteSecondary(channel as unknown as Channel);
       await prisma.$transaction(async (tx) => {

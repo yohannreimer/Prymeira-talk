@@ -93,7 +93,8 @@ export const assistantInboxRoutes: FastifyPluginAsync<{ scheduler?: AssistantSch
     const input = assistantSendSchema.parse(request.body);
     const actor = await resolveAssistantActor(app.prisma, request.talk);
     const conversation = await requireAssistantConversation(app.prisma, actor, conversationId);
-    const meta = await resolveMetaRuntime(app.prisma, { workspaceId: actor.workspaceId });
+    const meta = await resolveMetaRuntime(app.prisma, { workspaceId: actor.workspaceId,
+      expectedEvolutionWebhook: { webhookUrl: options.evolution.publicWebhookUrl(actor.workspaceId), webhookSecret: options.evolution.webhookSecret } });
     if (conversation.channel.provider === 'evolution' && (options.evolution.mode !== 'real' || !options.evolution.client)) throw new AssistantError('ASSISTANT_TRANSPORT_REQUIRED', 'Conecte o canal real antes de enviar.', 422);
     if (conversation.channel.provider === 'meta_cloud' && !meta.client && !meta.evolutionClient) throw new AssistantError('ASSISTANT_TRANSPORT_REQUIRED', 'Configure o canal Meta antes de enviar.', 422);
     const service = createConversationsService(app.prisma as unknown as PrismaLike, { evolution: options.evolution, meta: { client: meta.client, phoneNumberId: meta.phoneNumberId }, metaEvolution: { client: meta.evolutionClient } });

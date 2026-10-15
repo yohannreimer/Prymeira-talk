@@ -821,7 +821,7 @@ describe("createAgentRuntime", () => {
 
     await runtime.runForMessage({ workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation, messageId: ids.message, trigger: "automation" });
 
-    expect(fetchMedia).toHaveBeenCalledWith({ instanceName: "instancia", id: "wamid-image" });
+    expect(fetchMedia).toHaveBeenCalledWith(expect.objectContaining({ instanceName: "instancia", id: "wamid-image", workspaceId: ids.workspace }));
     expect(provider.generate).toHaveBeenCalledWith(expect.objectContaining({
       userPrompt: expect.stringContaining("Ø 10,0 mm - 215 barras (image/jpeg)")
     }));

@@ -6,7 +6,7 @@ const url = process.env.MESSAGING_TEST_DATABASE_URL;
 describe.skipIf(!url)('durable recertification scheduling with PostgreSQL', () => {
   let db: PrismaClient;
   const workspaces: string[] = [];
-  beforeAll(() => { const target = new URL(url!); if (target.hostname !== '127.0.0.1' || target.port !== '55439' || target.pathname !== '/messaging_test') throw Error('Owned local messaging_test required'); db = new PrismaClient({ datasources: { db: { url } } }); });
+  beforeAll(() => { const target = new URL(url!); if (target.hostname !== '127.0.0.1' || target.port !== (process.env.TALK_TEST_POSTGRES_PORT ?? '55439') || target.pathname !== '/messaging_test') throw Error('Owned local messaging_test required'); db = new PrismaClient({ datasources: { db: { url } } }); });
   afterAll(async () => {
     await db.ingressReceipt.deleteMany({ where: { workspaceId: { in: workspaces } } });
     await db.channel.deleteMany({ where: { workspaceId: { in: workspaces } } });
