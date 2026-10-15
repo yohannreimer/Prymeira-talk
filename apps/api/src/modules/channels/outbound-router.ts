@@ -3,6 +3,7 @@ import { AgentMediaError, resolveAgentMedia } from '../agents/agent-media-resolv
 import type { EvolutionClient, SendContactInput, SendMediaInput, SendMediaResult, SendTextInput, SendTextResult } from '../evolution/evolution.client.js';
 import { parseWahaMessageKey } from '../messaging/whatsapp-identity.js';
 import type { WahaClient } from '../waha/waha.client.js';
+import { resolveWahaDestination } from '../waha/waha-destination.js';
 import type { DispatchKind, OutboundDispatchJournal } from './outbound-dispatch-journal.js';
 import { classifySendFailure, writerCandidates, type RoutableChannel, type RoutableConnection } from './outbound-routing.js';
 import { sendCanonicalCampaignText, sendCanonicalProspectingText } from '../campaigns/campaign-canonical-send.js';
@@ -97,7 +98,7 @@ export function createOutboundRouter(options: {
       }
     }
     if (!waha) throw new Error('WAHA_NOT_CONFIGURED');
-    const session = connection.sessionName, id = chatId(command.destination);
+    const session = connection.sessionName, id = await resolveWahaDestination(waha, session, command.destination);
     switch (command.kind) {
       case 'text': {
         const quoted = command.input.quoted;

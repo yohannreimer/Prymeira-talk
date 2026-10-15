@@ -1,6 +1,7 @@
 import type { EvolutionHistorySource, HistoryRecord } from '../evolution/evolution-history.js';
 import { parseWahaMessageKey } from '../messaging/whatsapp-identity.js';
 import type { WahaClient } from '../waha/waha.client.js';
+import { resolveWahaDestination } from '../waha/waha-destination.js';
 import type { DeliveryProbe } from './outbound-router.js';
 
 /** Looks in a connection's own recent chat history for the text we just tried to send. Deliberately only for
@@ -18,7 +19,7 @@ function historyText(record: HistoryRecord): string | null {
 }
 
 export function createDeliveryProbe(deps: {
-  waha: Pick<WahaClient, 'getMessages'> | null;
+  waha: (Pick<WahaClient, 'getMessages'> & Partial<Pick<WahaClient, 'checkNumber'>>) | null;
   history: Pick<EvolutionHistorySource, 'recentMessages'> | null;
 }): DeliveryProbe {
   return async ({ connection, destination, kind, text, since }) => {
@@ -27,7 +28,7 @@ export function createDeliveryProbe(deps: {
     const sinceSeconds = Math.floor(since.getTime() / 1000) - SLACK_SECONDS;
     if (connection.provider === 'waha') {
       if (!deps.waha) return 'unknown';
-      const chatId = destination.includes('@') ? destination : `${destination.replace(/\D/g, '')}@c.us`;
+      const chatId = await resolveWahaDestination(deps.waha, connection.sessionName, destination);
       const messages = await deps.waha.getMessages({ session: connection.sessionName, chatId, limit: 20 });
       const match = messages.find(message => message.fromMe === true && typeof message.timestamp === 'number' && message.timestamp >= sinceSeconds && normalize(message.body ?? '') === wanted);
       return { found: !!match, providerMessageId: match ? parseWahaMessageKey(match.id).rawId ?? match.id : null };
