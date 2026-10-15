@@ -14,16 +14,20 @@ const row = (index: number, copy = 0) => ({ id: `physical-${copy}-${index}`,
   messageTimestamp: 1_800_000_000, message: { imageMessage: { url: 'https://media.invalid/expired', caption: `recipient-${index}` } } });
 const native = () => { const { id: _, ...message } = row(150); return message; };
 const broadcast = () => [0, 1].flatMap(copy => Array.from({ length: 204 }, (_, index) => row(index, copy)));
+// Evolution includes the numeric broadcast-list envelope beside recipient copies.
+const withEnvelope = () => broadcast().map((item, index) => index % 204 === 0 ? { ...item,
+  key: { id, remoteJid: '1800000000@broadcast', fromMe: true }, instanceId: 'owned-instance-internal',
+  source: 'android', contextInfo: { fixture: 'broadcast-envelope' }, MessageUpdate: [] } : item);
 
-function provider(rows = broadcast(), alter?: (messages: any, page: number, pass: number) => void) {
+function provider(rows = broadcast(), alter?: (messages: any, page: number, pass: number, capacity: number) => void) {
   let pass = -1;
   const fetch = vi.fn(async (url: unknown, init?: RequestInit) => {
     const body = JSON.parse(String(init?.body));
     if (String(url).includes('getBase64')) return Response.json({ base64: 'YQ==', mimetype: 'image/png' });
-    if (body.page === 1) pass++;
-    const messages = { pages: Math.ceil(rows.length / 100), total: rows.length, currentPage: body.page,
-      records: rows.slice((body.page - 1) * 100, body.page * 100) };
-    alter?.(messages, body.page, pass);
+    if (body.page === 1 && (rows.length <= 100 || body.offset === 5000)) pass++;
+    const messages = { pages: Math.ceil(rows.length / body.offset), total: rows.length, currentPage: body.page,
+      records: rows.slice((body.page - 1) * body.offset, body.page * body.offset) };
+    alter?.(messages, body.page, pass, body.offset);
     return Response.json({ messages });
   });
   return { fetch, source: createEvolutionHistorySource({ baseUrl: 'https://evolution.invalid', apiKey: 'synthetic', fetch }) };
@@ -44,8 +48,8 @@ describe('complete bounded Evolution broadcast lookup', () => {
     await expect(f.source.mediaExact({ ...lookup, purpose: 'serve' })).rejects.toThrow('HISTORY_PAGINATION');
     expect(f.fetch.mock.calls.some(([url]) => String(url).includes('getBase64'))).toBe(false);
   });
-  it('resolves 408 physical broadcast rows in five pages, deduplicates only exact copies, and sends the original native key', async () => {
-    const rows = broadcast(), pages: number[] = [], media: unknown[] = [];
+  it.each(['recipients', 'numeric envelope'] as const)('resolves 408 physical broadcast rows with %s despite overlapping small pages and sends only the original candidate key', async fixture => {
+    const rows = fixture === 'numeric envelope' ? withEnvelope() : broadcast(), pages: { page: number; offset: number }[] = [], media: unknown[] = [];
     const server = http.createServer((request, response) => {
       const chunks: Buffer[] = [];
       request.on('data', chunk => chunks.push(chunk));
@@ -53,10 +57,13 @@ describe('complete bounded Evolution broadcast lookup', () => {
         const body = JSON.parse(Buffer.concat(chunks).toString());
         response.setHeader('content-type', 'application/json');
         if (request.headers.apikey !== 'synthetic') { response.writeHead(403).end('{}'); return; }
-        if (request.url === '/chat/findMessages/owned-instance' && isDeepStrictEqual(body.where, { key: { id } }) && body.offset === 100) {
-          pages.push(body.page);
-          response.end(JSON.stringify({ messages: { pages: 5, total: 408, currentPage: body.page,
-            records: rows.slice((body.page - 1) * 100, body.page * 100) } })); return;
+        if (request.url === '/chat/findMessages/owned-instance' && isDeepStrictEqual(body.where, { key: { id } }) && [100, 5000].includes(body.offset)) {
+          pages.push({ page: body.page, offset: body.offset });
+          const records = rows.slice((body.page - 1) * body.offset, body.page * body.offset);
+          // Timestamp ties let the real provider repeat one physical ID across small pages.
+          if (body.offset === 100 && body.page === 2) records[0] = rows[99]!;
+          response.end(JSON.stringify({ messages: { pages: Math.ceil(rows.length / body.offset), total: 408, currentPage: body.page,
+            records } })); return;
         }
         if (request.url === '/chat/getBase64FromMediaMessage/owned-instance' && isDeepStrictEqual(body.message, native())) {
           media.push(body.message); response.end(JSON.stringify({ base64: 'YQ==', mimetype: 'image/png' })); return;
@@ -68,12 +75,64 @@ describe('complete bounded Evolution broadcast lookup', () => {
     try {
       const source = createEvolutionHistorySource({ baseUrl: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, apiKey: 'synthetic' });
       expect(await source.mediaExact({ ...lookup, purpose: 'serve' })).toEqual({ kind: 'resolved', record: native(), mediaUrl: 'data:image/png;base64,YQ==' });
-      expect(pages).toEqual([1, 2, 3, 4, 5, 6, 1, 2, 3, 4, 5, 6]);
+      expect(pages).toEqual([{ page: 1, offset: 100 }, { page: 1, offset: 5000 }, { page: 2, offset: 5000 },
+        { page: 1, offset: 5000 }, { page: 2, offset: 5000 }]);
       expect(media).toEqual([native()]);
     } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
   });
+  it.each([
+    ['status namespace', (r: any) => { r.key.remoteJid = 'status@broadcast'; }],
+    ['unknown namespace', (r: any) => { r.key.remoteJid = '1800000000@unknown'; }],
+    ['nonnumeric broadcast', (r: any) => { r.key.remoteJid = 'other@broadcast'; }],
+    ['empty stanza ID', (r: any) => { r.key.id = ''; }],
+    ['different stanza ID', (r: any) => { r.key.id = 'OTHER-ID'; }],
+    ['missing direction', (r: any) => { delete r.key.fromMe; }],
+    ['string direction', (r: any) => { r.key.fromMe = 'true'; }],
+    ['null timestamp', (r: any) => { r.messageTimestamp = null; }],
+    ['millisecond timestamp', (r: any) => { r.messageTimestamp = 1_800_000_000_000; }],
+    ['nonobject message', (r: any) => { r.message = []; }],
+    ['direct alias', (r: any) => { r.key.remoteJidAlt = pn; }],
+    ['group alias', (r: any) => { r.key.remoteJidAlt = '120000-1@g.us'; }],
+    ['native group participant', (r: any) => { r.key.participant = pn; }],
+    ['group participant alias', (r: any) => { r.key.participantAlt = pn; }],
+    ['outer group participant', (r: any) => { r.participant = pn; }],
+    ['outer direct chat', (r: any) => { r.remoteJid = pn; }],
+    ['outer contradictory chat and direction', (r: any) => { r.remoteJid = pn; r.fromMe = false; }],
+    ['outer chat alias', (r: any) => { r.remoteJidAlt = pn; }],
+    ['outer direction', (r: any) => { r.fromMe = false; }],
+    ['outer author', (r: any) => { r.author = pn; }],
+    ['outer participant alias', (r: any) => { r.participantAlt = pn; }]
+  ] as const)('retains strict failure for a broadcast envelope with %s', async (_name, change) => {
+    const rows = withEnvelope(); change(rows[0]); const f = provider(rows);
+    await expect(f.source.mediaExact({ ...lookup, purpose: 'serve' })).rejects.toThrow('HISTORY_RECORD');
+    expect(f.fetch.mock.calls.some(([url]) => String(url).includes('getBase64'))).toBe(false);
+  });
+  it.each([
+    { ...expected, chatAddress: '1800000000@broadcast', nativeChatAddress: '1800000000@broadcast' },
+    { ...expected, nativeChatAddress: '1800000000@broadcast' },
+    { ...expected, chatAddress: '120000-1@g.us', nativeChatAddress: '1800000000@broadcast', senderParticipant: pn, nativeSenderParticipant: pn }
+  ])('refuses broadcast input even with contradictory canonical chat claims', async key => {
+    const f = provider(withEnvelope());
+    expect(await f.source.mediaExact({ ...lookup, key, purpose: 'serve' })).toEqual({ kind: 'incomplete' });
+    expect(f.fetch).not.toHaveBeenCalled();
+  });
+  it('requires convergence of the complete raw broadcast envelope metadata', async () => {
+    const f = provider(withEnvelope(), (messages, page, pass) => {
+      if (page === 1) messages.records[0] = { ...messages.records[0], contextInfo: { pass }, MessageUpdate: [{ pass }] };
+    });
+    await expect(f.source.mediaExact({ ...lookup, purpose: 'serve' })).rejects.toThrow('HISTORY_UNSTABLE');
+    expect(f.fetch).toHaveBeenCalledTimes(7);
+    expect(f.fetch.mock.calls.some(([url]) => String(url).includes('getBase64'))).toBe(false);
+  });
+  it('counts full raw envelope bytes against the cumulative scan budget', async () => {
+    const rows = Array.from({ length: 20 }, (_, index) => ({ ...withEnvelope()[0]!, id: `envelope-${index}`,
+      contextInfo: { opaque: 'x'.repeat(512 * 1024) } }));
+    const f = provider(rows);
+    await expect(f.source.mediaExact({ ...lookup, purpose: 'serve' })).rejects.toMatchObject({ code: 'HISTORY_SCAN_LIMIT' });
+    expect(f.fetch).toHaveBeenCalledOnce();
+  });
   it.each(['chat', 'direction', 'participant'] as const)('does not resolve another %s even when every row shares the requested ID', async field => {
-    const rows = broadcast().map(item => item.key.remoteJid === lid ? { ...item, key: { ...item.key,
+    const rows = withEnvelope().map(item => item.key.remoteJid === lid ? { ...item, key: { ...item.key,
       ...(field === 'chat' ? { remoteJid: '700999@lid', remoteJidAlt: '15559999999@s.whatsapp.net' } : {}),
       ...(field === 'direction' ? { fromMe: false } : {}),
       ...(field === 'participant' ? { participant: '15559999999@s.whatsapp.net' } : {}) } } : item);
@@ -101,14 +160,14 @@ describe('complete bounded Evolution broadcast lookup', () => {
   it('does not let a contradictory group sender disappear behind a clean copy', async () => {
     const group = '120000-1@g.us', sender = '15551111111@s.whatsapp.net';
     const key = { ...expected, nativeChatAddress: group, chatAddress: group, nativeSenderParticipant: sender, senderParticipant: sender };
-    const rows = broadcast().map(item => item.key.remoteJid === lid ? { ...item, key: { id, remoteJid: group, fromMe: true, participant: sender },
+    const rows = withEnvelope().map(item => item.key.remoteJid === lid ? { ...item, key: { id, remoteJid: group, fromMe: true, participant: sender },
       ...(item.id === 'physical-1-150' ? { participant: '15552222222@s.whatsapp.net' } : {}) } : item);
     expect(await provider(rows).source.findMessageExact({ ...lookup, key })).toEqual({ kind: 'ambiguous' });
   });
   it('requires explicit group participant PN/LID proof throughout the complete broadcast lookup', async () => {
     const group = '120000-1@g.us', sender = '15551111111@s.whatsapp.net', nativeSender = '711111@lid';
     const key = { ...expected, nativeChatAddress: group, chatAddress: group, nativeSenderParticipant: sender, senderParticipant: sender };
-    const rows = broadcast().map(item => item.key.remoteJid === lid ? { ...item,
+    const rows = withEnvelope().map(item => item.key.remoteJid === lid ? { ...item,
       key: { id, remoteJid: group, fromMe: true, participant: nativeSender, participantAlt: sender } } : item);
     const f = provider(rows);
     expect(await f.source.mediaExact({ ...lookup, key, purpose: 'serve' })).toMatchObject({ kind: 'resolved',
@@ -122,20 +181,46 @@ describe('complete bounded Evolution broadcast lookup', () => {
     expect(await provider(incomplete.filter(item => item.key.remoteJid === group)).source.findMessageExact({ ...lookup, key })).toEqual({ kind: 'ambiguous' });
   });
   it.each(['missing', 'repeated', 'wrong-current', 'changed-total', 'changed-pages', 'not-exhausted'] as const)('rejects %s pagination without fetching media', async fault => {
-    const f = provider(broadcast(), (messages, page) => {
-      if (page === 2 && fault === 'missing') messages.records = [];
-      if (page === 2 && fault === 'repeated') messages.records = broadcast().slice(0, 100);
+    const f = provider(withEnvelope(), (messages, page, _pass, capacity) => {
+      if (capacity !== 5000) return;
+      if (page === 1 && fault === 'missing') messages.records.pop();
+      if (page === 1 && fault === 'repeated') messages.records[100] = messages.records[0];
       if (page === 2 && fault === 'wrong-current') messages.currentPage = 1;
       if (page === 2 && fault === 'changed-total') messages.total++;
       if (page === 2 && fault === 'changed-pages') messages.pages++;
-      if (page === 6 && fault === 'not-exhausted') messages.records = [row(0)];
+      if (page === 2 && fault === 'not-exhausted') messages.records = [row(0)];
     });
     await expect(f.source.mediaExact({ ...lookup, purpose: 'serve' })).rejects.toThrow(/HISTORY_(PAGINATION|UNSTABLE)/);
     expect(f.fetch.mock.calls.some(([url]) => String(url).includes('getBase64'))).toBe(false);
   });
+  it.each(['records-cap', 'pages-cap', 'changed-total'] as const)('rejects a silently capped full batch: %s', async fault => {
+    const f = provider(withEnvelope(), (messages, page, _pass, capacity) => {
+      if (page !== 1 || capacity !== 5000) return;
+      messages.records = messages.records.slice(0, 100);
+      if (fault === 'pages-cap') messages.pages = 5;
+      if (fault === 'changed-total') messages.total = 100;
+    });
+    await expect(f.source.mediaExact({ ...lookup, purpose: 'serve' })).rejects.toThrow(/HISTORY_(PAGINATION|UNSTABLE)/);
+    expect(f.fetch).toHaveBeenCalledTimes(2);
+    expect(f.fetch.mock.calls.some(([url]) => String(url).includes('getBase64'))).toBe(false);
+  });
+  it.each([100, 101, 5000])('retains complete physical proof at the %i-row boundary', async total => {
+    const rows = Array.from({ length: total }, (_, index) => ({ ...row(index ? 1000 + index : 150), id: `boundary-${index}` }));
+    const f = provider(rows);
+    expect(await f.source.findMessageExact(lookup)).toEqual({ kind: 'resolved', record: native() });
+    const queries = f.fetch.mock.calls.map(([, init]) => JSON.parse(String(init?.body)));
+    expect(queries.map(q => [q.page, q.offset])).toEqual(total === 100 ? [[1, 100], [2, 100], [1, 100], [2, 100]]
+      : [[1, 100], [1, 5000], [2, 5000], [1, 5000], [2, 5000]]);
+    expect(queries.every(q => isDeepStrictEqual(q.where, { key: { id } }))).toBe(true);
+  });
+  it('rejects discovery above 5000 without requesting a batch or media', async () => {
+    const f = provider(Array.from({ length: 5001 }, (_, index) => row(index)));
+    await expect(f.source.mediaExact({ ...lookup, purpose: 'serve' })).rejects.toThrow('HISTORY_PAGE_LIMIT');
+    expect(f.fetch).toHaveBeenCalledOnce();
+  });
   it('rejects missing physical row identity and incomplete totals in the paginated fallback', async () => {
     for (const change of [(messages: any) => { delete messages.records[0].id; }, (messages: any) => { delete messages.total; }]) {
-      const f = provider(broadcast(), (messages, page) => { if (page === 1) change(messages); });
+      const f = provider(withEnvelope(), (messages, page) => { if (page === 1) change(messages); });
       expect(await f.source.findMessageExact(lookup)).toEqual({ kind: 'ambiguous' });
     }
   });
@@ -144,24 +229,24 @@ describe('complete bounded Evolution broadcast lookup', () => {
       if (page === 1) messages.records[0] = { ...messages.records[0], message: { conversation: `pass-${pass}` } };
     });
     await expect(f.source.findMessageExact(lookup)).rejects.toThrow('HISTORY_UNSTABLE');
-    expect(f.fetch).toHaveBeenCalledTimes(18);
+    expect(f.fetch).toHaveBeenCalledTimes(7);
   });
   it('can converge on the third pass after one bounded change', async () => {
     const f = provider(broadcast(), (messages, page, pass) => {
       if (page === 1) messages.records[0] = { ...messages.records[0], message: { conversation: pass ? 'settled' : 'old' } };
     });
     expect(await f.source.findMessageExact(lookup)).toEqual({ kind: 'resolved', record: native() });
-    expect(f.fetch).toHaveBeenCalledTimes(18);
+    expect(f.fetch).toHaveBeenCalledTimes(7);
   });
-  it('bounds physical-row metadata across small pages before claiming completeness', async () => {
+  it('bounds physical-row metadata within the complete batch before claiming completeness', async () => {
     const fetch = vi.fn(async (_url: unknown, init?: RequestInit) => {
-      const page = JSON.parse(String(init?.body)).page;
-      return Response.json({ messages: { pages: 50, total: 5000, currentPage: page,
-        records: Array.from({ length: 100 }, (_, n) => ({ ...row(n), id: `${page}-${n}-${'x'.repeat(2300)}` })) } });
+      const { page, offset } = JSON.parse(String(init?.body));
+      return Response.json({ messages: { pages: Math.ceil(5000 / offset), total: 5000, currentPage: page,
+        records: Array.from({ length: Math.min(offset, Math.max(0, 5000 - (page - 1) * offset)) }, (_, n) => ({ ...row(n), id: `${page}-${n}-${'x'.repeat(2300)}` })) } });
     });
     const source = createEvolutionHistorySource({ baseUrl: 'https://evolution.invalid', apiKey: 'synthetic', fetch });
     await expect(source.findMessageExact(lookup)).rejects.toMatchObject({ code: 'HISTORY_SCAN_LIMIT' });
-    expect(fetch.mock.calls.length).toBeLessThan(50);
+    expect(fetch).toHaveBeenCalledTimes(2);
   });
   it('rejects an excessive page count or oversized response before media I/O', async () => {
     const tooMany = provider(broadcast(), messages => { messages.pages = 51; });
@@ -172,8 +257,8 @@ describe('complete bounded Evolution broadcast lookup', () => {
   it('cancels a stalled response stream when the shared lookup deadline expires', async () => {
     let cancelled = false;
     const fetch = vi.fn(async (_url: unknown, init?: RequestInit) => {
-      const page = JSON.parse(String(init?.body)).page;
-      if (page === 1) return Response.json({ messages: { pages: 5, total: 408, currentPage: 1, records: broadcast().slice(0, 100) } });
+      const { page, offset } = JSON.parse(String(init?.body));
+      if (page === 1 && offset === 100) return Response.json({ messages: { pages: 5, total: 408, currentPage: 1, records: broadcast().slice(0, 100) } });
       return new Response(new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(new TextEncoder().encode('{"messages":')); },
         cancel() { cancelled = true; } }));
     });
@@ -206,6 +291,6 @@ describe('complete bounded Evolution broadcast lookup', () => {
     });
     const source = createEvolutionHistorySource({ baseUrl: 'https://evolution.invalid', apiKey: 'synthetic', fetch: f.fetch, exactLookupTimeoutMs: 1000 });
     await expect(source.mediaExact({ ...lookup, purpose: 'serve' })).rejects.toMatchObject({ name: 'TimeoutError' });
-    expect(cancelled).toBe(true); expect(f.fetch).toHaveBeenCalledTimes(13);
+    expect(cancelled).toBe(true); expect(f.fetch).toHaveBeenCalledTimes(6);
   });
 });
