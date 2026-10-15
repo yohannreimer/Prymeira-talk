@@ -40,6 +40,25 @@ describe('WAHA HTTP contracts', () => {
     await expect(client.getMediaBytes({ url: '/api/files/b' })).rejects.toThrow('size limit');
     expect(cancelled).toHaveBeenCalledOnce();
   });
+  it('rejects declared and streamed oversized JSON before parsing and cancels the body', async () => {
+    const declaredCancel = vi.fn(), streamedCancel = vi.fn();
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(new Response(new ReadableStream({ cancel: declaredCancel }), { headers: { 'content-length': '100' } }))
+      .mockResolvedValueOnce(new Response(new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode('["12345678')); controller.enqueue(new TextEncoder().encode('9012345678"]')); }, cancel: streamedCancel })));
+    const client = (await load()).createWahaClient({ baseUrl: 'https://waha.example', apiKey: 'secret', fetch, maxResponseBytes: 16 });
+    await expect(client.getChats({ session: 's' })).rejects.toMatchObject({ code: 'WAHA_RESPONSE_LIMIT' });
+    await expect(client.getMessages({ session: 's', chatId: '123@c.us' })).rejects.toMatchObject({ code: 'WAHA_RESPONSE_LIMIT' });
+    expect(declaredCancel).toHaveBeenCalledOnce();
+    expect(streamedCancel).toHaveBeenCalledOnce();
+  });
+  it('keeps an oversized successful send response uncertain instead of permitting failover', async () => {
+    const fetch = vi.fn(async () => new Response('not-read', { headers: { 'content-length': '100' } }));
+    const client = (await load()).createWahaClient({ baseUrl: 'https://waha.example', apiKey: 'secret', fetch, maxResponseBytes: 16 });
+    const error = await client.sendText({ session: 's', chatId: '123@c.us', text: 'fixture' }).catch(error => error);
+    expect(error).toMatchObject({ code: 'WAHA_RESPONSE_LIMIT' });
+    expect((await import('../channels/outbound-routing.js')).classifySendFailure(error)).toBe('uncertain');
+    expect(fetch).toHaveBeenCalledOnce();
+  });
   it('provides a real authenticated session client', async () => {
     expect((await load()).createWahaClient).toBeTypeOf('function');
   });

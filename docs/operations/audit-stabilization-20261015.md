@@ -22,3 +22,11 @@ Verify `WAHA_ENABLED`, `WAHA_ROLLOUT_WORKSPACES`, `OUTBOUND_ROUTER_ENABLED`, `CH
 ## Rollback compatibility
 
 Stop candidate business execution loops before restoring prior executors; do not run both generations concurrently. The migrations are additive but older Prisma/runtime code may not understand history-media effects with null receipt/event anchors, automation execution checkpoints or CRM synchronization states. Pause affected consumers and preserve pending work until compatibility is verified. Do not reverse migrations, delete obligations, release uncertain sends, or clear execution checkpoints as a rollback shortcut. Restore exact prior digests only after this review and recheck actual queue progress and channel availability.
+
+## History memory and sustained verification
+
+Recovery scans exhaust provider pages and retain compact identities/hashes for consistency checks. WAHA payloads outside the fixed recovery window are discarded after validation; Evolution retains only payloads inside that window while still counting every provider row for exhaustion and duplicate detection. Chat scans retain projected metadata. Cross-chat comparison uses compact hashes instead of keeping serialized message bodies.
+
+WAHA JSON responses are limited to 4 MiB while streaming, before parsing; recovery scan retention has an 8 MiB JSON budget. Exceeding a limit fails that connection's recovery without advancing its checkpoint or returning a partial history as complete. The sweep continues with other connections. A response limit after a send is still uncertain external delivery and must never authorize an automatic resend.
+
+For an observed worker memory failure, temporarily pause only `INGRESS_RECOVERY_ENABLED` and `WAHA_HISTORY_IMPORT_ENABLED` on the worker while retaining ingress consumption and durable effects. After deploying the validated fix, restore both original values and observe the same task through multiple recovery intervals. Check memory, task stability, live receipt/application/effect progress and history error states separately; a successful initial startup is insufficient. Do not raise memory limits as a substitute for bounding retained provider data.

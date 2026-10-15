@@ -269,6 +269,35 @@ describe('new channel history', () => {
 });
 
 describe('exhausted recovery reads', () => {
+  it('bounds projected chat metadata without claiming partial exhaustion', async () => {
+    const chats = Array.from({ length: 17 }, (_, i) => ({ remoteJid: `1555000${String(i).padStart(4, '0')}@s.whatsapp.net`, profilePicUrl: `https://fixture.invalid/${'x'.repeat(512 * 1024)}` }));
+    const fetch = vi.fn(async (_url: unknown, init?: RequestInit) => Response.json(JSON.parse(String(init?.body)).skip ? [] : chats));
+    const source = createEvolutionHistorySource({ baseUrl: 'https://evolution.invalid', apiKey: 'synthetic', fetch });
+    await expect(source.recoveryChats({ instanceName: 'fixture', from, to: end })).rejects.toMatchObject({ code: 'HISTORY_SCAN_LIMIT' });
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+  it('refuses an oversized retained window instead of certifying its prefix', async () => {
+    const fetch = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      const input = JSON.parse(String(init?.body));
+      return Response.json({ messages: { records: [{ ...row(String(input.page)), message: { conversation: 'x'.repeat(512 * 1024) } }], pages: 17, total: 17 } });
+    });
+    const source = createEvolutionHistorySource({ baseUrl: 'https://evolution.invalid', apiKey: 'synthetic', fetch });
+    await expect(source.recoveryMessages({ instanceName: 'fixture', remoteJid: jid, from, to: end })).rejects.toMatchObject({ code: 'HISTORY_SCAN_LIMIT' });
+    expect(fetch.mock.calls.length).toBeLessThan(18);
+  });
+  it('counts discarded old rows for exhaustion and still rejects their duplicates', async () => {
+    const old = row('old', from.getTime() - 1000), recent = row('recent');
+    const fetch = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      const input = JSON.parse(String(init?.body));
+      return Response.json({ messages: { records: input.page === 1 ? [old] : [recent], pages: 2, total: 2 } });
+    });
+    const source = createEvolutionHistorySource({ baseUrl: 'https://evolution.invalid', apiKey: 'synthetic', fetch });
+    expect(await source.recoveryMessages({ instanceName: 'fixture', remoteJid: jid, from, to: end })).toEqual([expect.objectContaining({ key: recent.key })]);
+    expect(fetch).toHaveBeenCalledTimes(4);
+    const duplicate = createEvolutionHistorySource({ baseUrl: 'https://evolution.invalid', apiKey: 'synthetic',
+      fetch: vi.fn(async () => Response.json({ messages: { records: [old], pages: 2, total: 2 } })) });
+    await expect(duplicate.recoveryMessages({ instanceName: 'fixture', remoteJid: jid, from, to: end })).rejects.toThrow('HISTORY_PAGINATION');
+  });
   it('reads more than 200 chats even when the server caps each response at 37', async () => {
     const chats = Array.from({ length: 205 }, (_, i) => ({ remoteJid: `1555000${String(i).padStart(4, '0')}@s.whatsapp.net` }));
     const fetch = vi.fn(async (_url: unknown, init?: RequestInit) => { const input = JSON.parse(String(init?.body)); return Response.json(chats.slice(input.skip, input.skip + 37)); });

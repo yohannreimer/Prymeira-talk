@@ -3,6 +3,7 @@ import { completeProviderKey, fullProviderKeyMatches, explicitAddressMatch, exac
 import { normalizeChatAddress, type WhatsAppMessageKey } from '../messaging/whatsapp-identity.js';
 import { usableContactName } from '../contacts/contact-name.js';
 import { stable } from '../messaging/canonical-values.js';
+import { HistoryMemoryBudget, historyDigest } from '../channels/history-memory-budget.js';
 
 export type HistoryRecord = {
   key: { id: string; remoteJid: string; remoteJidAlt?: string; participant?: string; participantAlt?: string; fromMe: boolean };
@@ -126,7 +127,7 @@ export function createEvolutionHistorySource(options: { baseUrl: string; apiKey:
   async function recoveryChats(input: { instanceName: string; from: Date; to: Date }): Promise<RecentEvolutionChats> {
     let previous: string | undefined;
     for (let pass = 0; pass < 3; pass++) {
-      const rows = new Map<string, RecentEvolutionChat>(); let exhausted = false;
+      const rows = new Map<string, RecentEvolutionChat>(), budget = new HistoryMemoryBudget(); let exhausted = false;
       for (let offset = 0; offset < 100_000;) {
         const data = await post(`/chat/findChats/${encodeURIComponent(input.instanceName)}`, { take: 100, skip: offset });
         const page = Array.isArray(data) ? data : record(data) && Array.isArray(data.chats) ? data.chats : null;
@@ -139,12 +140,13 @@ export function createEvolutionHistorySource(options: { baseUrl: string; apiKey:
           const alt = last && record(last.key) ? last.key.remoteJidAlt : null;
           const pn = phoneJid(raw.remoteJid) ? raw.remoteJid : phoneJid(raw.remoteJidAlt) ? raw.remoteJidAlt : phoneJid(alt) ? alt : null;
           if (!pn && raw.remoteJid.endsWith('@lid')) throw new Error('HISTORY_CHAT_IDENTITY_INCOMPLETE');
-          rows.set(raw.remoteJid, { remoteJid: raw.remoteJid, phoneJid: pn ?? raw.remoteJid, pushName: typeof raw.pushName === 'string' ? usableContactName(raw.pushName) : null, profilePicUrl: typeof raw.profilePicUrl === 'string' && /^https:\/\//i.test(raw.profilePicUrl) ? raw.profilePicUrl : null });
+          const chat = { remoteJid: raw.remoteJid, phoneJid: pn ?? raw.remoteJid, pushName: typeof raw.pushName === 'string' ? usableContactName(raw.pushName) : null, profilePicUrl: typeof raw.profilePicUrl === 'string' && /^https:\/\//i.test(raw.profilePicUrl) ? raw.profilePicUrl : null };
+          budget.reserve(chat); rows.set(raw.remoteJid, chat);
         }
         offset += page.length;
       }
       if (!exhausted) throw new Error('HISTORY_PAGE_LIMIT');
-      const chats = [...rows.values()].sort((a, b) => a.remoteJid.localeCompare(b.remoteJid)), current = stable(chats.map(chat => [chat.remoteJid, chat.phoneJid]));
+      const chats = [...rows.values()].sort((a, b) => a.remoteJid.localeCompare(b.remoteJid)), current = historyDigest(chats.map(chat => [chat.remoteJid, chat.phoneJid]));
       if (current === previous) return { chats, unresolvedLids: 0 };
       previous = current;
     }
@@ -154,7 +156,7 @@ export function createEvolutionHistorySource(options: { baseUrl: string; apiKey:
     if (!historyAddress(input.remoteJid) || !Number.isFinite(input.from.getTime()) || !Number.isFinite(input.to.getTime()) || input.from > input.to) throw new Error('HISTORY_WINDOW');
     let previous: string | undefined;
     for (let pass = 0; pass < 3; pass++) {
-      const rows = new Map<string, HistoryRecord>(); let pageCount: number | undefined, total: number | null = null;
+      const rows = new Map<string, HistoryRecord>(), seen = new Set<string>(), budget = new HistoryMemoryBudget(); let pageCount: number | undefined, total: number | null = null;
       for (let index = 1; index <= (pageCount ?? 1); index++) {
         const result = await page(input.instanceName, { remoteJid: input.remoteJid }, index);
         if (pageCount !== undefined && pageCount !== result.pages) throw new Error('HISTORY_UNSTABLE');
@@ -167,14 +169,19 @@ export function createEvolutionHistorySource(options: { baseUrl: string; apiKey:
           if (item.key.remoteJid !== input.remoteJid) throw new Error('HISTORY_IDENTITY');
           const identity = exactRecordIdentity(item);
           if (identity.kind !== 'consistent') throw new Error('HISTORY_IDENTITY');
-          const key = stable(identity.key), prior = rows.get(key);
-          if (prior) throw new Error('HISTORY_PAGINATION');
-          rows.set(key, item);
+          const key = stable(identity.key);
+          if (seen.has(key)) throw new Error('HISTORY_PAGINATION');
+          budget.reserve(key); seen.add(key);
+          // Exhaustion and exact identity cover every row. Retain payloads only
+          // for the requested interval, so old history cannot exhaust the worker.
+          if (item.messageTimestamp * 1000 >= input.from.getTime() && item.messageTimestamp * 1000 <= input.to.getTime()) {
+            budget.reserve(item); rows.set(key, item);
+          }
         }
       }
-      if (total !== null && rows.size !== total) throw new Error('HISTORY_PAGINATION');
-      const records = [...rows.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([, item]) => item).filter(item => item.messageTimestamp * 1000 >= input.from.getTime() && item.messageTimestamp * 1000 <= input.to.getTime());
-      const current = stable(records);
+      if (total !== null && seen.size !== total) throw new Error('HISTORY_PAGINATION');
+      const records = [...rows.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([, item]) => item);
+      const current = historyDigest(records);
       if (current === previous) return records.sort((a, b) => a.messageTimestamp - b.messageTimestamp || stable(a.key).localeCompare(stable(b.key)));
       previous = current;
     }

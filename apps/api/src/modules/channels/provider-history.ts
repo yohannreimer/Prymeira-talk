@@ -1,4 +1,3 @@
-import { stable } from '../messaging/canonical-values.js';
 import { randomUUID } from 'node:crypto';
 import type { ChannelConnection, PrismaClient } from '@prisma/client';
 import { normalizeEvolutionWebhook } from '../evolution/evolution-event-normalizer.js';
@@ -8,6 +7,7 @@ import type { WahaClient, WahaMessage } from '../waha/waha.client.js';
 import type { LidMapping, WahaLidResolver } from '../waha/waha-lid-resolver.js';
 import { normalizeChatAddress, parseWahaMessageKey, record, serialized } from '../messaging/whatsapp-identity.js';
 import { normalizeWhatsappPhone } from './channel-connections.js';
+import { HistoryMemoryBudget, historyDigest } from './history-memory-budget.js';
 import { fillContactDetails, persistProviderMessages, type AfterPersist, type CanonicalHistoryChannel, type ProviderMessageItem } from './channel-history-canonical.js';
 
 /**
@@ -40,6 +40,7 @@ export function wahaChatAddress(id: unknown): string | null {
 
 export async function listWahaChats(client: Pick<WahaClient, 'getChats'>, session: string, input: { limit: number; sinceMs?: number; lids?: Pick<WahaLidResolver, 'lookup'> | null }): Promise<ProviderChat[]> {
   const chats: ProviderChat[] = [];
+  const budget = new HistoryMemoryBudget();
   for (let offset = 0; offset < 100_000 && chats.length < input.limit; offset += 100) {
     const page = await client.getChats({ session, limit: 100, offset }) as unknown[];
     if (!Array.isArray(page) || !page.length) break;
@@ -54,8 +55,9 @@ export async function listWahaChats(client: Pick<WahaClient, 'getChats'>, sessio
       if (!remoteJid || !chatAddress) continue;
       const lastActivityMs = seconds(chat.timestamp) ?? seconds(chat.conversationTimestamp) ?? seconds(record(chat.lastMessage).timestamp);
       if (input.sinceMs !== undefined && lastActivityMs !== null && lastActivityMs < input.sinceMs) continue;
-      chats.push({ remoteJid, chatAddress, name: typeof chat.name === 'string' && chat.name.trim() ? chat.name.trim().slice(0, 120) : null,
-        avatarUrl: typeof chat.picture === 'string' && /^https:\/\//.test(chat.picture) ? chat.picture : null, lastActivityMs, ...(lidMappings ? { lidMappings } : {}) });
+      const value = { remoteJid, chatAddress, name: typeof chat.name === 'string' && chat.name.trim() ? chat.name.trim().slice(0, 120) : null,
+        avatarUrl: typeof chat.picture === 'string' && /^https:\/\//.test(chat.picture) ? chat.picture : null, lastActivityMs, ...(lidMappings ? { lidMappings } : {}) };
+      budget.reserve(value); chats.push(value);
       if (chats.length >= input.limit) break;
     }
     if (page.length < 100) break;
@@ -67,13 +69,13 @@ export function wahaItems(session: string, messages: WahaMessage[], lidMappings:
   return messages.flatMap(message => {
     const id = serialized(message.id), timestampMs = seconds(message.timestamp), type = record(message._data).type;
     if (!id || timestampMs === null || isWahaNotice(record(message))) return [];
-    return [{ receiptId: id, timestampMs, fingerprint: stable(message), originalType: typeof type === 'string' ? type : undefined,
+    return [{ receiptId: id, timestampMs, fingerprint: historyDigest(message), originalType: typeof type === 'string' ? type : undefined,
       normalize: context => normalizeWahaEvent(context, { event: 'message.any', session, payload: message }, { verifiedLidMappings: lidMappings }) }];
   });
 }
 
 export function evolutionItems(instance: string, records: HistoryRecord[]): ProviderMessageItem[] {
-  return records.map(item => ({ receiptId: item.key.id, fingerprint: stable(item), timestampMs: item.messageTimestamp * 1000, originalType: item.messageType,
+  return records.map(item => ({ receiptId: item.key.id, fingerprint: historyDigest(item), timestampMs: item.messageTimestamp * 1000, originalType: item.messageType,
     normalize: context => normalizeEvolutionWebhook(context, { event: 'messages.upsert', instance, data: item }) }));
 }
 
@@ -103,10 +105,11 @@ async function chatItems(deps: ProviderHistoryDeps, connection: ChannelConnectio
 /** Offset APIs do not supply a snapshot token. Require two identical, exhausted scans; a
  * repeated page (ignored offset), changed tuple, unknown shape or safety ceiling is incomplete.
  * Even a short page is followed by another request: provider-side caps are not exhaustion. */
-async function stableOffsetScan<T>(read: (offset: number) => Promise<T[]>, identity: (item: T) => string, signature: (item: T) => unknown = item => item): Promise<T[]> {
+async function stableOffsetScan<T>(read: (offset: number) => Promise<T[]>, identity: (item: T) => string, signature: (item: T) => unknown = item => item,
+  options: { retain?: (item: T) => boolean; project?: (item: T) => T } = {}): Promise<T[]> {
   let previous: string | undefined;
   for (let pass = 0; pass < 3; pass++) {
-    const rows = new Map<string, T>();
+    const rows = new Map<string, T>(), hashes = new Map<string, string>(), budget = new HistoryMemoryBudget();
     let exhausted = false;
     for (let offset = 0; offset < 100_000;) {
       const page = await read(offset);
@@ -114,14 +117,19 @@ async function stableOffsetScan<T>(read: (offset: number) => Promise<T[]>, ident
       if (!page.length) { exhausted = true; break; }
       for (const item of page) {
         const key = identity(item);
-        if (!key || rows.has(key)) throw new Error('HISTORY_PAGINATION');
-        rows.set(key, item);
+        if (!key || hashes.has(key)) throw new Error('HISTORY_PAGINATION');
+        const keep = options.retain?.(item) ?? true;
+        const projected = keep ? options.project?.(item) ?? item : null;
+        budget.reserve([key, '0'.repeat(64)]);
+        if (keep) budget.reserve(projected);
+        hashes.set(key, historyDigest(signature(item)));
+        if (keep) rows.set(key, projected!);
       }
       offset += page.length;
     }
     if (!exhausted) throw new Error('HISTORY_PAGE_LIMIT');
     const sorted = [...rows.entries()].sort(([a], [b]) => a.localeCompare(b));
-    const current = stable(sorted.map(([key, item]) => [key, signature(item)]));
+    const current = historyDigest([...hashes].sort(([a], [b]) => a.localeCompare(b)));
     if (current === previous) return sorted.map(([, item]) => item);
     previous = current;
   }
@@ -135,7 +143,13 @@ async function recoveryChats(deps: ProviderHistoryDeps, connection: ChannelConne
     return chats.map(chat => ({ remoteJid: chat.remoteJid, chatAddress: normalizeChatAddress(chat.phoneJid)!, name: chat.pushName, avatarUrl: chat.profilePicUrl, lastActivityMs: null }));
   }
   if (!deps.waha) throw new Error('HISTORY_PROVIDER_UNAVAILABLE');
-  const rows = await stableOffsetScan(offset => deps.waha!.getChats({ session: connection.sessionName, limit: 100, offset }) as Promise<unknown[]>, item => serialized(record(item).id) ?? '', item => serialized(record(item).id));
+  const rows = await stableOffsetScan(offset => deps.waha!.getChats({ session: connection.sessionName, limit: 100, offset }) as Promise<unknown[]>, item => serialized(record(item).id) ?? '', item => serialized(record(item).id), {
+    project: item => {
+      const chat = record(item), timestamp = seconds(chat.timestamp) ?? seconds(chat.conversationTimestamp) ?? seconds(record(chat.lastMessage).timestamp);
+      return { id: serialized(chat.id), name: typeof chat.name === 'string' ? chat.name.trim().slice(0, 120) : null,
+        picture: typeof chat.picture === 'string' ? chat.picture : null, timestamp: timestamp === null ? null : timestamp / 1000 };
+    }
+  });
   // An unresolved address in the interval cannot certify that interval as reconciled.
   for (const item of rows) {
     const id = normalizeChatAddress(serialized(record(item).id));
@@ -148,7 +162,13 @@ async function recoveryItems(deps: ProviderHistoryDeps, connection: ChannelConne
     if (!deps.evolution?.recoveryMessages) throw new Error('HISTORY_COMPLETENESS_UNSUPPORTED');
     return evolutionItems(connection.sessionName, await deps.evolution.recoveryMessages({ instanceName: connection.sessionName, remoteJid: chat.remoteJid, from: new Date(start), to: new Date(end) }));
   }
-  const messages = await stableOffsetScan(offset => deps.waha!.getMessages({ session: connection.sessionName, chatId: chat.remoteJid, limit: pageSize, offset }), message => serialized(message.id) ?? '');
+  const messages = await stableOffsetScan(offset => deps.waha!.getMessages({ session: connection.sessionName, chatId: chat.remoteJid, limit: pageSize, offset }), message => serialized(message.id) ?? '', undefined, {
+    retain: message => {
+      const timestamp = seconds(message.timestamp);
+      if (!isWahaNotice(record(message)) && (!serialized(message.id) || timestamp === null)) throw new Error('HISTORY_RECORD');
+      return timestamp !== null && timestamp >= start && timestamp <= end;
+    }
+  });
   // Malformed, non-notice rows must not disappear while advancing the checkpoint.
   if (messages.some(message => !isWahaNotice(record(message)) && (!serialized(message.id) || seconds(message.timestamp) === null))) throw new Error('HISTORY_RECORD');
   return wahaItems(connection.sessionName, messages, chat.lidMappings);
@@ -191,9 +211,11 @@ export async function recoverConnectionGap(prisma: PrismaClient, deps: ProviderH
   const chats = await recoveryChats(deps, connection, start, end);
   let recovered = 0, held = 0;
   const fingerprints: unknown[] = [];
+  const fingerprintBudget = new HistoryMemoryBudget();
   for (const chat of chats) {
     const items = (await recoveryItems(deps, connection, chat, start, end, Math.max(1, Math.min(100, options.perChat ?? 50)))).filter(item => item.timestampMs >= start && item.timestampMs <= end);
-    fingerprints.push([chat.remoteJid, items.map(item => [item.receiptId, item.timestampMs, item.fingerprint])]);
+    const fingerprint = [chat.remoteJid, historyDigest(items.map(item => [item.receiptId, item.timestampMs, item.fingerprint]))];
+    fingerprintBudget.reserve(fingerprint); fingerprints.push(fingerprint);
     if (!items.length) continue;
     const result = await persistProviderMessages({ prisma, channel, connection: { id: connection.id, provider: connection.provider }, mode: 'recovered_live', items, batchId: randomUUID(), after: deps.after });
     recovered += result.inserted; held += result.held;
@@ -202,11 +224,13 @@ export async function recoverConnectionGap(prisma: PrismaClient, deps: ProviderH
   // The provider may change while each chat is reconciled. Re-read the same fixed
   // interval before its checkpoint commits; a changed result remains retryable.
   const verifyChats = await recoveryChats(deps, connection, start, end), verified: unknown[] = [];
+  const verificationBudget = new HistoryMemoryBudget();
   for (const chat of verifyChats) {
     const items = (await recoveryItems(deps, connection, chat, start, end, Math.max(1, Math.min(100, options.perChat ?? 50)))).filter(item => item.timestampMs >= start && item.timestampMs <= end);
-    verified.push([chat.remoteJid, items.map(item => [item.receiptId, item.timestampMs, item.fingerprint])]);
+    const fingerprint = [chat.remoteJid, historyDigest(items.map(item => [item.receiptId, item.timestampMs, item.fingerprint]))];
+    verificationBudget.reserve(fingerprint); verified.push(fingerprint);
   }
-  if (stable(fingerprints) !== stable(verified)) return { recovered, chats: chats.length, advanced: false, incomplete: 'provider_window_changed' };
+  if (historyDigest(fingerprints) !== historyDigest(verified)) return { recovered, chats: chats.length, advanced: false, incomplete: 'provider_window_changed' };
   const advanced = await prisma.channelConnection.updateMany({ where: { id: connection.id, recoveredThroughAt: connection.recoveredThroughAt, lifecycleGeneration: connection.lifecycleGeneration },
     data: { recoveredThroughAt: new Date(end) } });
   return { recovered, chats: chats.length, advanced: advanced.count === 1 };
