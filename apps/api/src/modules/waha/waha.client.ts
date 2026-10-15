@@ -210,7 +210,7 @@ export function createWahaClient(options: { baseUrl: string; apiKey: string; fet
     getContact: (input: ContactInput) => request<{ id: string; name?: string }>(`/api/contacts${query(input)}`),
     getContactProfilePicture: (input: ContactInput) => request<{ profilePictureURL: string | null }>(`/api/contacts/profile-picture${query(input)}`),
     getProfile: (input: SessionInput) => request<{ id: string; name?: string; picture?: string }>(`/api/${enc(input.session)}/profile`),
-    checkNumber: (input: SessionInput & { phone: string }) => request<{ numberExists: boolean; chatId?: string }>(`/api/contacts/check-exists${query(input)}`),
+    checkNumber: (input: SessionInput & { phone: string }) => request<{ numberExists: boolean; chatId?: string; pn?: string | null }>(`/api/contacts/check-exists${query(input)}`),
     getMediaBytes
   };
 }
