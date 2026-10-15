@@ -1,0 +1,121 @@
+import type { z } from "zod";
+
+/** One message of the conversation, as the harness sees it. "contato" is the other side (supplier, lead, customer). */
+export type HarnessMessage = {
+  autor: "contato" | "agente" | "humano" | "sistema";
+  texto: string;
+  em: string;
+};
+
+/** What the entry triage says about the contact's latest message, before any agent call. */
+export type TriageKind = "humano" | "robo" | "despedida" | "recusa" | "injecao";
+
+export type TriageResult = {
+  kind: TriageKind;
+  /** Where the answer came from: the deterministic rules or the JEV classifier. */
+  fonte: "regras" | "jev";
+  motivo: string;
+};
+
+/**
+ * The next move, decided by code from the record (ficha). The model never chooses the move; it only
+ * writes the message for it. `instrucao` is shown to the writer; `revelar` lists facts the reviewer
+ * allows in this message only (for example the best competing total, when the contact asked for it).
+ */
+export type Jogada = {
+  tipo: string;
+  instrucao: string;
+  /** No message is sent at all (robot, waiting, closed). */
+  silencio?: boolean;
+  /** Hand the conversation to a person with this reason, without writing a reply first. */
+  humano?: string;
+  revelar?: { numeros?: number[] };
+  /** Skills (procedures in plain text) the writer receives only for this move. */
+  skills?: string[];
+  /** Agent-specific data the move carries to `aposEnvio` (for example the total before a discount ask). */
+  dados?: Record<string, unknown>;
+};
+
+export type ToolContext<Ficha, Pedido> = {
+  ficha: Ficha;
+  pedido: Pedido;
+  /** Replaces the record. Tools are the only way the model changes it. */
+  setFicha: (next: Ficha) => void;
+  mensagemAtual: string;
+};
+
+export type HarnessTool<Ficha, Pedido, Args = unknown> = {
+  name: string;
+  description: string;
+  /** JSON Schema sent to the model. Kept explicit (not generated) so the prompt is ours. */
+  parameters: Record<string, unknown>;
+  schema: z.ZodType<Args>;
+  /** Returns the text the model sees as the tool result. Throwing returns the error text instead. */
+  execute: (args: Args, context: ToolContext<Ficha, Pedido>) => string | Promise<string>;
+};
+
+export type ReviewVerdict = { ok: true } | { ok: false; regra: string; motivo: string };
+
+export type ReviewInput<Ficha, Pedido> = {
+  texto: string;
+  ficha: Ficha;
+  pedido: Pedido;
+  jogada: Jogada;
+  historico: HarnessMessage[];
+};
+
+/** A hard rule: plain code, no model. A failed rule blocks the message. */
+export type ReviewRule<Ficha, Pedido> = {
+  id: string;
+  check: (input: ReviewInput<Ficha, Pedido>) => ReviewVerdict;
+};
+
+/**
+ * Everything that makes one agent different from another. The harness (runner, review, triage, trace,
+ * simulator) is the same for all of them; a new agent fills this in.
+ */
+export type AgentDefinition<Ficha, Pedido> = {
+  id: string;
+  /** Who the agent is, tone, what it never does. Plain text, Portuguese. */
+  instrucoes: string;
+  /** Procedures loaded only when a move asks for them, by name. */
+  skills: Record<string, string>;
+  fichaInicial: (pedido: Pedido) => Ficha;
+  /** Compact text of the record for the model. The model never sees the raw object. */
+  renderFicha: (ficha: Ficha, pedido: Pedido) => string;
+  /** Facts about the order that the agent may say. Anything else (ceiling, competitor names) stays out. */
+  renderPedidoPublico: (pedido: Pedido) => string;
+  /** Tools for the update step: the model reads the contact's message and records what it learned. */
+  ferramentasDeLeitura: HarnessTool<Ficha, Pedido, any>[];
+  /** Code decides the next move from the record and the triage. */
+  decidirJogada: (input: { ficha: Ficha; pedido: Pedido; triagem: TriageResult | null; evento: HarnessEvent }) => Jogada;
+  /** Called after a message is sent for a move, so the record reflects what was said. */
+  aposEnvio?: (input: { ficha: Ficha; jogada: Jogada; texto: string }) => Ficha;
+  /** Called after triage, before the update step (for example to mark a robot or a refusal). */
+  aposTriagem?: (input: { ficha: Ficha; triagem: TriageResult }) => Ficha;
+  regras: ReviewRule<Ficha, Pedido>[];
+  /** How many recent messages the writer sees verbatim. The record carries the rest. */
+  janelaDeMensagens?: number;
+};
+
+/** Why the harness is running now. */
+export type HarnessEvent =
+  | { tipo: "abertura" }
+  | { tipo: "mensagem"; texto: string }
+  | { tipo: "silencio"; horasSemResposta: number };
+
+export type TraceStep = {
+  fase: "triagem" | "leitura" | "jogada" | "escrita" | "revisao" | "envio" | "humano" | "silencio";
+  detalhe: unknown;
+  ms?: number;
+};
+
+export type TurnResult<Ficha> = {
+  /** Message to send to the contact, already reviewed. Null when nothing is sent. */
+  enviar: string | null;
+  /** Set when a person must take over, with the reason and a short summary for them. */
+  humano: { motivo: string; resumo: string } | null;
+  ficha: Ficha;
+  jogada: Jogada | null;
+  trace: TraceStep[];
+};
