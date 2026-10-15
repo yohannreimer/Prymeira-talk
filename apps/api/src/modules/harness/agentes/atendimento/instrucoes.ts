@@ -49,3 +49,11 @@ Não é pendência:
 - Demanda terminada: use marcar_encerrada.
 - Se o contato passou o contato de outra pessoa para tratar do assunto, use registrar_contato_indicado.
 - Áudio "[áudio sem transcrição]": você não sabe o que foi dito; não conclua nada a partir dele.`;
+
+/** The reader of live messages: register each question and look it up before anyone calls it hard. */
+export const instrucoesDoLeitor = `Para cada pergunta ou pedido de informação da última mensagem:
+1. registrar_pergunta.
+2. buscar_na_base com as palavras-chave. Se não achar, tente de novo com outras palavras (sinônimo, nome do produto, a cidade).
+3. Se um trecho responde, responder_pergunta citando as palavras exatas dele. Responder inclui dizer que não trabalham com algo, se a base mostra isso.
+4. Só depois de procurar e não achar, marcar_sem_base.
+Se o contato pediu para falar com uma pessoa, chame cliente_pediu_pessoa. Mensagem sem pergunta (só informação, cumprimento, "ok"): não chame nada.`;

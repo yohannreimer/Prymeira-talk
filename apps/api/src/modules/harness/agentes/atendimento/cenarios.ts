@@ -1,14 +1,26 @@
 import type { HarnessMessage } from "../../core/types.js";
 import type { Check, Scenario, ScenarioRun } from "../../simulador/simulador.js";
 import { semelhanca } from "./regras.js";
-import type { ContextoDoAtendimento, FichaDoAtendimento } from "./tipos.js";
+import { baseEmMemoria } from "./ficha.js";
+import type { ContextoDoAtendimento, FichaDoAtendimento, TrechoDaBase } from "./tipos.js";
 
 type Cenario = Scenario<FichaDoAtendimento, ContextoDoAtendimento>;
 type Run = ScenarioRun<FichaDoAtendimento, ContextoDoAtendimento>;
 
+/** A made-up but realistic slice of a steel distributor's approved knowledge, for the live-reply scenarios. */
+export const BASE_VILLEFER: TrechoDaBase[] = [
+  { id: "entrega", titulo: "Entrega e frete", texto: "Entrega própria em Joinville, Jaraguá do Sul e Blumenau em até 48 horas úteis após o faturamento. Frete grátis em Joinville para pedidos acima de R$ 3.000. Outras cidades: frete por transportadora, cotado pelo vendedor." },
+  { id: "pagamento", titulo: "Formas de pagamento", texto: "Aceitamos PIX, cartão em até 3x e boleto 28 dias para empresas com cadastro aprovado. Cadastro: enviar CNPJ e contrato social." },
+  { id: "chapas", titulo: "Chapas", texto: "Chapas de aço carbono laminadas a frio e a quente, de 0,90 mm a 25,4 mm, nos formatos 1000x2000, 1200x3000 e 1500x3000, em estoque permanente. Chapa xadrez de 1/8 a 1/4." },
+  { id: "corte", titulo: "Corte sob medida", texto: "Fazemos corte a laser e guilhotina em chapas até 12,7 mm. Para orçamento, enviar desenho em DXF ou PDF e a quantidade." },
+  { id: "tubos", titulo: "Tubos e metalon", texto: "Tubos industriais redondos, quadrados e retangulares (metalon) de 20x20 a 100x100, paredes #18 a #11, barras de 6 metros." },
+  { id: "linha", titulo: "O que não trabalhamos", texto: "Não trabalhamos com aço inox nem com alumínio." }
+];
+
 export const contextoVillefer = (overrides: Partial<ContextoDoAtendimento> = {}): ContextoDoAtendimento => ({
   empresa: { nome: "Villefer", oQueVende: "Distribuidora de aço: chapas, perfis, tubos, barras e telhas, com corte sob medida." },
   maxFollowups: 3,
+  base: baseEmMemoria(BASE_VILLEFER),
   ...overrides
 });
 
@@ -270,6 +282,97 @@ export const cenarios: Cenario[] = [
         { nome: "duas_tentativas_e_para", ok: jogadas.join(",") === "cobrar_pendencia,cobrar_pendencia,limite_de_tentativas", detalhe: jogadas.join(",") }
       ];
     }
+  }
+];
+
+/** The contact sends these messages, one per turn, then stops. */
+const cliente = (...mensagens: string[]) => ({ tipo: "roteiro" as const, responder: ({ vez }: { vez: number }) => mensagens[vez] ?? null });
+const GENERICA = /consultar (essas |as )?informa[cç][oõ]es|j[aá] te (dou um )?retorno/i;
+
+/** Checks for one live reply: handed over or not, what it says, and never the generic holding phrase. */
+function respostaAoVivo(input: { humano: boolean; fala?: RegExp; humanoFala?: RegExp }) {
+  return (run: Run): Check[] => {
+    const resposta = run.turnos.find((turno) => turno.evento.startsWith("contato:"))?.resultado;
+    const texto = resposta?.enviar ?? "";
+    const checks: Check[] = [
+      { nome: input.humano ? "passou_o_que_faltava" : "respondeu_sem_passar", ok: Boolean(resposta?.humano) === input.humano, detalhe: resposta?.humano?.motivo ?? "sem humano" },
+      { nome: "respondeu_algo", ok: texto.length > 0, detalhe: texto || "(nada enviado)" },
+      { nome: "sem_frase_generica", ok: !GENERICA.test(texto), detalhe: texto }
+    ];
+    if (input.fala) checks.push({ nome: "resposta_certa", ok: input.fala.test(texto), detalhe: texto });
+    if (input.humanoFala) checks.push({ nome: "passou_o_assunto_certo", ok: input.humanoFala.test(resposta?.humano?.motivo ?? ""), detalhe: resposta?.humano?.motivo });
+    return checks;
+  };
+}
+
+/**
+ * Live replies. The first ones are the cases the old engine sent to a person without reading the
+ * base (the safety regex sees "estoque" or "prazo" and hands over): the answer is in the documents,
+ * so handing over counts as a failure.
+ */
+export const cenariosAoVivo: Cenario[] = [
+  {
+    id: "estoque_na_base",
+    titulo: "Estoque de chapa que está na base (hoje vai pra humano)",
+    pedido: contextoVillefer(),
+    persona: cliente("boa tarde, vocês tem chapa 3mm 1200x3000 em estoque?"),
+    maxTrocas: 1,
+    exigeModelo: true,
+    verificar: respostaAoVivo({ humano: false, fala: /estoque|temos|sim/i })
+  },
+  {
+    id: "prazo_na_base",
+    titulo: "Prazo de entrega que está na base (hoje vai pra humano)",
+    pedido: contextoVillefer(),
+    persona: cliente("vcs entregam em jaraguá? qual o prazo?"),
+    maxTrocas: 1,
+    exigeModelo: true,
+    verificar: respostaAoVivo({ humano: false, fala: /48/ })
+  },
+  {
+    id: "pagamento_na_base",
+    titulo: "Boleto 28 dias, que está na base",
+    pedido: contextoVillefer(),
+    persona: cliente("aceita boleto 28 dias?"),
+    maxTrocas: 1,
+    exigeModelo: true,
+    verificar: respostaAoVivo({ humano: false, fala: /28|cadastro|CNPJ/i })
+  },
+  {
+    id: "nao_trabalha_na_base",
+    titulo: "A base diz que não trabalham com inox: responde, não passa",
+    pedido: contextoVillefer(),
+    persona: cliente("tem barra redonda de inox 316 de 2 polegadas?"),
+    maxTrocas: 1,
+    exigeModelo: true,
+    verificar: respostaAoVivo({ humano: false, fala: /n[aã]o trabalhamos|inox/i })
+  },
+  {
+    id: "fora_da_base",
+    titulo: "Pergunta que a base não responde: passa, com frase específica",
+    pedido: contextoVillefer(),
+    persona: cliente("vocês emitem certificado de qualidade da usina junto com a nota?"),
+    maxTrocas: 1,
+    exigeModelo: true,
+    verificar: respostaAoVivo({ humano: true, fala: /certificado/i, humanoFala: /certificado/i })
+  },
+  {
+    id: "metade_na_base",
+    titulo: "Uma parte na base e outra não: responde uma, passa a outra",
+    pedido: contextoVillefer(),
+    persona: cliente("qual o prazo pra blumenau? e vocês dão desconto pra 5 toneladas?"),
+    maxTrocas: 1,
+    exigeModelo: true,
+    verificar: respostaAoVivo({ humano: true, fala: /48/, humanoFala: /desconto|tonelada/i })
+  },
+  {
+    id: "pediu_pessoa",
+    titulo: "Cliente pediu uma pessoa",
+    pedido: contextoVillefer(),
+    persona: cliente("quero falar com um vendedor por favor"),
+    maxTrocas: 1,
+    exigeModelo: true,
+    verificar: respostaAoVivo({ humano: true, fala: /vendedor/i })
   }
 ];
 

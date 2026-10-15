@@ -16,9 +16,8 @@ export function decidirJogada(input: {
   evento: HarnessEvent;
 }): Jogada {
   const { ficha, pedido, evento } = input;
-  if (evento.tipo !== "silencio") {
-    return { tipo: "atendimento_atual", silencio: true, instrucao: "As respostas ao vivo ainda saem do atendimento atual; este agente cuida do silêncio." };
-  }
+  if (evento.tipo === "abertura") return { tipo: "sem_abertura", silencio: true, instrucao: "O atendimento responde; não abre conversa." };
+  if (evento.tipo === "mensagem") return jogadaDaMensagem(ficha, input.triagem);
   if (NAO_CLIENTE.has(ficha.contato.tipo)) {
     return { tipo: "contato_nao_cliente", silencio: true, instrucao: `Contato ${ficha.contato.tipo}: sem follow-up.` };
   }
@@ -76,8 +75,64 @@ export function decidirJogada(input: {
   };
 }
 
+/**
+ * A live reply. The order is the point: the reader registered each question and searched the base;
+ * code answers with what has a quoted passage and hands over only what the base does not cover.
+ */
+function jogadaDaMensagem(ficha: FichaDoAtendimento, triagem: TriageResult | null): Jogada {
+  if (triagem?.kind === "robo") return { tipo: "aguardar_pessoa", silencio: true, instrucao: "Atendimento automático do outro lado." };
+  if (triagem?.kind === "recusa" || triagem?.kind === "despedida") {
+    return { tipo: "encerrar", instrucao: "O contato encerrou ou recusou. Agradeça em uma frase, sem insistir e sem perguntar nada." };
+  }
+  const atuais = ficha.perguntas.filter((item) => item.status !== "tratada");
+  const respondidas = atuais.filter((item) => item.status === "respondida");
+  // Unanswered after a search, or never searched: a person answers it. Nothing is promised in general.
+  const semBase = atuais.filter((item) => item.status === "sem_base" || (item.status === "aberta" && item.buscas > 0));
+  const naoBuscadas = atuais.filter((item) => item.status === "aberta" && item.buscas === 0);
+  const respostas = respondidas.map((item) => `"${item.texto}": a base diz "${item.resposta!.citacao}"`);
+
+  if (ficha.pediuPessoa) {
+    return {
+      tipo: "passar_pessoa",
+      instrucao: [
+        ...(respostas.length ? [`Responda primeiro, com estas informações da base: ${respostas.join("; ")}.`] : []),
+        "O contato pediu uma pessoa. Diga em uma frase que vai chamar o vendedor para continuar."
+      ].join(" "),
+      avisarHumano: "O contato pediu para falar com uma pessoa.",
+      dados: { podePrometerRetorno: true }
+    };
+  }
+  if (semBase.length) {
+    return {
+      tipo: "responder_e_passar",
+      instrucao: [
+        ...(respostas.length ? [`Responda com estas informações da base: ${respostas.join("; ")}.`] : []),
+        `Os documentos não respondem: ${semBase.map((item) => `"${item.texto}"`).join(", ")}. Diga, nomeando esse assunto, que o vendedor confirma isso com ele. Não diga nada genérico como "vou consultar as informações".`
+      ].join(" "),
+      avisarHumano: `Sem base nos documentos para: ${semBase.map((item) => item.texto).join(" | ")}`,
+      dados: { podePrometerRetorno: true, perguntasSemBase: semBase.map((item) => item.id) }
+    };
+  }
+  if (respostas.length) {
+    return {
+      tipo: "responder",
+      instrucao: `Responda com estas informações da base, com as palavras do cliente: ${respostas.join("; ")}.${naoBuscadas.length ? ` Sobre ${naoBuscadas.map((item) => `"${item.texto}"`).join(", ")}, não afirme nada; pergunte o detalhe que falta.` : ""} Se fizer sentido, termine com uma pergunta que ajude o pedido a andar.`
+    };
+  }
+  return {
+    tipo: "conversar",
+    instrucao: naoBuscadas.length
+      ? `Sobre ${naoBuscadas.map((item) => `"${item.texto}"`).join(", ")}: não afirme preço, prazo, estoque nem condição. Pergunte o detalhe que falta (produto, medida, quantidade, cidade).`
+      : "Responda ao que o contato disse, curto. Se faltar algo para o pedido andar (produto, medida, quantidade, cidade), pergunte uma coisa só."
+  };
+}
+
 export function aposEnvio(input: { ficha: FichaDoAtendimento; jogada: Jogada; texto: string }): FichaDoAtendimento {
+  if (input.jogada.tipo !== "cobrar_pendencia") {
+    // Everything asked so far was handled by this reply (answered here or passed to a person).
+    return { ...input.ficha, pediuPessoa: false, perguntas: input.ficha.perguntas.map((item) => ({ ...item, status: "tratada" as const })) };
+  }
   const pendenciaId = input.jogada.dados?.pendenciaId;
-  if (input.jogada.tipo !== "cobrar_pendencia" || typeof pendenciaId !== "string") return input.ficha;
+  if (typeof pendenciaId !== "string") return input.ficha;
   return { ...input.ficha, followups: [...input.ficha.followups, { texto: input.texto, pendenciaId }] };
 }

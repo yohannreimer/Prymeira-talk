@@ -13,7 +13,7 @@ import { createTriage, triageByRules } from "./core/triage.js";
 import type { Jogada } from "./core/types.js";
 import { renderReport, runScenario, runSuite } from "./simulador/simulador.js";
 import { atendimento } from "./agentes/atendimento/index.js";
-import { cenarios as cenariosAtendimento, contextoVillefer, conversa } from "./agentes/atendimento/cenarios.js";
+import { cenarios as cenariosAtendimento, cenariosAoVivo, contextoVillefer, conversa } from "./agentes/atendimento/cenarios.js";
 import { conferirProva } from "./agentes/atendimento/ferramentas.js";
 import { fichaInicial as fichaInicialAtendimento } from "./agentes/atendimento/ficha.js";
 import { decidirJogada as decidirJogadaAtendimento } from "./agentes/atendimento/jogadas.js";
@@ -292,7 +292,6 @@ describe("atendimento: follow-up no harness", () => {
     expect(decide(fichaAtd({ pendencias: [pendencia("cliente", 1)], encerrada: { motivo: "fechou", prova: { mensagem: 3, trecho: "x" } } })).tipo).toBe("encerrada");
     expect(decide(fichaAtd({ pendencias: [pendencia("cliente", 5)], encerrada: { motivo: "fechou o anterior", prova: { mensagem: 3, trecho: "x" } } })).tipo).toBe("cobrar_pendencia");
     expect(decide(fichaAtd({ pendencias: [pendencia("cliente", 2)], followups: [{ texto: "a", pendenciaId: "p1" }, { texto: "b", pendenciaId: "p1" }] }), contextoVillefer({ maxFollowups: 2 })).tipo).toBe("limite_de_tentativas");
-    expect(decidirJogadaAtendimento({ ficha: fichaAtd({ pendencias: [pendencia("cliente", 2)] }), pedido: contexto, triagem: null, evento: { tipo: "mensagem", texto: "oi" } }).silencio).toBe(true);
   });
 
   it("blocks a follow-up that repeats an earlier one or brings a new price", async () => {
@@ -346,5 +345,89 @@ describe("sem enrolação: o escritor não estaciona a conversa", () => {
     expect(result.humano).toBeNull();
     expect(result.enviar).toMatch(/telhas/);
     expect(result.trace.some((step) => step.fase === "escrita" && (step.detalhe as { pedirHumanoRecusado?: string }).pedirHumanoRecusado === "pergunta_dificil")).toBe(true);
+  });
+});
+
+describe("atendimento ao vivo: consulta a base antes de passar para humano", () => {
+  const leitor = (...rodadas: ReturnType<typeof toolCall>[][]) =>
+    createScriptedModel("leitor", (_request, index) => ({ content: null, toolCalls: rodadas[index] ?? [] }));
+  const escritor = (texto: string) => createScriptedModel("escritor", () => ({ content: null, toolCalls: [toolCall("responder", { texto })] }));
+  const turno = (mensagem: string, deps: Parameters<typeof runTurn>[1]) => runTurn(atendimento, { triage: createTriage(), ...deps }, {
+    ficha: fichaInicialAtendimento(),
+    pedido: contextoVillefer(),
+    historico: [{ autor: "contato", texto: mensagem, em: "2026-10-15T13:00:00.000Z" }],
+    evento: { tipo: "mensagem", texto: mensagem }
+  });
+
+  it("answers from a quoted passage without handing over", async () => {
+    const result = await turno("vcs entregam em jaraguá? qual o prazo?", {
+      leitor: leitor(
+        [toolCall("registrar_pergunta", { texto: "entregam em Jaraguá? qual o prazo?" })],
+        [toolCall("buscar_na_base", { perguntaId: "q1", consulta: "entrega Jaraguá prazo" })],
+        [toolCall("responder_pergunta", { perguntaId: "q1", trechoId: "entrega", citacao: "Jaraguá do Sul e Blumenau em até 48 horas úteis" })]
+      ),
+      model: escritor("Entregamos sim! Em Jaraguá do Sul o prazo é de até 48 horas úteis depois do faturamento. O que você precisa?")
+    });
+    expect(result.jogada?.tipo).toBe("responder");
+    expect(result.humano).toBeNull();
+    expect(result.enviar).toMatch(/48 horas/);
+    expect(result.ficha.perguntas.every((item) => item.status === "tratada")).toBe(true);
+  });
+
+  it("cannot call a question unanswerable before searching", async () => {
+    const result = await turno("emitem certificado da usina?", {
+      leitor: leitor(
+        [toolCall("registrar_pergunta", { texto: "emitem certificado da usina?" })],
+        [toolCall("marcar_sem_base", { perguntaId: "q1" })]
+      ),
+      model: escritor("Qual material você precisa com certificado?")
+    });
+    const leitura = result.trace.find((step) => step.fase === "leitura")!.detalhe as Array<{ resultado: string }>;
+    expect(leitura[1].resultado).toMatch(/busque na base antes/);
+    expect(result.jogada?.tipo).toBe("conversar");
+  });
+
+  it("answers what the base covers and hands over only the rest, with a specific line", async () => {
+    const result = await turno("prazo pra blumenau? e desconto pra 5 toneladas?", {
+      leitor: leitor(
+        [toolCall("registrar_pergunta", { texto: "prazo para Blumenau" }), toolCall("registrar_pergunta", { texto: "desconto para 5 toneladas" })],
+        [toolCall("buscar_na_base", { perguntaId: "q1", consulta: "entrega Blumenau" }), toolCall("buscar_na_base", { perguntaId: "q2", consulta: "desconto toneladas" })],
+        [toolCall("responder_pergunta", { perguntaId: "q1", trechoId: "entrega", citacao: "em até 48 horas úteis" }), toolCall("marcar_sem_base", { perguntaId: "q2" })]
+      ),
+      model: escritor("Pra Blumenau a entrega é em até 48 horas úteis. O desconto pra 5 toneladas o vendedor confirma com você.")
+    });
+    expect(result.jogada?.tipo).toBe("responder_e_passar");
+    expect(result.enviar).toMatch(/48 horas/);
+    expect(result.humano?.motivo).toMatch(/desconto para 5 toneladas/);
+  });
+
+  it("rejects a citation that is not in the passage", async () => {
+    const result = await turno("tem chapa 3mm?", {
+      leitor: leitor(
+        [toolCall("registrar_pergunta", { texto: "tem chapa 3mm?" })],
+        [toolCall("buscar_na_base", { perguntaId: "q1", consulta: "chapa 3mm" })],
+        [toolCall("responder_pergunta", { perguntaId: "q1", trechoId: "chapas", citacao: "chapa 3 mm a R$ 12 o quilo" })]
+      ),
+      model: escritor("Qual a medida da chapa?")
+    });
+    expect(result.ficha.perguntas[0].status).not.toBe("respondida");
+  });
+
+  it("blocks a price that is neither in the conversation nor in a passage seen", async () => {
+    const result = await turno("tem chapa 3mm?", {
+      leitor: leitor(
+        [toolCall("registrar_pergunta", { texto: "tem chapa 3mm?" })],
+        [toolCall("buscar_na_base", { perguntaId: "q1", consulta: "chapa" })],
+        [toolCall("responder_pergunta", { perguntaId: "q1", trechoId: "chapas", citacao: "de 0,90 mm a 25,4 mm" })]
+      ),
+      model: escritor("Temos sim, a chapa 3 mm sai R$ 480 a unidade.")
+    });
+    const revisoes = result.trace.filter((step) => step.fase === "revisao").map((step) => (step.detalhe as { regra?: string }).regra);
+    expect(revisoes[0]).toBe("sem_valor_novo");
+  });
+
+  it("every live scenario needs a model and starts without an opening", () => {
+    expect(cenariosAoVivo.length).toBeGreaterThanOrEqual(7);
+    expect(cenariosAoVivo.every((scenario) => scenario.exigeModelo && !scenario.historicoInicial)).toBe(true);
   });
 });

@@ -4,14 +4,14 @@ import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { resolveOpenAiCompatibleSettings } from "../src/modules/agents/ai-provider-settings.js";
 import { atendimento } from "../src/modules/harness/agentes/atendimento/index.js";
-import { cenarios as cenariosAtendimento, cenariosDeCasos } from "../src/modules/harness/agentes/atendimento/cenarios.js";
+import { cenarios as cenariosAtendimento, cenariosAoVivo, cenariosDeCasos } from "../src/modules/harness/agentes/atendimento/cenarios.js";
 import { createJuizDeFollowup } from "../src/modules/harness/agentes/atendimento/juiz.js";
 import { cenarios } from "../src/modules/harness/agentes/comprador/cenarios.js";
 import { comprador } from "../src/modules/harness/agentes/comprador/index.js";
 import { createFakeComprador } from "../src/modules/harness/agentes/comprador/modelos-falsos.js";
 import { createJevClient } from "../src/modules/harness/core/jev.js";
 import { createOpenAiCompatibleModel, type ModelClient } from "../src/modules/harness/core/model.js";
-import { createJevJudge } from "../src/modules/harness/core/review.js";
+import { createJevJudge, type Judge } from "../src/modules/harness/core/review.js";
 import type { RunnerDeps } from "../src/modules/harness/core/runner.js";
 import { createTriage } from "../src/modules/harness/core/triage.js";
 import { renderReport, runSuite } from "../src/modules/harness/simulador/simulador.js";
@@ -19,7 +19,7 @@ import { renderReport, runSuite } from "../src/modules/harness/simulador/simulad
 config({ path: resolve(import.meta.dirname, "../../../.env") });
 
 // Runs an agent against its scenarios and prints the scorecard (pass^k).
-// HARNESS_AGENTE=comprador (default) or atendimento (follow-up on silence; HARNESS_CASOS=cases.jsonl adds
+// HARNESS_AGENTE=comprador (default) or atendimento (live replies with the knowledge base, and follow-up on silence; HARNESS_CASOS=cases.jsonl adds
 // labeled real conversations in the evaluate-followup-brain format).
 // Nothing is sent to WhatsApp and nothing is written to the database.
 //
@@ -85,7 +85,7 @@ async function runAtendimento() {
   const casos = process.env.HARNESS_CASOS
     ? cenariosDeCasos((await readFile(resolve(process.env.HARNESS_CASOS), "utf8")).split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line)))
     : [];
-  const scenarios = [...cenariosAtendimento, ...casos].filter((scenario) => !wanted.length || wanted.includes(scenario.id));
+  const scenarios = [...cenariosAoVivo, ...cenariosAtendimento, ...casos].filter((scenario) => !wanted.length || wanted.includes(scenario.id));
   if (process.env.HARNESS_OFFLINE === "1") throw new Error("Os cenários de atendimento precisam de modelo: use HARNESS_WORKSPACE_ID ou HARNESS_BASE_URL.");
   const endpoint = await resolveEndpoint();
   const mode = process.env.HARNESS_MODE === "json" ? "json" : "tools";
@@ -100,7 +100,13 @@ async function runAtendimento() {
   const jev = process.env.JEV_API_KEY ? createJevClient({ apiKey: process.env.JEV_API_KEY, model: process.env.JEV_MODEL }) : undefined;
   const report = await runSuite({
     agent: atendimento,
-    deps: () => ({ model, analista, ...(jev ? { judge: createJuizDeFollowup(jev), judgeFailClosed: true } : {}) }),
+    deps: () => ({
+      model,
+      analista,
+      triage: createTriage({ jev }),
+      // Follow-ups get the "is it worth sending?" judge; live replies get the general one.
+      ...(jev ? { judge: juizPorJogada(createJuizDeFollowup(jev), createJevJudge(jev)), judgeFailClosed: true } : {})
+    }),
     scenarios,
     k,
     onProgress: (line) => console.error(line)
@@ -109,6 +115,10 @@ async function runAtendimento() {
   if (process.env.HARNESS_RELATORIO) await writeFile(resolve(process.env.HARNESS_RELATORIO), markdown);
   console.log(markdown);
   if (report.passK < 1) process.exitCode = 1;
+}
+
+function juizPorJogada(followup: Judge, geral: Judge): Judge {
+  return (input) => (input.jogada.tipo === "cobrar_pendencia" ? followup : geral)(input);
 }
 
 async function resolveEndpoint(): Promise<{ baseUrl: string; apiKey: string; model: string }> {

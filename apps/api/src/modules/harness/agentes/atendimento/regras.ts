@@ -17,7 +17,8 @@ export function semelhanca(a: string, b: string) {
 
 const naoRepete: Rule = {
   id: "nao_repete",
-  check: ({ texto, ficha, historico }) => {
+  check: ({ texto, ficha, historico, jogada }) => {
+    if (jogada.tipo !== "cobrar_pendencia") return { ok: true };
     const anteriores = [
       ...ficha.followups.map((item) => item.texto),
       ...historico.filter((message) => message.autor !== "contato").slice(-6).map((message) => message.texto)
@@ -29,11 +30,12 @@ const naoRepete: Rule = {
   }
 };
 
-/** A follow-up only repeats facts already in the conversation: no new price or percentage. */
+/** Prices and percentages only come from the conversation or the base passages seen: never a new one. */
 const semValorNovo: Rule = {
   id: "sem_valor_novo",
-  check: ({ texto, historico }) => {
-    const conversa = historico.map((message) => message.texto).join("\n");
+  check: ({ texto, historico, ficha }) => {
+    // Known values: the conversation and the base passages the reader actually saw.
+    const conversa = [...historico.map((message) => message.texto), ...Object.values(ficha.trechosVistos ?? {})].join("\n");
     const valores = findMoneyAmounts(conversa);
     const novo = findMoneyAmounts(texto).find((value) => !valores.some((known) => sameAmount(known, value)));
     if (novo !== undefined) return { ok: false, regra: "sem_valor_novo", motivo: `A mensagem cita R$ ${novo}, que não aparece na conversa. Não invente valores.` };

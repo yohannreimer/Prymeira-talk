@@ -29,6 +29,11 @@ export type Jogada = {
   silencio?: boolean;
   /** Hand the conversation to a person with this reason, without writing a reply first. */
   humano?: string;
+  /**
+   * Send the reply AND hand over with this reason: the agent answered what it could and a person
+   * takes the rest (for example a question the knowledge base does not answer).
+   */
+  avisarHumano?: string;
   revelar?: { numeros?: number[] };
   /** Skills (procedures in plain text) the writer receives only for this move. */
   skills?: string[];
@@ -89,6 +94,10 @@ export type AgentDefinition<Ficha, Pedido> = {
   renderPedidoPublico: (pedido: Pedido) => string;
   /** Tools for the update step: the model reads the contact's message and records what it learned. */
   ferramentasDeLeitura: HarnessTool<Ficha, Pedido, any>[];
+  /** Extra instructions for the update step (for example: look questions up in the knowledge base). */
+  instrucoesDoLeitor?: string;
+  /** Tool rounds in the update step. Defaults to the runner's (3). */
+  maxRodadasDeLeitura?: number;
   /** Code decides the next move from the record and the triage. */
   decidirJogada: (input: { ficha: Ficha; pedido: Pedido; triagem: TriageResult | null; evento: HarnessEvent }) => Jogada;
   /** Called after a message is sent for a move, so the record reflects what was said. */

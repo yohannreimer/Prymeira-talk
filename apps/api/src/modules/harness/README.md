@@ -39,7 +39,9 @@ Um agente novo é uma pasta em `agentes/` que preenche `AgentDefinition` (`core/
 
 Agentes:
 - `comprador`: módulo de orçamentos.
-- `atendimento`: por enquanto, só o follow-up (silêncio) do atendimento. As respostas ao vivo continuam no motor atual até migrarem.
+- `atendimento`: respostas ao vivo e follow-up. Ainda roda só no simulador; o atendimento real continua no motor atual.
+  - **Ao vivo**, o leitor registra cada pergunta e procura nos documentos (`buscar_na_base`). Ela só conta como respondida com a citação exata de um trecho, e só pode ser marcada "sem base" depois de procurar. O código responde o que tem trecho e passa para o vendedor só o que a base não cobre, com uma frase sobre aquele assunto (jogada `responder_e_passar`).
+  - **No silêncio**, o analista confere a ficha e o código decide entre cobrar o cliente, lembrar o vendedor ou ficar quieto.
 
 ## Simulador
 

@@ -155,3 +155,100 @@ function nullableProva() {
 }
 
 export const ferramentasDoAnalista = [classificarContato, abrirPendencia, resolverPendencia, marcarEncerrada, marcarEmAndamento, registrarIndicado];
+
+/* ---------- Live conversation: questions answered from the knowledge base ---------- */
+
+const perguntaArgs = z.object({ texto: z.string().trim().min(3).max(300) });
+const registrarPergunta: Tool<z.infer<typeof perguntaArgs>> = {
+  name: "registrar_pergunta",
+  description: "Registra cada pergunta ou pedido de informação da ÚLTIMA mensagem do contato (preço, estoque, prazo, frete, pagamento, medida, se vocês têm um produto...). Uma chamada por pergunta.",
+  parameters: { type: "object", properties: { texto: { type: "string", description: "A pergunta, com as palavras do contato." } }, required: ["texto"], additionalProperties: false },
+  schema: perguntaArgs,
+  execute(args, context) {
+    const id = `q${context.ficha.perguntas.length + 1}`;
+    const ficha = { ...context.ficha, perguntas: [...context.ficha.perguntas, { id, texto: args.texto, status: "aberta" as const, resposta: null, buscas: 0 }] };
+    context.setFicha(ficha);
+    return `Pergunta ${id} registrada. Agora procure a resposta com buscar_na_base.`;
+  }
+};
+
+const buscaArgs = z.object({ perguntaId: z.string().min(1), consulta: z.string().trim().min(2).max(200) });
+const buscarNaBase: Tool<z.infer<typeof buscaArgs>> = {
+  name: "buscar_na_base",
+  description: "Procura a resposta de uma pergunta nos documentos aprovados da empresa (catálogo, políticas, perguntas frequentes). Pode buscar mais de uma vez com palavras diferentes.",
+  parameters: {
+    type: "object",
+    properties: { perguntaId: { type: "string" }, consulta: { type: "string", description: "Palavras-chave da pergunta (produto, medida, cidade, assunto)." } },
+    required: ["perguntaId", "consulta"],
+    additionalProperties: false
+  },
+  schema: buscaArgs,
+  async execute(args, context) {
+    const pergunta = context.ficha.perguntas.find((item) => item.id === args.perguntaId);
+    if (!pergunta) throw new Error(`pergunta ${args.perguntaId} não existe; registre com registrar_pergunta.`);
+    const trechos = context.pedido.base ? await context.pedido.base.buscar(args.consulta) : [];
+    const ficha = {
+      ...context.ficha,
+      perguntas: context.ficha.perguntas.map((item) => item.id === pergunta.id ? { ...item, buscas: item.buscas + 1 } : item),
+      trechosVistos: { ...context.ficha.trechosVistos, ...Object.fromEntries(trechos.map((trecho) => [trecho.id, trecho.texto])) }
+    };
+    context.setFicha(ficha);
+    if (!trechos.length) return "Nada encontrado. Tente outras palavras; se ainda assim não houver, use marcar_sem_base.";
+    return trechos.map((trecho) => `[${trecho.id}] ${trecho.titulo}: ${trecho.texto}`).join("\n");
+  }
+};
+
+const respostaArgs = z.object({ perguntaId: z.string().min(1), trechoId: z.string().min(1), citacao: z.string().trim().min(3) });
+const responderPergunta: Tool<z.infer<typeof respostaArgs>> = {
+  name: "responder_pergunta",
+  description: "Marca a pergunta como respondida pela base, citando as palavras EXATAS do trecho que responde. Use só quando o trecho responde de verdade o que foi perguntado.",
+  parameters: {
+    type: "object",
+    properties: { perguntaId: { type: "string" }, trechoId: { type: "string" }, citacao: { type: "string", description: "Palavras exatas do trecho." } },
+    required: ["perguntaId", "trechoId", "citacao"],
+    additionalProperties: false
+  },
+  schema: respostaArgs,
+  execute(args, context) {
+    const texto = context.ficha.trechosVistos[args.trechoId];
+    if (!texto) throw new Error(`o trecho ${args.trechoId} não apareceu em nenhuma busca.`);
+    if (!normalize(texto).includes(normalize(args.citacao))) throw new Error(`a citação não está no trecho ${args.trechoId}. Copie as palavras exatas.`);
+    const ficha = {
+      ...context.ficha,
+      perguntas: context.ficha.perguntas.map((item) => item.id === args.perguntaId
+        ? { ...item, status: "respondida" as const, resposta: { trechoId: args.trechoId, citacao: args.citacao } }
+        : item)
+    };
+    context.setFicha(ficha);
+    return ok(ficha);
+  }
+};
+
+const semBaseArgs = z.object({ perguntaId: z.string().min(1) });
+const marcarSemBase: Tool<z.infer<typeof semBaseArgs>> = {
+  name: "marcar_sem_base",
+  description: "Marca que os documentos não respondem a pergunta. Só depois de buscar. Uma pessoa da empresa vai responder essa parte.",
+  parameters: { type: "object", properties: { perguntaId: { type: "string" } }, required: ["perguntaId"], additionalProperties: false },
+  schema: semBaseArgs,
+  execute(args, context) {
+    const pergunta = context.ficha.perguntas.find((item) => item.id === args.perguntaId);
+    if (!pergunta) throw new Error(`pergunta ${args.perguntaId} não existe.`);
+    if (pergunta.buscas === 0) throw new Error("busque na base antes (buscar_na_base). Só marque sem base depois de procurar.");
+    const ficha = { ...context.ficha, perguntas: context.ficha.perguntas.map((item) => item.id === pergunta.id ? { ...item, status: "sem_base" as const } : item) };
+    context.setFicha(ficha);
+    return ok(ficha);
+  }
+};
+
+const pediuPessoa: Tool<Record<string, never>> = {
+  name: "cliente_pediu_pessoa",
+  description: "O contato pediu claramente para falar com uma pessoa, vendedor ou atendente humano.",
+  parameters: { type: "object", properties: {}, additionalProperties: false },
+  schema: z.object({}).strict() as unknown as z.ZodType<Record<string, never>>,
+  execute(_args, context) {
+    context.setFicha({ ...context.ficha, pediuPessoa: true });
+    return "Registrado.";
+  }
+};
+
+export const ferramentasDeLeitura = [registrarPergunta, buscarNaBase, responderPergunta, marcarSemBase, pediuPessoa];
