@@ -428,8 +428,11 @@ export function createAgentFollowupRuntime(input: {
       await input.followups.recoverClaimedFollowup({ workspaceId: runInput.workspaceId, followupId: followup.id, claim: claimToken, outcome: "retry", reason: `harness_followup_failed: ${message}` });
       return { status: "failed", followupId: followup.id, message };
     }
+    const automatico = d.plan.humanCommercialDelivery === "automatic" && followup.kind === "human_commercial";
+    // A draft that goes to review is not an attempt yet: the seller may discard it. Only what is sent counts.
+    const ficha = result.tipo === "mensagem" && !automatico ? { ...result.ficha, followups: result.ficha.followups.slice(0, -1) } : result.ficha;
     if (session && prisma.aiAgentSession) {
-      await prisma.aiAgentSession.update({ where: { workspaceId_id: { workspaceId: runInput.workspaceId, id: session.id } }, data: { metadata: metadataComFicha(session.metadata, result.ficha) } });
+      await prisma.aiAgentSession.update({ where: { workspaceId_id: { workspaceId: runInput.workspaceId, id: session.id } }, data: { metadata: metadataComFicha(session.metadata, ficha) } });
     }
     const decision = { mode: "harness", jogada: result.jogada, step: followup.stepIndex, analyzedAt: now.toISOString(),
       trace: result.trace.map((step) => ({ fase: step.fase, ms: step.ms, detalhe: step.detalhe })) };
@@ -445,7 +448,7 @@ export function createAgentFollowupRuntime(input: {
       if (updated.count === 1) await publish(followup);
       return { status: "review", followupId: followup.id };
     }
-    if (d.plan.humanCommercialDelivery !== "automatic" || followup.kind !== "human_commercial") {
+    if (!automatico) {
       await markReview({ followup, decision, reason: "harness_review", draftBody: result.texto });
       return { status: "review", followupId: followup.id };
     }

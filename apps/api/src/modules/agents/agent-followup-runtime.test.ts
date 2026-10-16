@@ -1084,7 +1084,7 @@ describe("follow-up by the new attendance agent", () => {
     contato: { tipo: "cliente" as const, prova: null },
     pendencias: [{ id: "p1", dono, descricao: dono === "cliente" ? "informar a espessura da chapa" : "mandar o orçamento das chapas", prova: { mensagem: 2, trecho: "Qual espessura você precisa?" }, status: "aberta" as const, resolvidaPor: null }]
   });
-  function setup(input: { dono: "cliente" | "empresa"; reason?: string; writer?: string; anchorMessageAt?: Date }) {
+  function setup(input: { dono: "cliente" | "empresa"; reason?: string; writer?: string; anchorMessageAt?: Date; delivery?: "review" | "automatic" }) {
     const analista = createScriptedModel("analista", () => ({ content: null, toolCalls: [] }));
     const model = createScriptedModel("escritor", () => ({ content: null, toolCalls: [toolCall("responder", { texto: input.writer ?? "Oi Ana, conseguiu ver a espessura da chapa?" })] }));
     const followup = { ...baseFollowup, kind: "human_commercial" as const, sessionId: ids.session, status: "processing", lockedAt: now, reason: input.reason ?? "scheduled", anchorMessageAt: input.anchorMessageAt ?? new Date("2026-09-22T10:01:00.000Z") };
@@ -1092,7 +1092,7 @@ describe("follow-up by the new attendance agent", () => {
     const session = { id: ids.session, metadata: { handoffBrief: { nota: "mantida" }, harness: { ficha: pendencia(input.dono) } } };
     const harness = buildRuntime({
       aiAgent: { findFirst: vi.fn().mockResolvedValue({ ...baseAgent, behaviorConfig: { ...baseAgent.behaviorConfig, harness: { agente: "atendimento", canais: [channelId] } } }) },
-      conversation: { findUnique: vi.fn().mockResolvedValue({ ...baseConversation, channel: { ...baseConversation.channel, id: channelId } }) },
+      conversation: { findUnique: vi.fn().mockResolvedValue({ ...baseConversation, channel: { ...baseConversation.channel, id: channelId, followupConfig: { ...baseConversation.channel.followupConfig, humanCommercialDelivery: input.delivery ?? "automatic" } } }) },
       revalidateActiveFollowup: vi.fn().mockResolvedValue({ status: "valid", context }),
       harness: { modelFactory: () => ({ model, analista }) }
     });
@@ -1110,6 +1110,17 @@ describe("follow-up by the new attendance agent", () => {
     expect(provider.generate).not.toHaveBeenCalled();
     expect(update).toHaveBeenCalledWith(expect.objectContaining({
       data: { metadata: expect.objectContaining({ handoffBrief: { nota: "mantida" }, harness: expect.objectContaining({ ficha: expect.objectContaining({ followups: [expect.objectContaining({ pendenciaId: "p1" })] }) }) }) }
+    }));
+  });
+
+  it("a draft that goes to review is not counted as an attempt until it is sent", async () => {
+    const { runtime, prisma, createPendingOutboundMessage, update } = setup({ dono: "cliente", delivery: "review" });
+    const result = await runtime.runFollowup({ workspaceId: ids.workspace, followupId: ids.followup });
+    expect(result.status).toBe("review");
+    expect(createPendingOutboundMessage).not.toHaveBeenCalled();
+    expect(prisma.conversationFollowup.updateMany).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ reason: "harness_review" }) }));
+    expect(update).toHaveBeenCalledWith(expect.objectContaining({
+      data: { metadata: expect.objectContaining({ harness: expect.objectContaining({ ficha: expect.objectContaining({ followups: [] }) }) }) }
     }));
   });
 
