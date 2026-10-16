@@ -77,3 +77,15 @@ HARNESS_AGENTE=atendimento HARNESS_WORKSPACE_ID=<id> HARNESS_CASOS=casos.jsonl p
 Outras variáveis: `HARNESS_REASONING_ANALISTA` (padrão `high`), `HARNESS_MODEL`, `HARNESS_MODE=tools|json`, `HARNESS_REASONING=none|low|medium|high`, `FORNECEDOR_MODEL`, `HARNESS_CENARIOS=id1,id2`.
 
 Uma conversa real que deu errado vira cenário novo em `cenarios.ts`.
+
+### Linha do tempo (para ver onde o agente se perdeu)
+
+`HARNESS_LINHA_DO_TEMPO=linha.html` grava uma página com cada conversa rodada. Entre as mensagens aparece, em português, o que o agente fez: como classificou a mensagem, que ferramentas usou e o que elas devolveram (inclusive o que o código recusou), que jogada o código escolheu e por quê, o que ele escreveu e o que o revisor barrou. A tradução do rastro fica em `core/narrador.ts`, e a mesma narração serve para a tela de rastro dentro do Talk.
+
+```bash
+HARNESS_AGENTE=atendimento HARNESS_WORKSPACE_ID=<id> HARNESS_K=1 HARNESS_LINHA_DO_TEMPO=linha.html pnpm --filter @prymeira-talk/api harness:simular
+# exemplo sem modelo
+cd apps/api && npx tsx scripts/harness-linha-do-tempo-exemplo.ts linha.html
+```
+
+O raciocínio interno do modelo não vem na resposta da API, então não aparece; aparecem as decisões e o motivo de cada uma.

@@ -464,3 +464,33 @@ describe("João (prospecção) no harness", () => {
     expect(await reviewMessage({ ...base, texto: "Faz sentido uma call de 15 minutos?" } as never)).toMatchObject({ ok: true });
   });
 });
+
+describe("linha do tempo em português", () => {
+  it("narrates tools, refusals and blocks in plain words and renders them on the page", async () => {
+    const { narrarTurno } = await import("./core/narrador.js");
+    const { renderLinhaDoTempoHtml } = await import("./simulador/linha-do-tempo.js");
+    const passos = narrarTurno({ trace: [
+      { fase: "triagem", detalhe: { kind: "humano", fonte: "regras", motivo: "mensagem de pessoa" } },
+      { fase: "leitura", detalhe: [{ ferramenta: "responder_pergunta", argumentos: { citacao: "R$ 12 o quilo" }, resultado: "Erro: a citação não está no trecho chapas." }] },
+      { fase: "jogada", detalhe: { tipo: "responder_e_passar", instrucao: "Diga que o vendedor confirma o preço." } },
+      { fase: "revisao", detalhe: { ok: false, regra: "sem_valor_novo", motivo: "R$ 12 não aparece na conversa.", fonte: "regra" } }
+    ] });
+    expect(passos.map((passo) => passo.titulo)).toEqual([
+      "Entendeu que é uma pessoa escrevendo",
+      "Leu a mensagem",
+      "Achou a resposta na base (recusado)",
+      "Decidiu: responder e passar",
+      "A regra bloqueou: sem valor novo"
+    ]);
+    expect(passos[2]).toMatchObject({ tipo: "alerta", detalhe: expect.stringContaining("O código recusou: a citação") });
+    const html = renderLinhaDoTempoHtml({ agente: "atendimento", modelo: "teste", entradas: [{
+      id: "x", titulo: "Chapa <3mm>", tentativa: 1, checks: [{ nome: "ok", ok: false }],
+      run: { pedido: null, ficha: null, historico: [], historicoInicial: [], humano: null, erro: null,
+        turnos: [{ evento: "contato: oi", acontecimento: { tipo: "mensagem", texto: "tem chapa?" }, resultado: { enviar: "Temos sim!", humano: null, ficha: null, jogada: null, trace: [] } }] }
+    }] });
+    expect(html).toContain("Chapa &lt;3mm&gt;");
+    expect(html).toContain("tem chapa?");
+    expect(html).toContain("Temos sim!");
+    expect(html).toContain("Teve problema");
+  });
+});
