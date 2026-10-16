@@ -62,6 +62,8 @@ export type HarnessTool<Ficha, Pedido, Args = unknown> = {
 };
 
 export type ReviewVerdict = { ok: true } | { ok: false; regra: string; motivo: string };
+/** A judge's verdict with its scores (0..1 per question), kept in the trace to calibrate thresholds. */
+export type JudgeVerdict = ReviewVerdict & { notas?: Record<string, number> };
 
 export type ReviewInput<Ficha, Pedido> = {
   texto: string;
@@ -112,6 +114,12 @@ export type AgentDefinition<Ficha, Pedido> = {
    * Without it the writer may hand over for any reason, which is how "anything hard goes to a human" starts.
    */
   motivosParaHumano?: Record<string, string>;
+  /**
+   * Checks the record after the reader and, when something is missing or doubtful, returns a note that
+   * gives the reader extra rounds (once per turn). Models stop early or give up on a passage that does
+   * answer; code can see that and ask them to look again.
+   */
+  conferirLeitura?: (input: { ficha: Ficha; mensagem: string }) => string | null;
   /** Extra sources the writer could use and the judge must see too (e.g. knowledge-base passages already read). */
   fontesDoRevisor?: (ficha: Ficha, pedido: Pedido) => string;
   /**

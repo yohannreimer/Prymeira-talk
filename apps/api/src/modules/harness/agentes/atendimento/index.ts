@@ -1,5 +1,5 @@
 import type { AgentDefinition } from "../../core/types.js";
-import { ferramentasDeLeitura, ferramentasDoAnalista } from "./ferramentas.js";
+import { conferirLeitura, ferramentasDeLeitura, ferramentasDoAnalista } from "./ferramentas.js";
 import { fichaInicial, renderContexto, renderFicha } from "./ficha.js";
 import { instrucoes, instrucoesDoAnalista, instrucoesDoLeitor, skills } from "./instrucoes.js";
 import { aposEnvio, decidirJogada } from "./jogadas.js";
@@ -23,6 +23,7 @@ export const atendimento: AgentDefinition<FichaDoAtendimento, ContextoDoAtendime
   ferramentasDeLeitura,
   instrucoesDoLeitor,
   maxRodadasDeLeitura: 6,
+  conferirLeitura,
   analista: { instrucoes: instrucoesDoAnalista, ferramentas: ferramentasDoAnalista, maxRodadas: 4 },
   decidirJogada,
   aposEnvio,

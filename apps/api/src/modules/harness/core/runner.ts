@@ -157,10 +157,19 @@ async function readIntoRecord<Ficha, Pedido>(
     }
   ];
   const calls: Array<{ ferramenta: string; argumentos: unknown; resultado: string }> = [];
-  const rounds = deps.maxRodadasDeLeitura ?? agent.maxRodadasDeLeitura ?? 3;
+  let rounds = deps.maxRodadasDeLeitura ?? agent.maxRodadasDeLeitura ?? 3;
+  let conferiu = false;
   for (let round = 0; round < rounds; round += 1) {
     const response = await model.complete({ messages, tools: agent.ferramentasDeLeitura.map(toSpec), toolChoice: "auto" });
-    if (response.toolCalls.length === 0) break;
+    if (response.toolCalls.length === 0) {
+      const nota = conferiu ? null : agent.conferirLeitura?.({ ficha, mensagem: input.mensagem });
+      conferiu = true;
+      if (!nota) break;
+      calls.push({ ferramenta: "conferencia_do_codigo", argumentos: {}, resultado: `Erro: ${nota}` });
+      messages.push({ role: "assistant", content: response.content ?? "" }, { role: "user", content: `Conferência da ficha: ${nota}` });
+      rounds = Math.max(rounds, round + 3);
+      continue;
+    }
     messages.push({ role: "assistant", content: response.content, toolCalls: response.toolCalls });
     for (const call of response.toolCalls) {
       const result = await executeTool(tools.get(call.name), call, {
@@ -323,7 +332,10 @@ async function writeAndReview<Ficha, Pedido>(
       judgeFailClosed: deps.judgeFailClosed,
       fichaTexto,
       pedidoTexto: agent.renderPedidoPublico(input.pedido),
-      fontesExtras: agent.fontesDoRevisor?.(input.ficha, input.pedido)
+      fontesExtras: [
+        agent.fontesDoRevisor?.(input.ficha, input.pedido),
+        ...(input.jogada.skills ?? []).flatMap((name) => agent.skills[name] ? [`Procedimento da jogada (${name}):\n${agent.skills[name]}`] : [])
+      ].filter(Boolean).join("\n\n") || undefined
     });
     trace.push({ fase: "revisao", detalhe: outcome, ms: Date.now() - reviewStarted });
     if (outcome.ok) return { texto };

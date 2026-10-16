@@ -67,7 +67,7 @@ export function decidirJogada(input: {
         revelar: { numeros: [melhor] }
       }, extras);
     }
-    extras.push("O fornecedor perguntou quanto temos, mas não há proposta melhor que a dele para citar. Diga que ainda estamos recebendo propostas e que a empresa fecha com a melhor condição, sem citar valor.");
+    extras.push("O fornecedor perguntou quanto temos, mas não há proposta melhor que a dele para citar. Diga que ainda estamos recebendo propostas e que a empresa escolhe a melhor condição, sem citar valor.");
   }
 
   if (ficha.etapa === "aguardando_empresa") {

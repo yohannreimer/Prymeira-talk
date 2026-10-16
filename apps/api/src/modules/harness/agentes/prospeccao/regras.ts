@@ -67,4 +67,11 @@ const semValorInventado: Rule = {
   }
 };
 
-export const regras: Rule[] = [semComoPossoAjudar, semReapresentar, naoChamaPelaEmpresa, naoRepetePergunta, encerrarSemPergunta, semValorInventado];
+const semBastidores: Rule = {
+  id: "sem_bastidores",
+  check: ({ texto }) => /\b(campanha|ficha|jogada|lead)\b/.test(normalize(texto))
+    ? block("sem_bastidores", "A mensagem usa palavra do bastidor (campanha, ficha, jogada, lead). Fale como a empresa fala com o cliente.")
+    : { ok: true }
+};
+
+export const regras: Rule[] = [semBastidores, semComoPossoAjudar, semReapresentar, naoChamaPelaEmpresa, naoRepetePergunta, encerrarSemPergunta, semValorInventado];

@@ -513,3 +513,59 @@ describe("revisor vê as mesmas fontes que o escritor", () => {
     expect(visto.outrasFontes).toMatch(/48 horas/);
   });
 });
+
+describe("ajustes da rodada de 16/10 com Luna e JEV", () => {
+  it("the buyer may ask for the quote and say the company picks the best offer without tripping the closing rule", async () => {
+    const { semFecharCompra } = await import("./agentes/comprador/regras.js");
+    const check = (texto: string) => semFecharCompra.check({ texto } as never).ok;
+    expect(check("Pode enviar os preços unitários, o frete e o prazo?")).toBe(true);
+    expect(check("A empresa vai fechar com quem fizer a melhor condição.")).toBe(true);
+    expect(check("Fechado, pode faturar.")).toBe(false);
+    expect(check("Pode mandar o pedido.")).toBe(false);
+  });
+
+  it("João never says back-office words to the contact", async () => {
+    const base = { ficha: {}, pedido: { lead: { empresa: "Meccatus" }, contextoDaOferta: "" }, historico: [], jogada: { tipo: "responder_e_puxar", instrucao: "" }, rules: prospeccao.regras as never, fichaTexto: "" };
+    expect(await reviewMessage({ ...base, texto: "A campanha não especifica um tipo de material." } as never)).toMatchObject({ ok: false, regra: "sem_bastidores" });
+    expect(await reviewMessage({ ...base, texto: "A gente não vende material: faz um atendente com IA no WhatsApp. Topa ver em 15 minutos?" } as never)).toMatchObject({ ok: true });
+  });
+
+  it("the reader gets one more look when it calls a question unanswerable but saw a passage on it", async () => {
+    const { conferirLeitura } = await import("./agentes/atendimento/ferramentas.js");
+    const ficha: FichaDoAtendimento = {
+      ...fichaInicialAtendimento(),
+      perguntas: [{ id: "q1", texto: "aceita boleto 28 dias?", status: "sem_base", resposta: null, buscas: 1 }],
+      trechosVistos: { pagamento: "Boleto 28 dias para empresas com cadastro aprovado; PIX e cartão." }
+    };
+    expect(conferirLeitura({ ficha, mensagem: "aceita boleto 28 dias?" })).toMatch(/pagamento/);
+    expect(conferirLeitura({ ficha: fichaInicialAtendimento(), mensagem: "vcs entregam em jaraguá?" })).toMatch(/registrar_pergunta/);
+    expect(conferirLeitura({ ficha: fichaInicialAtendimento(), mensagem: "beleza, obrigado" })).toBeNull();
+
+    let rodada = 0;
+    const leitor = createScriptedModel("leitor", () => {
+      rodada += 1;
+      if (rodada === 1) return { content: null, toolCalls: [toolCall("registrar_pergunta", { texto: "aceita boleto 28 dias?" })] };
+      if (rodada === 2) return { content: null, toolCalls: [toolCall("buscar_na_base", { perguntaId: "q1", consulta: "boleto 28 dias" })] };
+      if (rodada === 3) return { content: null, toolCalls: [toolCall("marcar_sem_base", { perguntaId: "q1" })] };
+      if (rodada === 5) return { content: null, toolCalls: [toolCall("responder_pergunta", { perguntaId: "q1", trechoId: "pagamento", citacao: "boleto 28 dias para empresas com cadastro aprovado" })] };
+      return { content: null, toolCalls: [] };
+    });
+    const result = await runTurn(atendimento, { leitor, model: createScriptedModel("escritor", () => ({ content: null, toolCalls: [toolCall("responder", { texto: "Aceitamos boleto 28 dias para empresas com cadastro aprovado. Quer que eu faça seu cadastro?" })] })), triage: createTriage() }, {
+      ficha: fichaInicialAtendimento(), pedido: contextoVillefer(), historico: [{ autor: "contato", texto: "aceita boleto 28 dias?", em: "2026-10-16T12:00:00.000Z" }], evento: { tipo: "mensagem", texto: "aceita boleto 28 dias?" }
+    });
+    expect(result.jogada?.tipo).toBe("responder");
+    expect(result.humano).toBeNull();
+  });
+
+  it("the judge also sees the move's procedure and keeps its scores in the trace", async () => {
+    let visto: Record<string, unknown> = {};
+    const jev = { ask: async (dados: Record<string, unknown>) => { visto = dados; return { inventa: { type: "noul", noul: 0.1 }, segue: { type: "noul", noul: 0.9 }, responde: { type: "noul", noul: 0.9 } }; } };
+    const { createJevJudge } = await import("./core/review.js");
+    const outcome = await reviewMessage({
+      texto: "Obrigado! Consegue melhorar um pouco esse valor?", ficha: fichaCom(), pedido, jogada: { tipo: "choradinha", instrucao: "x", skills: ["choradinha"] }, historico: [], rules: [],
+      judge: createJevJudge(jev as never), fichaTexto: "", fontesExtras: "Procedimento da jogada (choradinha): ..."
+    });
+    expect(outcome).toMatchObject({ ok: true, notas: { inventa: 0.1 } });
+    expect(visto.outrasFontes).toMatch(/Procedimento/);
+  });
+});

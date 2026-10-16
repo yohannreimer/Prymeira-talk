@@ -1,5 +1,5 @@
 import { noul, type JevClient } from "./jev.js";
-import type { ReviewInput, ReviewRule, ReviewVerdict } from "./types.js";
+import type { JudgeVerdict, ReviewInput, ReviewRule } from "./types.js";
 
 /** A second opinion on a message that already passed the hard rules. */
 /**
@@ -8,7 +8,7 @@ import type { ReviewInput, ReviewRule, ReviewVerdict } from "./types.js";
  * A judge that sees less than the writer flags every true fact it cannot see as invented.
  */
 export type JudgeInput = ReviewInput<unknown, unknown> & { fichaTexto: string; pedidoTexto?: string; fontesExtras?: string };
-export type Judge = (input: JudgeInput) => Promise<ReviewVerdict>;
+export type Judge = (input: JudgeInput) => Promise<JudgeVerdict>;
 
 const MAX_CHARACTERS = 600;
 
@@ -56,7 +56,9 @@ function normalizeText(text: string) {
   return text.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
 }
 
-export type ReviewOutcome = { ok: true; juiz: "aprovou" | "sem_juiz" | "falhou_aberto" } | { ok: false; regra: string; motivo: string; fonte: "regra" | "juiz" };
+export type ReviewOutcome =
+  | { ok: true; juiz: "aprovou" | "sem_juiz" | "falhou_aberto"; notas?: Record<string, number> }
+  | { ok: false; regra: string; motivo: string; fonte: "regra" | "juiz"; notas?: Record<string, number> };
 
 /**
  * Hard rules first (code, no model). Only a message that passes them goes to the judge. When the judge is
@@ -78,7 +80,7 @@ export async function reviewMessage<Ficha, Pedido>(input: ReviewInput<Ficha, Ped
   if (!input.judge) return { ok: true, juiz: "sem_juiz" };
   try {
     const verdict = await input.judge(input as JudgeInput);
-    return verdict.ok ? { ok: true, juiz: "aprovou" } : { ok: false, regra: verdict.regra, motivo: verdict.motivo, fonte: "juiz" };
+    return verdict.ok ? { ok: true, juiz: "aprovou", notas: verdict.notas } : { ok: false, regra: verdict.regra, motivo: verdict.motivo, fonte: "juiz", notas: verdict.notas };
   } catch {
     return input.judgeFailClosed === false
       ? { ok: true, juiz: "falhou_aberto" }
@@ -88,7 +90,7 @@ export async function reviewMessage<Ficha, Pedido>(input: ReviewInput<Ficha, Ped
 
 /** Shared by every judge: what counts as invented, given all the sources the writer had. */
 export const PERGUNTA_INVENTA =
-  "A mensagemCandidata afirma número, preço, prazo, estoque, condição, compromisso ou fato concreto que NÃO aparece em nenhuma das fontes (pedido, ficha, jogada, outrasFontes, ultimasMensagens)? Cumprimento, apresentação da empresa ou de quem escreve feita a partir do pedido, agradecimento e pergunta não contam como afirmação.";
+  "A mensagemCandidata afirma número, preço, prazo, estoque, condição, compromisso ou fato concreto que NÃO aparece em nenhuma das fontes (pedido, ficha, jogada, outrasFontes, ultimasMensagens)? Não contam como afirmação: cumprimento, agradecimento, pergunta, apresentação da empresa feita a partir do pedido, repetir o que está no pedido, dizer que não pode informar algo, e dizer o que a jogada ou o procedimento mandam dizer (por exemplo: o vendedor confirma com você; a empresa escolhe a melhor condição).";
 export const CRITERIO_INVENTA = {
   true: "Afirma algo concreto que não está em nenhuma fonte.",
   false: "Tudo que afirma está em alguma fonte, ou a mensagem só cumprimenta, se apresenta, agradece ou pergunta."
@@ -120,9 +122,10 @@ export function createJevJudge(jev: JevClient, thresholds = { inventa: 0.6, segu
         }
       }
     );
-    if (noul(answers.inventa) >= thresholds.inventa) return { ok: false, regra: "juiz_inventa", motivo: "O revisor achou uma afirmação sem base na ficha ou na conversa." };
-    if (noul(answers.segue) < thresholds.segue) return { ok: false, regra: "juiz_jogada", motivo: "O revisor achou que a mensagem não segue a jogada." };
-    if (noul(answers.responde) < thresholds.responde) return { ok: false, regra: "juiz_responde", motivo: "O revisor achou que a mensagem ignora o que o contato acabou de dizer." };
-    return { ok: true };
+    const notas = { inventa: noul(answers.inventa), segue: noul(answers.segue), responde: noul(answers.responde) };
+    if (notas.inventa >= thresholds.inventa) return { ok: false, regra: "juiz_inventa", motivo: "O revisor achou uma afirmação sem base na ficha ou na conversa.", notas };
+    if (notas.segue < thresholds.segue) return { ok: false, regra: "juiz_jogada", motivo: "O revisor achou que a mensagem não segue a jogada.", notas };
+    if (notas.responde < thresholds.responde) return { ok: false, regra: "juiz_responde", motivo: "O revisor achou que a mensagem ignora o que o contato acabou de dizer.", notas };
+    return { ok: true, notas };
   };
 }

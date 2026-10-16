@@ -63,7 +63,7 @@ export const numerosComBase: Rule = {
 
 export const semFecharCompra: Rule = {
   id: "sem_fechar_compra",
-  check: ({ texto }) => /\b(fechado|fechamos|vamos fechar|pode (mandar|enviar|faturar|emitir)|est[aá] aprovad[oa]|aprovamos|pedido confirmado|confirmo o pedido|pode separar)\b/i.test(texto)
+  check: ({ texto }) => /\b(fechado|fechamos|vamos fechar(?! com quem)|pode (faturar|emitir)|pode (mandar|enviar|separar) (o pedido|a mercadoria|o material|os itens|as pe[cç]as)|est[aá] aprovad[oa]|aprovamos|pedido confirmado|confirmo o pedido|pode separar)\b/i.test(texto)
     ? { ok: false, regra: "sem_fechar_compra", motivo: "A mensagem fecha ou confirma a compra. Quem aprova é a empresa; diga que vai apresentar a proposta." }
     : { ok: true }
 };

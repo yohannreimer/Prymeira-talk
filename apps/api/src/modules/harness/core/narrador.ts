@@ -99,12 +99,13 @@ function narrarPasso(step: TraceStep): Passo[] {
       return [{ fase: step.fase, titulo: tentativa > 1 ? "Reescreveu a mensagem" : "Escreveu a mensagem", detalhe: detalhe?.texto ?? "", tipo: "info", ms }];
     }
     case "revisao": {
+      const notas = renderNotas(detalhe?.notas);
       if (detalhe?.ok) {
         const juiz = detalhe.juiz === "aprovou" ? "As regras e o revisor aprovaram" : detalhe.juiz === "falhou_aberto" ? "As regras aprovaram (o revisor não respondeu)" : "As regras aprovaram";
-        return [{ fase: step.fase, titulo: juiz, tipo: "ok", ms }];
+        return [{ fase: step.fase, titulo: juiz, detalhe: notas, tipo: "ok", ms }];
       }
       const quem = detalhe?.fonte === "juiz" ? "O revisor" : "A regra";
-      return [{ fase: step.fase, titulo: `${quem} bloqueou: ${legivel(String(detalhe?.regra ?? ""))}`, detalhe: detalhe?.motivo, tipo: "erro", ms }];
+      return [{ fase: step.fase, titulo: `${quem} bloqueou: ${legivel(String(detalhe?.regra ?? ""))}`, detalhe: [detalhe?.motivo, notas].filter(Boolean).join("\n"), tipo: "erro", ms }];
     }
     case "envio":
       return [{ fase: step.fase, titulo: "Mandou a mensagem", tipo: "ok" }];
@@ -116,11 +117,29 @@ function narrarPasso(step: TraceStep): Passo[] {
 }
 
 function narrarFerramenta(fase: TraceStep["fase"], call: { ferramenta: string; argumentos: unknown; resultado: string }): Passo {
+  if (call.ferramenta === "conferencia_do_codigo") {
+    return { fase, titulo: "O código conferiu a leitura e pediu para olhar de novo", detalhe: call.resultado.replace(/^erro:?\s*/i, ""), tipo: "alerta" };
+  }
   const titulo = FERRAMENTAS[call.ferramenta] ?? `Usou a ferramenta ${legivel(call.ferramenta)}`;
   const recusado = /^erro/i.test(call.resultado.trim());
   const args = renderArgs(call.argumentos);
   const resultado = recusado ? `O código recusou: ${call.resultado.replace(/^erro:?\s*/i, "")}` : `Resultado: ${resumir(call.resultado)}`;
   return { fase, titulo: recusado ? `${titulo} (recusado)` : titulo, detalhe: [args, resultado].filter(Boolean).join("\n"), tipo: recusado ? "alerta" : "info" };
+}
+
+const NOTAS: Record<string, string> = {
+  inventa: "inventou algo",
+  segue: "seguiu a jogada",
+  responde: "respondeu o contato",
+  vale: "vale mandar",
+  assunto: "assunto certo"
+};
+
+/** The judge's scores, so the owner can see how sure it was ("inventou algo: 72%"). */
+function renderNotas(notas: unknown): string | undefined {
+  if (!notas || typeof notas !== "object") return undefined;
+  const partes = Object.entries(notas as Record<string, number>).map(([nome, valor]) => `${NOTAS[nome] ?? nome}: ${Math.round(valor * 100)}%`);
+  return partes.length ? `Certeza do revisor · ${partes.join(" · ")}` : undefined;
 }
 
 /** Tool results often end with the whole record; the first lines are what matters to a reader. */
