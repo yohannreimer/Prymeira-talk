@@ -14,6 +14,8 @@ import { readKnowledgeTaxonomy } from '../agents/knowledge-taxonomy.js';
 import { evaluateAgentSafety } from '../agents/agent-safety-policy.js';
 import { usesContextFirst, resolveConversationSafetyOutput, conversationReasoningContext, COMPLETE_HISTORY_MESSAGE_LIMIT } from '../agents/conversation-reasoning-policy.js';
 import { visibleConversationMessageWhere, withoutInternalFollowupReservations } from '../conversations/internal-message.js';
+import { autorDaMensagem, harnessNoCanal, modeloDoHarness, readHarnessConfig, responderComHarness } from '../harness/agentes/atendimento/producao.js';
+import type { JevClient } from '../harness/core/jev.js';
 
 export const assistantHash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const record = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -45,7 +47,9 @@ export type AssistantContext = Awaited<ReturnType<typeof loadAssistantContext>>;
 // Intentionally has no transport, action executor, CRM or prompt-write dependency.
 export function createAssistantGeneration(db: AssistantDb, dependencies: { providerFactory?: typeof createOpenAiCompatibleAgentProvider; mediaPreparer?: typeof prepareInboundMedia;
     /** Durable media copies and the shared transcription job; legacy behaviour when absent. */
-    durableMedia?: Pick<MessageMediaService, 'read'>; transcriptions?: MessageTranscriptionService } = {}) {
+    durableMedia?: Pick<MessageMediaService, 'read'>; transcriptions?: MessageTranscriptionService;
+    /** The new attendance agent writes the suggestion where the agent turns it on for the channel (harness/agentes/atendimento/producao.ts). */
+    harness?: { jev?: JevClient; modelFactory?: typeof modeloDoHarness } } = {}) {
   const resolverFor = durableMediaResolverFor(dependencies.durableMedia);
   const audioPolicy = { kind: 'audio' as const, maxBytes: MAX_INBOUND_MEDIA_BYTES,
     allowedMimeTypes: new Set<string>(INBOUND_MEDIA_MIME_TYPES.filter(type => type.startsWith('audio/') || type === 'video/webm')) };
@@ -113,6 +117,26 @@ export function createAssistantGeneration(db: AssistantDb, dependencies: { provi
     // Our message is the last one: the seller asked for a follow-up to send.
     const sellerContinuation = context.messages.at(-1)?.direction === 'outbound';
     const conversationHistory = messages.map(m => `${m.role === 'user' ? 'cliente' : 'atendente'}: ${m.content}`).join('\n');
+    const harnessConfig = sellerContinuation ? null : readHarnessConfig(context.agent.behaviorConfig);
+    const harnessModel = harnessNoCanal(harnessConfig, context.conversation.channelId)
+      ? (dependencies.harness?.modelFactory ?? modeloDoHarness)(settings, harnessConfig.modelo) : null;
+    if (harnessConfig && harnessModel) {
+      // Same turn as the live agent, but nothing is sent or saved: the seller reviews the draft and sends it.
+      const lastInbound = context.messages.reduce((last, m, index) => m.direction === 'inbound' ? index : last, -1);
+      const current = context.messages[lastInbound];
+      const saida = await responderComHarness({
+        config: harnessConfig, model: harnessModel, jev: dependencies.harness?.jev, fontes: context.knowledge,
+        mensagens: context.messages.map((m, index) => ({ id: m.id, autor: autorDaMensagem(m), tipo: m.type, texto: messages[index].content, em: m.createdAt?.toISOString() ?? null })),
+        atual: { id: current.id, texto: messages[lastInbound].content, em: current.createdAt.toISOString() },
+        sessionMetadata: context.conversation.activeAgentSession?.metadata
+      });
+      if (saida.silencio || !saida.reply?.trim()) throw new AssistantError('ASSISTANT_NO_REPLY', 'A IA entendeu que a mensagem do cliente não pede resposta agora (agradecimento, despedida ou mensagem automática).', 422);
+      for (const attachment of unreadAttachments) if (attachment.currentTurn) warnings.push(`Anexo ${attachment.messageId.slice(0, 8)} não lido. Confira o arquivo antes de enviar.`);
+      for (const action of saida.actions) if (action.type === 'send_attachment') warnings.push(`Envie junto o arquivo aprovado: ${String(action.caption ?? action.attachmentFileName ?? action.attachmentUrl)}.`);
+      if (saida.handoff.required) warnings.push(`Num atendimento automático, esta conversa passaria para um vendedor: ${saida.handoff.reason}.`);
+      return { body: saida.reply.trim(), warnings, contextKey: context.contextKey, agentHash: context.agentHash, agentId: context.agent.id,
+        proposedActions: JSON.parse(JSON.stringify({ actions: saida.actions.filter(action => action.type === 'send_attachment'), handoff: saida.handoff, sources: [], attachmentRelevance: null, harness: { jogada: saida.jogada } })) as Prisma.InputJsonValue };
+    }
     const selection = selectRelevantKnowledge({ latestMessage: latest, conversationHistory, instruction, taxonomy: readKnowledgeTaxonomy(context.agent.behaviorConfig), sources: context.knowledge.map(k => ({ ...k, metadata: record(k.metadata) })) });
     const decision = evaluateAgentSafety({ message: latest, conversationHistory, attachmentAvailable: messages.some(m => /\[(Texto do PDF|Leitura da imagem|Transcrição do áudio)/.test(m.content)), selectedKnowledge: selection.selected });
     const safety = sellerContinuation ? null : resolveConversationSafetyOutput(decision, context.agent.behaviorConfig);

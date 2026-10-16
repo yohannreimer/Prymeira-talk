@@ -1,7 +1,8 @@
 import { createJevJudge } from "../../core/review.js";
 import { runTurn } from "../../core/runner.js";
 import type { JevClient } from "../../core/jev.js";
-import type { ModelClient } from "../../core/model.js";
+import type { OpenAiCompatibleSettings } from "../../../agents/ai-provider-settings.js";
+import { createOpenAiCompatibleModel, type ModelClient } from "../../core/model.js";
 import { createTriage } from "../../core/triage.js";
 import type { HarnessMessage, TraceStep } from "../../core/types.js";
 import { catalogoEmMemoria, type Catalogo, type LinhaDoCatalogo } from "./catalogo.js";
@@ -56,6 +57,21 @@ export function readHarnessConfig(behaviorConfig: unknown): HarnessConfig | null
 
 export const harnessNoCanal = (config: HarnessConfig | null, channelId: string | null | undefined): config is HarnessConfig =>
   Boolean(config && channelId && config.canais.includes(channelId));
+
+/** The workspace's model in JSON mode with low reasoning: the configuration tested in the shadow runs. */
+export function modeloDoHarness(settings: OpenAiCompatibleSettings, modelo?: string): ModelClient | null {
+  if (!settings.active) return null;
+  return createOpenAiCompatibleModel({ baseUrl: settings.baseUrl, apiKey: settings.apiKey, model: modelo ?? settings.chatModel, mode: "json", reasoningEffort: "low" });
+}
+
+/** Who sent a stored message: the contact, the AI agent or the company's automations, or a seller. */
+export function autorDaMensagem(mensagem: { direction: string | null; type?: string | null; metadata?: unknown; sentByUserId?: string | null }): HarnessMessage["autor"] {
+  if (mensagem.type === "internal_note" || mensagem.type === "system") return "sistema";
+  if (mensagem.direction === "inbound") return "contato";
+  if (mensagem.direction !== "outbound") return "sistema";
+  const source = isObject(mensagem.metadata) ? mensagem.metadata.source : undefined;
+  return source === "ai_agent" || !mensagem.sentByUserId ? "agente" : "humano";
+}
 
 /** A conversation message as the live engine has it, with who sent it already resolved. */
 export type MensagemDaConversa = {

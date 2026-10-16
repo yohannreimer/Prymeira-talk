@@ -435,6 +435,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
             }
           }
         );
+  const harnessJev = env.JEV_API_KEY ? createJevClient({ apiKey: env.JEV_API_KEY, model: env.JEV_MODEL }) : undefined;
   const replyPreflight = env.JEV_API_KEY
     ? createJevReplyPreflight({ apiKey: env.JEV_API_KEY, model: env.JEV_MODEL })
     : undefined;
@@ -510,7 +511,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
           meetingReminders,
           durableMedia: durableMedia?.media,
           transcriptions: durableMedia?.transcriptions,
-          harness: { jev: env.JEV_API_KEY ? createJevClient({ apiKey: env.JEV_API_KEY, model: env.JEV_MODEL }) : undefined }
+          harness: { jev: harnessJev }
         });
   const agentReplyScheduler =
     options.prismaEnabled === false || !agentRuntime
@@ -634,7 +635,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
     : createAssistantHistoryImporter(app.prisma, evolutionHistorySource, {
         prepareMedia: async ({ workspaceId, mediaUrl, kind }) => prepareInboundMedia({ settings: await resolveOpenAiCompatibleSettings(app.prisma, { workspaceId }), mediaUrl, kind })
       });
-  const assistantScheduler = options.prismaEnabled === false ? undefined : createAssistantScheduler(app.prisma, { generate: createAssistantGeneration(app.prisma, { durableMedia: durableMedia?.media, transcriptions: durableMedia?.transcriptions }), prepareContext: prepareAssistantHistory, onError: () => app.log.error('Assistant scheduler failed; drafts remain private.') });
+  const assistantScheduler = options.prismaEnabled === false ? undefined : createAssistantScheduler(app.prisma, { generate: createAssistantGeneration(app.prisma, { durableMedia: durableMedia?.media, transcriptions: durableMedia?.transcriptions, harness: { jev: harnessJev } }), prepareContext: prepareAssistantHistory, onError: () => app.log.error('Assistant scheduler failed; drafts remain private.') });
   assistantScheduler?.start();
   app.addHook('onClose', async () => { assistantScheduler?.stop(); handoffBriefService?.stop(); });
   const historyBackfill = options.prismaEnabled === false || !evolutionHistorySource ? undefined : async (input: { workspaceId: string; channelId: string; conversationId: string; providerKey: string; remoteJid: string; identity: string; pushName: string | null }) => {

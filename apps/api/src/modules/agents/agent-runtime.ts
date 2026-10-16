@@ -68,9 +68,9 @@ import type { ConversationFollowupsObserver } from "../followups/conversation-fo
 import type { InboxTriageObserver } from "../conversations/inbox-triage.service.js";
 
 import { blocksAutonomousAgent } from '../assistant/assistant-policy.js';
-import { harnessNoCanal, readHarnessConfig, responderComHarness, type MensagemDaConversa } from "../harness/agentes/atendimento/producao.js";
+import { autorDaMensagem, harnessNoCanal, modeloDoHarness, readHarnessConfig, responderComHarness, type MensagemDaConversa } from "../harness/agentes/atendimento/producao.js";
 import type { JevClient } from "../harness/core/jev.js";
-import { createOpenAiCompatibleModel, type ModelClient } from "../harness/core/model.js";
+import type { ModelClient } from "../harness/core/model.js";
 type JsonValue = unknown;
 type AgentRunStatus = "completed" | "handoff_requested" | "failed" | "skipped";
 type AgentRunTrigger = "automation" | "manual_test";
@@ -1250,7 +1250,7 @@ export function createAgentRuntime(input: {
         const approvedAttachmentUrls = new Set(approvedAttachments.map((attachment) => attachment.url));
         const harnessConfig = prospecting ? null : readHarnessConfig(agent.behaviorConfig);
         const harnessModel = harnessNoCanal(harnessConfig, conversation.channelId ?? conversation.channel?.id)
-          ? (input.harness?.modelFactory ?? harnessModelFor)(providerSettings, harnessConfig.modelo)
+          ? (input.harness?.modelFactory ?? modeloDoHarness)(providerSettings, harnessConfig.modelo)
           : null;
         // The harness does its own triage, reading, review and catalogue sending: the quote-desk
         // preflight, the keyword safety output and the catalogue shortcut below are not used for it.
@@ -1923,10 +1923,7 @@ export function createAgentRuntime(input: {
     const byId = new Map(senders.map((entry) => [entry.id, entry]));
     return messages.map((entry) => {
       const sender = byId.get(entry.id);
-      const source = sender && isRecord(sender.metadata ?? null) ? (sender.metadata as Record<string, unknown>).source : undefined;
-      const autor: MensagemDaConversa["autor"] = entry.label === "cliente" ? "contato"
-        : entry.direction !== "outbound" ? "sistema"
-          : source === "ai_agent" || !sender?.sentByUserId ? "agente" : "humano";
+      const autor = autorDaMensagem({ direction: entry.direction, type: entry.type, metadata: sender?.metadata, sentByUserId: sender?.sentByUserId });
       return { id: entry.id, autor, tipo: entry.type, texto: entry.body, em: entry.createdAt };
     });
   }
@@ -2520,17 +2517,6 @@ function getHandoffReason(output: AgentOutput, confidenceThreshold: number) {
   const providerReason = output.handoff.reason?.trim() ?? "";
 
   return actionReason || providerReason || "Agent requested human handoff.";
-}
-
-function harnessModelFor(settings: OpenAiCompatibleSettings, modelo?: string): ModelClient | null {
-  if (!settings.active) return null;
-  return createOpenAiCompatibleModel({
-    baseUrl: settings.baseUrl,
-    apiKey: settings.apiKey,
-    model: modelo ?? settings.chatModel,
-    mode: "json",
-    reasoningEffort: "low"
-  });
 }
 
 /** The session metadata with the harness record, keeping what other services store there (the handoff brief). */
