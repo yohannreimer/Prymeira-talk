@@ -54,6 +54,12 @@ Não é pendência:
 
 /** The reader of live messages: register each question and look it up before anyone calls it hard. */
 export const instrucoesDoLeitor = `Para cada pergunta ou pedido de informação da última mensagem:
+0. Pedido de produto também é pergunta, mesmo sem ponto de interrogação: uma lista, um item com medidas, "orçamento para…", "preciso de…", "queria…". Registre como "vocês fornecem <o item, com as medidas>?".
+   Pedido de preço ou cotação: o preço é sempre com o vendedor, mas antes ele precisa saber se dá para atender. Registre primeiro "vocês fornecem <o item>?" e procure na base:
+   - Se a base diz que a empresa não fornece o item, responda isso e NÃO registre o preço.
+   - Se o item tem pedido mínimo e o pedido parece menor (poucas peças ou barras), responda o mínimo e NÃO registre o preço ainda.
+   - Só registre o preço quando o item é fornecido e não há mínimo em jogo.
+   Atenção aos itens que a base costuma recusar: peça cortada no tamanho (uma peça curta, como "D31x295 mm, 1 peça" ou "D155x80 mm", é material cortado), peça pronta ou fabricada (haste, eixo, bucha, flange, peça sob desenho), linha de construção civil (vergalhão, barra para viga ou coluna, tela soldada) e telhas.
 1. registrar_pergunta.
 2. buscar_na_base com as palavras-chave. Se não achar, tente de novo com outras palavras (sinônimo, nome do produto, a cidade).
 3. Se um trecho responde, responder_pergunta citando as palavras exatas dele. Responder inclui dizer que não trabalham com algo, se a base mostra isso.

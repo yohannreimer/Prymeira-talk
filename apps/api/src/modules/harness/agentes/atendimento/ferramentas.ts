@@ -284,14 +284,17 @@ const ASSUNTO_DO_NEGOCIO = /\b(preco|precos|valor|quanto|custa|estoque|tem|temos
  * After the reader: a question left unregistered, open, or called unanswerable while a passage it saw
  * shares its key words gets one more look. Seen in the 16/10 runs (boleto 28 dias, prazo para Jaraguá).
  */
-const NEGA_LINHA = /\bn[aã]o (trabalhamos|temos|vendemos|fazemos|fabricamos|atendemos|entregamos|aceitamos|oferecemos)\b/;
+const PEDIDO_DE_ITEM = /\b(orcamento|cotacao|cotar|preciso|precisava|queria|quero|gostaria|vende|vendem|trabalha|trabalham)\b/;
+const NEGA_LINHA = /\bn[aã]o (fornece|fornecemos|trabalhamos|temos|vendemos|fazemos|fabricamos|atendemos|entregamos|aceitamos|oferecemos)\b/;
 
 export function conferirLeitura({ ficha, mensagem }: { ficha: FichaDoAtendimento; mensagem: string }): string | null {
   const atuais = ficha.perguntas.filter((item) => item.status !== "tratada");
   if (atuais.length === 0) {
     const texto = normalize(mensagem);
-    return /\?/.test(mensagem) && ASSUNTO_DO_NEGOCIO.test(texto)
-      ? "a última mensagem parece ter pergunta sobre produto, preço, prazo, entrega ou pagamento, e nada foi registrado. Se for, registre com registrar_pergunta e procure na base. Se for só conversa, não chame nada."
+    // A request with sizes or "orçamento para…" has no question mark but is a question: "do you supply this?".
+    const pedido = PEDIDO_DE_ITEM.test(texto) || /\d/.test(texto) && /[a-z]{4,}/.test(texto) && !PAPO_SOCIAL.test(texto);
+    return (/\?/.test(mensagem) && ASSUNTO_DO_NEGOCIO.test(texto)) || pedido
+      ? "a última mensagem parece pedir um produto ou perguntar sobre produto, preço, prazo, entrega ou pagamento, e nada foi registrado. Pedido de item sem interrogação também conta: registre com registrar_pergunta \"vocês fornecem <item>?\" e procure na base, inclusive o que a empresa não fornece. Se for só conversa, não chame nada."
       : null;
   }
   const abertas = atuais.filter((item) => item.status === "aberta");

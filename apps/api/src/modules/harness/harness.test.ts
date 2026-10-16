@@ -767,3 +767,14 @@ describe("catálogo de medidas e pesos", () => {
     expect(await calcular.execute({ linhaId: "chapa-1", pecas: 2, comprimentoM: 3, larguraM: 1.2 } as never, context() as never)).toMatch(/aproximadamente 109,4 kg/);
   });
 });
+
+describe("pedido de item sem interrogação", () => {
+  it("a product request with sizes or 'orçamento para' is a question, small talk with a number is not", async () => {
+    const { conferirLeitura } = await import("./agentes/atendimento/ferramentas.js");
+    const vazia = fichaInicialAtendimento();
+    expect(conferirLeitura({ ficha: vazia, mensagem: "Bucha de ferro fundido: Diâmetro externo 170mm x 120mm x 485mm" })).toMatch(/registrar_pergunta/);
+    expect(conferirLeitura({ ficha: vazia, mensagem: "Telha de alumínio, queria orçamento" })).toMatch(/registrar_pergunta/);
+    expect(conferirLeitura({ ficha: vazia, mensagem: "bom dia, tudo bem? 2 dias de chuva aqui" })).toBeNull();
+    expect(conferirLeitura({ ficha: vazia, mensagem: "ok obrigado" })).toBeNull();
+  });
+});

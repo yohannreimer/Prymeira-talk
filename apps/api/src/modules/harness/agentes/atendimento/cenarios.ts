@@ -403,7 +403,7 @@ export const cenariosAoVivo: Cenario[] = [
   }
 ];
 
-const NEGA = /n[aã]o (fornecemos|trabalhamos|vendemos|fazemos|atendemos|temos)/i;
+const NEGA = /n[aã]o (fornece\w*|trabalha\w*|vende\w*|faz\w*|atende\w*|conseguimos atender|temos)/i;
 
 /**
  * Questions real customers sent the old agent, which handed them to a seller although the company's own
