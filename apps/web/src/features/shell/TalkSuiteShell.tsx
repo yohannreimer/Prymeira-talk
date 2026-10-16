@@ -4,6 +4,7 @@ import { TalkAlerts } from "../alerts/TalkAlerts";
 import { Bot } from "lucide-react";
 import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
+import { useFollowupReviewCount } from "../followups/useFollowupReviewCount";
 import { availableTalkModules, isTalkModuleKey, type TalkModuleKey } from "./moduleRegistry";
 
 type TalkSuiteShellProps = {
@@ -33,6 +34,7 @@ export function TalkSuiteShell({ renderModule, prefetchModule }: TalkSuiteShellP
   const [requestedModule, setActiveModule] = useState<TalkModuleKey>(readModuleFromUrl);
   // A link to an add-on the workspace does not have falls back to the default module.
   const activeModule = modules.some((module) => module.key === requestedModule) ? requestedModule : defaultModule;
+  const followupsToReview = useFollowupReviewCount();
 
   const [sidebarExpanded, setSidebarExpanded] = useState<boolean>(() => {
     return localStorage.getItem("sidebar-expanded") === "true";
@@ -96,9 +98,12 @@ export function TalkSuiteShell({ renderModule, prefetchModule }: TalkSuiteShellP
           {sidebarExpanded ? "←" : "→"}
         </button>
         <nav className="rail-nav" aria-label="Modulos">
-          {modules.map(({ key, label, Icon }) => (
+          {modules.map(({ key, label, Icon }) => {
+            const badge = key === "followups" && followupsToReview > 0 ? followupsToReview : 0;
+            const fullLabel = badge ? `${label} (${badge} para revisar)` : label;
+            return (
             <button
-              aria-label={label}
+              aria-label={fullLabel}
               aria-pressed={activeModule === key}
               className={[
                 "rail-button",
@@ -111,13 +116,17 @@ export function TalkSuiteShell({ renderModule, prefetchModule }: TalkSuiteShellP
               onClick={() => handleModuleClick(key)}
               onPointerEnter={() => prefetchModule?.(key)}
               onFocus={() => prefetchModule?.(key)}
-              title={sidebarExpanded ? undefined : label}
+              title={sidebarExpanded ? undefined : fullLabel}
               type="button"
             >
-              <Icon size={20} aria-hidden="true" />
+              <span className="rail-icon">
+                <Icon size={20} aria-hidden="true" />
+                {badge ? <span className="rail-badge" aria-hidden="true">{badge > 99 ? "99+" : badge}</span> : null}
+              </span>
               <span className="rail-label">{label}</span>
             </button>
-          ))}
+            );
+          })}
         </nav>
         <TalkAlerts activeModule={activeModule} onOpenConversation={openConversation} />
       </aside>
