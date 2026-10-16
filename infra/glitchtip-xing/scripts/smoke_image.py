@@ -16,6 +16,9 @@ from xing_alerts.config import RESOURCE  # noqa: E402
 
 
 async def main():
+    from apps.alerts import webhooks
+    from apps.alerts.constants import RecipientType
+    assert webhooks.ISSUE_NOTIFICATION_HANDLERS[RecipientType.GENERAL_WEBHOOK] is webhooks.send_issue_as_webhook, "Native alert dispatcher bypasses diagnostic formatter"
     tools = await mcp.list_tools()
     assert [tool.name for tool in tools] == ["get_alert_delivery_status"]
     auth = mcp.settings.auth

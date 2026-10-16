@@ -137,3 +137,19 @@ build installer checks all three upstream source hashes before editing any file.
 Rollback only the reviewed images and the appended opt-in tag, preserving the
 subscription identity/state/secrets. Legacy payloads remain accepted; rollback
 does not replay events that arrived without an active subscription.
+
+## Native dispatcher correction — 16 October 2026
+
+A production read compared source-event tag projections with accepted callback
+payloads. Source tags contained the error type, frame and independent correlation;
+the delivered diagnostic had UnknownError, no frame/correlation and no sampled
+occurrence metadata. The installed module global was wrapped, but GlitchTip had
+already bound GENERAL_WEBHOOK to the original function in ISSUE_NOTIFICATION_HANDLERS.
+
+The build installer now updates that single registry entry after installing the
+wrapper. Other recipient handlers remain unchanged, and general webhooks without
+the diagnostic opt-in still delegate to the original formatter. The packaging
+regression executes the installed module and registered handler. The pinned-image
+gate now sends a disposable Notification through Notification.send_notifications,
+AlertRecipient.send and the native dispatcher, with a fake final HTTP transport.
+It verifies code/type, relative frame, correlation, release and occurrence source.
