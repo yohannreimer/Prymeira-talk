@@ -4407,3 +4407,70 @@ export function apiGetLeadRegions(getToken: TokenProvider): Promise<LeadRegionDt
 export function apiSaveLeadRegions(getToken: TokenProvider, regions: LeadRegionDto[]): Promise<LeadRegionDto[]> {
   return fetchJson(getToken, "/leads/regions", { method: "PUT", body: JSON.stringify({ regions }) }, value => (value as { regions: unknown[] }).regions.map(region => leadRegionSchema.parse(region)), "Não foi possível salvar as regiões.");
 }
+
+/* ---------- Weekly evaluation of the new agent's follow-ups ---------- */
+
+export type AgentEvaluationCase = {
+  followupId: string;
+  conversationId: string;
+  decididoEm: string;
+  rotulo: "aprovado" | "editado" | "descartado" | "respondeu" | "sem_resposta";
+  rascunho: string | null;
+  enviado: string | null;
+  resposta: string | null;
+  ultimas: Array<{ autor: string; texto: string }>;
+  erro?: { tipo: "nao_devia" | "assunto" | "texto" | "nenhum"; explicacao: string };
+};
+
+export type AgentEvaluationProposal = {
+  id: string;
+  regra: string;
+  porque: string;
+  casos: string[];
+  validacao: { corrige: number; erradosTestados: number; quebra: number; bonsTestados: number } | null;
+  status: "pendente" | "aprovada" | "recusada";
+  decididaEm?: string;
+};
+
+export type AgentEvaluation = {
+  id: string;
+  agentId: string;
+  periodStart: string;
+  periodEnd: string;
+  status: "running" | "ready" | "failed";
+  summary: {
+    rotulos: Record<AgentEvaluationCase["rotulo"], number>;
+    aprovacao: number | null;
+    resposta: number | null;
+    erros: { nao_devia: number; assunto: number; texto: number };
+    decisoes: { mensagem: number; lembrete: number; nada: number };
+  } | null;
+  cases: AgentEvaluationCase[];
+  proposals: AgentEvaluationProposal[];
+  rules: string[];
+  error: string | null;
+  createdAt: string;
+};
+
+const evaluationList = (data: unknown) => (Array.isArray(data) ? data as AgentEvaluation[] : []);
+
+export function apiListAgentEvaluations(getToken: () => Promise<string | null>, agentId: string): Promise<AgentEvaluation[]> {
+  return fetchJson(getToken, `/agents/${encodeURIComponent(agentId)}/evaluations`, {}, evaluationList, "Não foi possível carregar a avaliação semanal");
+}
+
+export function apiRunAgentEvaluation(getToken: () => Promise<string | null>, agentId: string): Promise<{ started: boolean }> {
+  return fetchJson(getToken, `/agents/${encodeURIComponent(agentId)}/evaluations/run`, { method: "POST", body: "{}" },
+    (data) => ({ started: Boolean((data as { started?: unknown })?.started) }), "Não foi possível iniciar a avaliação");
+}
+
+export function apiDecideEvaluationProposal(
+  getToken: () => Promise<string | null>, agentId: string, evaluationId: string, proposalId: string, decision: "approve" | "reject"
+): Promise<AgentEvaluation> {
+  return fetchJson(getToken, `/agents/${encodeURIComponent(agentId)}/evaluations/${encodeURIComponent(evaluationId)}/proposals/${encodeURIComponent(proposalId)}`,
+    { method: "POST", body: JSON.stringify({ decision }) }, (data) => data as AgentEvaluation, "Não foi possível decidir a regra");
+}
+
+export function apiRemoveEvaluationRule(getToken: () => Promise<string | null>, agentId: string, rule: string): Promise<{ rules: string[] }> {
+  return fetchJson(getToken, `/agents/${encodeURIComponent(agentId)}/evaluation-rules/remove`, { method: "POST", body: JSON.stringify({ rule }) },
+    (data) => ({ rules: Array.isArray((data as { rules?: unknown })?.rules) ? (data as { rules: string[] }).rules : [] }), "Não foi possível remover a regra");
+}

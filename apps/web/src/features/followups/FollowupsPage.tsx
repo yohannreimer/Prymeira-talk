@@ -4,6 +4,7 @@ import {
   CalendarClock,
   Check,
   CheckCircle2,
+  ClipboardCheck,
   Clock3,
   Edit3,
   ExternalLink,
@@ -42,6 +43,7 @@ import {
   matchesFollowupFilter
 } from "./followup-display";
 import "./followups.css";
+import { FollowupEvaluation } from "./FollowupEvaluation";
 import { FollowupSettings } from "./FollowupSettings";
 
 const filters: Array<{
@@ -139,7 +141,8 @@ function mergeRealtimeFollowups(
 export function FollowupsPage() {
   const { getToken } = useTalkAuth();
   const [filter, setFilter] = useState<FollowupListStatus>("review");
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [panel, setPanel] = useState<"config" | "evaluation" | null>(null);
+  const settingsOpen = panel !== null;
   const [followups, setFollowups] = useState<ConversationFollowupDto[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -345,7 +348,7 @@ export function FollowupsPage() {
               key={key}
               onClick={() => {
                 if (busyId) return;
-                setSettingsOpen(false);
+                setPanel(null);
                 filterRef.current = key;
                 setFilter(key);
                 setNotice(null);
@@ -363,8 +366,12 @@ export function FollowupsPage() {
               <span className="followups-filter-short">{shortLabel}</span>
             </button>
           ))}
-          <button className={settingsOpen ? "is-active" : ""} type="button" aria-pressed={settingsOpen}
-            disabled={busyId !== null} aria-disabled={busyId !== null} onClick={() => setSettingsOpen(true)}>
+          <button className={panel === "evaluation" ? "is-active" : ""} type="button" aria-pressed={panel === "evaluation"}
+            disabled={busyId !== null} aria-disabled={busyId !== null} onClick={() => setPanel("evaluation")}>
+            <ClipboardCheck size={16} aria-hidden="true" /> Avaliação
+          </button>
+          <button className={panel === "config" ? "is-active" : ""} type="button" aria-pressed={panel === "config"}
+            disabled={busyId !== null} aria-disabled={busyId !== null} onClick={() => setPanel("config")}>
             <Settings2 size={16} aria-hidden="true" /> Configuração
           </button>
         </nav>
@@ -375,7 +382,7 @@ export function FollowupsPage() {
       </div>
 
       <div className="followups-content">
-        {settingsOpen ? <FollowupSettings getToken={getToken} /> : <>
+        {panel === "evaluation" ? <FollowupEvaluation getToken={getToken} /> : panel === "config" ? <FollowupSettings getToken={getToken} /> : <>
         {isLoading ? <FollowupsLoading /> : null}
 
         {!isLoading && loadError ? (

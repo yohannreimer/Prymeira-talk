@@ -41,7 +41,7 @@ export function renderFicha(ficha: FichaDoAtendimento): string {
 export function renderContexto(contexto: ContextoDoAtendimento): string {
   return [
     `Empresa: ${contexto.empresa.nome}. ${contexto.empresa.oQueVende}`,
-    ...(contexto.regrasDaEmpresa ? [`Regras da empresa: ${contexto.regrasDaEmpresa}`] : []),
+    ...(contexto.regrasDaEmpresa ? [`Regras da empresa:\n${contexto.regrasDaEmpresa}`] : []),
     ...(contexto.anexos?.length ? [`Arquivos aprovados para envio (só com enviar_anexo): ${contexto.anexos.map((anexo) => `${anexo.id} (${anexo.titulo})`).join(", ")}`] : [])
   ].join("\n");
 }

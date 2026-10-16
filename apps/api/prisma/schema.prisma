@@ -1173,10 +1173,35 @@ model AiAgent {
   allowedTags            AiAgentAllowedTag[]
   assistantSuggestions   AssistantSuggestion[]
   improvementSuggestions AiAgentImprovement[]
+  evaluations            AiAgentEvaluation[]
 
   @@unique([workspaceId, id])
   @@index([workspaceId, status])
   @@map("ai_agents")
+}
+
+/// The weekly evaluation of an agent's follow-ups: what sellers did with each draft, the mistakes a
+/// reviewer model found and the rules it proposes, each checked against the week's cases.
+model AiAgentEvaluation {
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspaceId String    @map("workspace_id")
+  agentId     String    @map("agent_id") @db.Uuid
+  periodStart DateTime  @map("period_start")
+  periodEnd   DateTime  @map("period_end")
+  status      String    @default("running")
+  summary     Json      @default("{}")
+  cases       Json      @default("[]")
+  proposals   Json      @default("[]")
+  error       String?
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  agent AiAgent @relation(fields: [workspaceId, agentId], references: [workspaceId, id], onDelete: Cascade)
+
+  @@unique([workspaceId, id])
+  @@unique([workspaceId, agentId, periodStart])
+  @@index([workspaceId, agentId, createdAt])
+  @@map("ai_agent_evaluations")
 }
 
 model AssistantConversationState {

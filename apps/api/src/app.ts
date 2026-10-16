@@ -33,6 +33,7 @@ import { createInboxMediaService } from "./modules/conversations/inbox-media.js"
 import { deploymentPhotoStore } from "./modules/conversations/photo-store.js";
 import { createConversationFollowupRealtimePublisher } from "./modules/followups/conversation-followup-events.js";
 import { agentsRoutes } from "./modules/agents/agents.routes.js";
+import { createAgentEvaluationsScheduler, createAgentEvaluationsService, type AgentEvaluationsPrismaLike } from "./modules/agents/agent-evaluations.service.js";
 import { agentPackageRoutes } from "./modules/agents/agent-package.routes.js";
 import { createSimulatedAgentProvider } from "./modules/agents/provider-gateway.js";
 import { createGoogleCalendarMeetingScheduler, parseMeetingHours, parseMeetingWeekdays } from "./modules/agents/meeting-scheduler.js";
@@ -793,10 +794,20 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   await app.register(teamRoutes);
   await app.register(tagsRoutes);
   await app.register(agentPackageRoutes);
+  const agentEvaluations = options.prismaEnabled === false ? undefined : createAgentEvaluationsService({
+    prisma: app.prisma as unknown as AgentEvaluationsPrismaLike,
+    jev: harnessJev
+  });
+  const agentEvaluationsScheduler = agentEvaluations && env.NODE_ENV !== "test"
+    ? createAgentEvaluationsScheduler({ service: agentEvaluations, onError: (error) => app.log.error({ err: error }, "Weekly agent evaluation failed.") })
+    : undefined;
+  agentEvaluationsScheduler?.start();
+  if (agentEvaluationsScheduler) app.addHook("onClose", async () => { await agentEvaluationsScheduler.stop(); });
   await app.register(agentsRoutes, {
     publicTalkUrl: env.PUBLIC_TALK_URL,
     uploadDir: env.TALK_UPLOAD_DIR,
-    agentImprovements
+    agentImprovements,
+    agentEvaluations
   });
   await app.register(assistantRoutes);
   await app.register(assistantInboxRoutes, { scheduler: assistantScheduler, handoffBriefService, evolution: evolutionRuntime });

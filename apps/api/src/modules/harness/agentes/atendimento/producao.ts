@@ -29,6 +29,8 @@ export type HarnessConfig = {
   termosInternos?: string[];
   /** Defaults to the workspace chat model. */
   modelo?: string;
+  /** Rules for follow-ups approved from the weekly evaluation. */
+  regrasDoFollowup?: string[];
 };
 
 const EMPRESA_VILLEFER = {
@@ -52,7 +54,8 @@ export function readHarnessConfig(behaviorConfig: unknown): HarnessConfig | null
     ...(value.propostaVillefer === true ? { propostaVillefer: true } : {}),
     ...(empresa ? { empresa } : {}),
     ...(Array.isArray(value.termosInternos) ? { termosInternos: value.termosInternos.filter((termo): termo is string => typeof termo === "string") } : {}),
-    ...(typeof value.modelo === "string" && value.modelo ? { modelo: value.modelo } : {})
+    ...(typeof value.modelo === "string" && value.modelo ? { modelo: value.modelo } : {}),
+    ...(Array.isArray(value.regrasDoFollowup) ? { regrasDoFollowup: value.regrasDoFollowup.filter((regra): regra is string => typeof regra === "string" && regra.trim().length > 0) } : {})
   };
 }
 
@@ -232,8 +235,14 @@ export async function seguirComHarness(input: {
   mensagens: MensagemDaConversa[];
   sessionMetadata: unknown;
   agora: Date;
+  /** Rules being tried out by the weekly evaluation, on top of the approved ones. */
+  regrasEmTeste?: string[];
 }): Promise<FollowupDoHarness> {
-  const pedido = await contextoDeProducao(input.config, input.fontes.map((fonte) => ({ ...fonte, fileUrl: null })));
+  const regras = [...(input.config.regrasDoFollowup ?? []), ...(input.regrasEmTeste ?? [])];
+  const pedido = {
+    ...await contextoDeProducao(input.config, input.fontes.map((fonte) => ({ ...fonte, fileUrl: null }))),
+    ...(regras.length ? { regrasDaEmpresa: regras.map((regra) => `- ${regra}`).join("\n") } : {})
+  };
   const historico: HarnessMessage[] = input.mensagens
     .filter((mensagem) => mensagem.autor !== "sistema")
     .map((mensagem) => ({ autor: mensagem.autor, texto: mensagem.texto?.trim() || SEM_TEXTO[mensagem.tipo ?? ""] || `[${mensagem.tipo ?? "mensagem"}]`, em: mensagem.em ?? input.agora.toISOString() }));

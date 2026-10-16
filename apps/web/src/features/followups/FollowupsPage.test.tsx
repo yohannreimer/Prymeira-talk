@@ -324,7 +324,7 @@ describe("FollowupsPage", () => {
 
     await act(async () => buttonByText(container, "Enviar")?.click());
     const filterButtons = Array.from(container.querySelectorAll<HTMLButtonElement>(".followups-filters button"));
-    expect(filterButtons).toHaveLength(6);
+    expect(filterButtons).toHaveLength(7);
     expect(filterButtons.every((button) => button.disabled)).toBe(true);
 
     await act(async () => resolveSend({
