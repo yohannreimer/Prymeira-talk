@@ -1,0 +1,254 @@
+import { z } from "zod";
+import type { HarnessMessage, HarnessTool } from "../../core/types.js";
+import { renderFicha } from "./ficha.js";
+import type { ContextoDoAtendimento, FichaDoAtendimento, Prova } from "./tipos.js";
+
+type Tool<Args> = HarnessTool<FichaDoAtendimento, ContextoDoAtendimento, Args>;
+
+const PROVA_PROPS = {
+  mensagem: { type: "integer", description: "Número da mensagem, entre colchetes na conversa numerada." },
+  trecho: { type: "string", description: "Palavras EXATAS copiadas dessa mensagem que provam o que você está registrando." }
+};
+const provaArgs = { mensagem: z.number().int().min(0), trecho: z.string().trim().min(2) };
+
+const normalize = (text: string) => text.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+
+/**
+ * The proof rule, in code: the quote must really be in that message. A finding the model cannot quote
+ * is not recorded, which is what keeps "pending items" from being invented.
+ */
+export function conferirProva(historico: HarnessMessage[], mensagem: number, trecho: string): Prova {
+  const message = historico[mensagem];
+  if (!message) throw new Error(`a mensagem [${mensagem}] não existe; a conversa vai de [0] a [${historico.length - 1}].`);
+  if (!normalize(message.texto).includes(normalize(trecho))) {
+    throw new Error(`o trecho "${trecho}" não está na mensagem [${mensagem}]. Copie as palavras exatas dela, ou não registre.`);
+  }
+  return { mensagem, trecho: trecho.trim().slice(0, 160) };
+}
+
+const ok = (ficha: FichaDoAtendimento) => `Registrado. Ficha agora:\n${renderFicha(ficha)}`;
+
+const contatoArgs = z.object({
+  tipo: z.enum(["cliente", "colega", "pessoal", "fornecedor", "transportadora", "indefinido"]),
+  mensagem: provaArgs.mensagem.nullable().optional(),
+  trecho: provaArgs.trecho.nullable().optional()
+});
+const classificarContato: Tool<z.infer<typeof contatoArgs>> = {
+  name: "classificar_contato",
+  description: "Diz quem é o contato para a empresa. cliente: cliente, lead ou empresa prospectada. colega: alguém da própria empresa. pessoal: família, amigo, conversa pessoal. fornecedor: alguém de quem a EMPRESA compra (a empresa pede preço, estoque ou prazo para ele). transportadora: frete, motorista. indefinido: sem sinal claro. Qualquer tipo que não seja cliente ou indefinido precisa de prova.",
+  parameters: {
+    type: "object",
+    properties: { tipo: { type: "string", enum: ["cliente", "colega", "pessoal", "fornecedor", "transportadora", "indefinido"] }, ...nullableProva() },
+    required: ["tipo"],
+    additionalProperties: false
+  },
+  schema: contatoArgs,
+  execute(args, context) {
+    const needsProof = args.tipo !== "cliente" && args.tipo !== "indefinido";
+    if (needsProof && (args.mensagem == null || !args.trecho)) throw new Error(`para dizer que o contato é ${args.tipo}, cite a mensagem e o trecho que mostram isso.`);
+    const prova = args.mensagem != null && args.trecho ? conferirProva(context.historico, args.mensagem, args.trecho) : null;
+    const ficha = { ...context.ficha, contato: { tipo: args.tipo, prova } };
+    context.setFicha(ficha);
+    return ok(ficha);
+  }
+};
+
+const abrirArgs = z.object({ dono: z.enum(["cliente", "empresa"]), descricao: z.string().trim().min(5).max(200), ...provaArgs });
+const abrirPendencia: Tool<z.infer<typeof abrirArgs>> = {
+  name: "abrir_pendencia",
+  description: "Registra algo que ficou em aberto e de quem é a vez. dono=cliente: o cliente ficou devendo (responder uma pergunta da empresa, enviar um dado, decidir sobre uma proposta ou catálogo que recebeu, voltar depois de 'vou ver'). dono=empresa: a empresa prometeu algo e ainda não cumpriu na conversa, ou o cliente perguntou e ficou sem resposta. A descrição é uma frase curta e concreta, com o item ou o assunto. Cite a mensagem que prova.",
+  parameters: {
+    type: "object",
+    properties: { dono: { type: "string", enum: ["cliente", "empresa"] }, descricao: { type: "string" }, ...PROVA_PROPS },
+    required: ["dono", "descricao", "mensagem", "trecho"],
+    additionalProperties: false
+  },
+  schema: abrirArgs,
+  execute(args, context) {
+    if (!context.historico.some((message) => message.autor === "contato")) {
+      throw new Error("o contato nunca respondeu nesta conversa: uma mensagem só da empresa não deixa pendência.");
+    }
+    const prova = conferirProva(context.historico, args.mensagem, args.trecho);
+    const id = `p${context.ficha.pendencias.length + 1}`;
+    const ficha = {
+      ...context.ficha,
+      pendencias: [...context.ficha.pendencias, { id, dono: args.dono, descricao: args.descricao, prova, status: "aberta" as const, resolvidaPor: null }]
+    };
+    context.setFicha(ficha);
+    return ok(ficha);
+  }
+};
+
+const resolverArgs = z.object({ id: z.string().min(1), ...provaArgs });
+const resolverPendencia: Tool<z.infer<typeof resolverArgs>> = {
+  name: "resolver_pendencia",
+  description: "Fecha uma pendência que a conversa já resolveu (o cliente respondeu, a empresa cumpriu, o assunto morreu). Cite a mensagem posterior que mostra isso.",
+  parameters: {
+    type: "object",
+    properties: { id: { type: "string", description: "Id da pendência na ficha, ex.: p1." }, ...PROVA_PROPS },
+    required: ["id", "mensagem", "trecho"],
+    additionalProperties: false
+  },
+  schema: resolverArgs,
+  execute(args, context) {
+    const item = context.ficha.pendencias.find((pendencia) => pendencia.id === args.id);
+    if (!item) throw new Error(`pendência ${args.id} não existe.`);
+    if (args.mensagem < item.prova.mensagem) throw new Error(`a prova de que ${args.id} foi resolvida tem de vir depois da mensagem [${item.prova.mensagem}].`);
+    const resolvidaPor = conferirProva(context.historico, args.mensagem, args.trecho);
+    const ficha = {
+      ...context.ficha,
+      pendencias: context.ficha.pendencias.map((pendencia) => pendencia.id === args.id ? { ...pendencia, status: "resolvida" as const, resolvidaPor } : pendencia)
+    };
+    context.setFicha(ficha);
+    return ok(ficha);
+  }
+};
+
+const motivoArgs = z.object({ motivo: z.string().trim().min(3).max(200), ...provaArgs });
+const marcarEncerrada: Tool<z.infer<typeof motivoArgs>> = {
+  name: "marcar_encerrada",
+  description: "A demanda terminou: pedido fechado e confirmado, pagamento ou entrega combinados e concluídos, cliente disse que não tem interesse ou comprou em outro lugar, pediu para não ser contatado, ou agradeceu depois de ter o que precisava. 'Ok' sozinho depois de uma proposta NÃO é encerramento.",
+  parameters: { type: "object", properties: { motivo: { type: "string" }, ...PROVA_PROPS }, required: ["motivo", "mensagem", "trecho"], additionalProperties: false },
+  schema: motivoArgs,
+  execute(args, context) {
+    const ficha = { ...context.ficha, encerrada: { motivo: args.motivo, prova: conferirProva(context.historico, args.mensagem, args.trecho) } };
+    context.setFicha(ficha);
+    return ok(ficha);
+  }
+};
+
+const marcarEmAndamento: Tool<z.infer<typeof motivoArgs>> = {
+  name: "marcar_em_andamento",
+  description: "Retirada ou entrega combinada e acontecendo agora ('tô chegando', localização enviada, 'já saiu'). Não há o que cobrar do cliente nesse momento.",
+  parameters: { type: "object", properties: { motivo: { type: "string" }, ...PROVA_PROPS }, required: ["motivo", "mensagem", "trecho"], additionalProperties: false },
+  schema: motivoArgs,
+  execute(args, context) {
+    const ficha = { ...context.ficha, emAndamento: { motivo: args.motivo, prova: conferirProva(context.historico, args.mensagem, args.trecho) } };
+    context.setFicha(ficha);
+    return ok(ficha);
+  }
+};
+
+const indicadoArgs = z.object({ nome: z.string().trim().min(2), telefone: z.string().trim().min(8).nullable().optional(), ...provaArgs });
+const registrarIndicado: Tool<z.infer<typeof indicadoArgs>> = {
+  name: "registrar_contato_indicado",
+  description: "O contato passou o contato de outra pessoa para tratar do assunto (o comprador, o responsável por compras). A vez passa a ser da empresa: o vendedor deve falar com essa pessoa.",
+  parameters: {
+    type: "object",
+    properties: { nome: { type: "string" }, telefone: { type: ["string", "null"] }, ...PROVA_PROPS },
+    required: ["nome", "mensagem", "trecho"],
+    additionalProperties: false
+  },
+  schema: indicadoArgs,
+  execute(args, context) {
+    const ficha = { ...context.ficha, indicado: { nome: args.nome, telefone: args.telefone ?? null, prova: conferirProva(context.historico, args.mensagem, args.trecho) } };
+    context.setFicha(ficha);
+    return ok(ficha);
+  }
+};
+
+function nullableProva() {
+  return {
+    mensagem: { type: ["integer", "null"], description: PROVA_PROPS.mensagem.description },
+    trecho: { type: ["string", "null"], description: PROVA_PROPS.trecho.description }
+  };
+}
+
+export const ferramentasDoAnalista = [classificarContato, abrirPendencia, resolverPendencia, marcarEncerrada, marcarEmAndamento, registrarIndicado];
+
+/* ---------- Live conversation: questions answered from the knowledge base ---------- */
+
+const perguntaArgs = z.object({ texto: z.string().trim().min(3).max(300) });
+const registrarPergunta: Tool<z.infer<typeof perguntaArgs>> = {
+  name: "registrar_pergunta",
+  description: "Registra cada pergunta ou pedido de informação da ÚLTIMA mensagem do contato (preço, estoque, prazo, frete, pagamento, medida, se vocês têm um produto...). Uma chamada por pergunta.",
+  parameters: { type: "object", properties: { texto: { type: "string", description: "A pergunta, com as palavras do contato." } }, required: ["texto"], additionalProperties: false },
+  schema: perguntaArgs,
+  execute(args, context) {
+    const id = `q${context.ficha.perguntas.length + 1}`;
+    const ficha = { ...context.ficha, perguntas: [...context.ficha.perguntas, { id, texto: args.texto, status: "aberta" as const, resposta: null, buscas: 0 }] };
+    context.setFicha(ficha);
+    return `Pergunta ${id} registrada. Agora procure a resposta com buscar_na_base.`;
+  }
+};
+
+const buscaArgs = z.object({ perguntaId: z.string().min(1), consulta: z.string().trim().min(2).max(200) });
+const buscarNaBase: Tool<z.infer<typeof buscaArgs>> = {
+  name: "buscar_na_base",
+  description: "Procura a resposta de uma pergunta nos documentos aprovados da empresa (catálogo, políticas, perguntas frequentes). Pode buscar mais de uma vez com palavras diferentes.",
+  parameters: {
+    type: "object",
+    properties: { perguntaId: { type: "string" }, consulta: { type: "string", description: "Palavras-chave da pergunta (produto, medida, cidade, assunto)." } },
+    required: ["perguntaId", "consulta"],
+    additionalProperties: false
+  },
+  schema: buscaArgs,
+  async execute(args, context) {
+    const pergunta = context.ficha.perguntas.find((item) => item.id === args.perguntaId);
+    if (!pergunta) throw new Error(`pergunta ${args.perguntaId} não existe; registre com registrar_pergunta.`);
+    const trechos = context.pedido.base ? await context.pedido.base.buscar(args.consulta) : [];
+    const ficha = {
+      ...context.ficha,
+      perguntas: context.ficha.perguntas.map((item) => item.id === pergunta.id ? { ...item, buscas: item.buscas + 1 } : item),
+      trechosVistos: { ...context.ficha.trechosVistos, ...Object.fromEntries(trechos.map((trecho) => [trecho.id, trecho.texto])) }
+    };
+    context.setFicha(ficha);
+    if (!trechos.length) return "Nada encontrado. Tente outras palavras; se ainda assim não houver, use marcar_sem_base.";
+    return trechos.map((trecho) => `[${trecho.id}] ${trecho.titulo}: ${trecho.texto}`).join("\n");
+  }
+};
+
+const respostaArgs = z.object({ perguntaId: z.string().min(1), trechoId: z.string().min(1), citacao: z.string().trim().min(3) });
+const responderPergunta: Tool<z.infer<typeof respostaArgs>> = {
+  name: "responder_pergunta",
+  description: "Marca a pergunta como respondida pela base, citando as palavras EXATAS do trecho que responde. Use só quando o trecho responde de verdade o que foi perguntado.",
+  parameters: {
+    type: "object",
+    properties: { perguntaId: { type: "string" }, trechoId: { type: "string" }, citacao: { type: "string", description: "Palavras exatas do trecho." } },
+    required: ["perguntaId", "trechoId", "citacao"],
+    additionalProperties: false
+  },
+  schema: respostaArgs,
+  execute(args, context) {
+    const texto = context.ficha.trechosVistos[args.trechoId];
+    if (!texto) throw new Error(`o trecho ${args.trechoId} não apareceu em nenhuma busca.`);
+    if (!normalize(texto).includes(normalize(args.citacao))) throw new Error(`a citação não está no trecho ${args.trechoId}. Copie as palavras exatas.`);
+    const ficha = {
+      ...context.ficha,
+      perguntas: context.ficha.perguntas.map((item) => item.id === args.perguntaId
+        ? { ...item, status: "respondida" as const, resposta: { trechoId: args.trechoId, citacao: args.citacao } }
+        : item)
+    };
+    context.setFicha(ficha);
+    return ok(ficha);
+  }
+};
+
+const semBaseArgs = z.object({ perguntaId: z.string().min(1) });
+const marcarSemBase: Tool<z.infer<typeof semBaseArgs>> = {
+  name: "marcar_sem_base",
+  description: "Marca que os documentos não respondem a pergunta. Só depois de buscar. Uma pessoa da empresa vai responder essa parte.",
+  parameters: { type: "object", properties: { perguntaId: { type: "string" } }, required: ["perguntaId"], additionalProperties: false },
+  schema: semBaseArgs,
+  execute(args, context) {
+    const pergunta = context.ficha.perguntas.find((item) => item.id === args.perguntaId);
+    if (!pergunta) throw new Error(`pergunta ${args.perguntaId} não existe.`);
+    if (pergunta.buscas === 0) throw new Error("busque na base antes (buscar_na_base). Só marque sem base depois de procurar.");
+    const ficha = { ...context.ficha, perguntas: context.ficha.perguntas.map((item) => item.id === pergunta.id ? { ...item, status: "sem_base" as const } : item) };
+    context.setFicha(ficha);
+    return ok(ficha);
+  }
+};
+
+const pediuPessoa: Tool<Record<string, never>> = {
+  name: "cliente_pediu_pessoa",
+  description: "O contato pediu claramente para falar com uma pessoa, vendedor ou atendente humano.",
+  parameters: { type: "object", properties: {}, additionalProperties: false },
+  schema: z.object({}).strict() as unknown as z.ZodType<Record<string, never>>,
+  execute(_args, context) {
+    context.setFicha({ ...context.ficha, pediuPessoa: true });
+    return "Registrado.";
+  }
+};
+
+export const ferramentasDeLeitura = [registrarPergunta, buscarNaBase, responderPergunta, marcarSemBase, pediuPessoa];
