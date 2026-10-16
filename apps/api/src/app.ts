@@ -105,6 +105,7 @@ import { LeadsRepository } from "./modules/leads/leads.repository.js";
 import { createLeadsService } from "./modules/leads/leads.service.js";
 import { createLeadsScheduler } from "./modules/leads/leads.scheduler.js";
 import { leadsRoutes } from "./modules/leads/leads.routes.js";
+import { purchasingRoutes } from "./modules/purchasing/purchasing.routes.js";
 import { createCityGeocoder } from "./modules/leads/city-geocoder.js";
 import { createGoogleMapsScraperClient } from "./modules/leads/google-maps-scraper.client.js";
 
@@ -198,6 +199,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
             role: env.PRYMEIRA_LOCAL_ROLE
           }
         : undefined,
+      addonOverrides: env.TALK_ADDON_WORKSPACES,
       fetch: options.fetch,
       requireProductAccess: options.requireProductAccess
     });
@@ -218,7 +220,8 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   });
   app.get("/me", async (request) => ({
     workspaceId: request.talk.workspaceId,
-    role: request.talk.role
+    role: request.talk.role,
+    addons: request.talk.addons ?? { orcamentos: false }
   }));
 
   await app.register(realtimeRoutes, { bridgeDatabaseUrl: env.REALTIME_BRIDGE_ENABLED ? env.DATABASE_URL : undefined });
@@ -310,6 +313,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   if (leadsService) {
     await app.register(leadsRoutes, { service: leadsService, publicTalkUrl: env.PUBLIC_TALK_URL });
   }
+  if (options.prismaEnabled !== false) await app.register(purchasingRoutes);
 
   const evolutionHistorySource =
     evolutionRuntime.mode === "real" && env.EVOLUTION_API_BASE_URL && env.EVOLUTION_API_KEY

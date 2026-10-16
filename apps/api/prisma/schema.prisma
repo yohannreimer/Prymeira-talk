@@ -285,7 +285,7 @@ model Channel {
   /// Exact physical key created or externally attested for this channel. Never inferred from a user-supplied name.
   providerInstanceClaim         String?         @map("provider_instance_claim")
   /// Trusted channel identity from an authenticated provider probe; never a user-entered display phone.
-  verifiedMessagingPhoneNumber   String?         @map("verified_messaging_phone_number")
+  verifiedMessagingPhoneNumber  String?         @map("verified_messaging_phone_number")
   historyImportStatus           String?         @map("history_import_status")
   historyImportNextAt           DateTime?       @map("history_import_next_at")
   historyImportLeaseToken       String?         @map("history_import_lease_token") @db.Uuid
@@ -381,6 +381,7 @@ model Contact {
   broadcastListMembers BroadcastListMember[]
   leadProvenances      LeadContactProvenance[]
   crmLeadSync          CrmLeadSync?
+  suppliers            Supplier[]
 
   @@unique([workspaceId, id])
   @@unique([workspaceId, phone])
@@ -972,17 +973,17 @@ model MeetingReminder {
 }
 
 model AutomationRun {
-  id          String   @id @default(uuid()) @db.Uuid
-  workspaceId String   @map("workspace_id")
-  ruleId      String   @map("rule_id") @db.Uuid
-  eventKey    String   @map("event_key")
-  status      String
-  input       Json     @default("{}")
-  result      Json     @default("{}")
-  executionToken String? @map("execution_token") @db.Uuid
-  leaseUntil DateTime? @map("lease_until") @db.Timestamptz
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @updatedAt @map("updated_at")
+  id             String    @id @default(uuid()) @db.Uuid
+  workspaceId    String    @map("workspace_id")
+  ruleId         String    @map("rule_id") @db.Uuid
+  eventKey       String    @map("event_key")
+  status         String
+  input          Json      @default("{}")
+  result         Json      @default("{}")
+  executionToken String?   @map("execution_token") @db.Uuid
+  leaseUntil     DateTime? @map("lease_until") @db.Timestamptz
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
 
   rule AutomationRule @relation(fields: [workspaceId, ruleId], references: [workspaceId, id], onDelete: Cascade)
 
@@ -2107,29 +2108,29 @@ model IngressEventProgress {
 
 // Every row is a real pending obligation. Stage 1C owns handlers and completion.
 model IngressEffect {
-  id             String               @id @default(uuid()) @db.Uuid
-  workspaceId    String               @map("workspace_id")
-  channelId      String               @map("channel_id") @db.Uuid
-  receiptId      String?              @map("receipt_id") @db.Uuid
-  eventIndex     Int?                 @map("event_index")
-  conversationId String?              @map("conversation_id") @db.Uuid
-  messageId      String?              @map("message_id") @db.Uuid
+  id             String                @id @default(uuid()) @db.Uuid
+  workspaceId    String                @map("workspace_id")
+  channelId      String                @map("channel_id") @db.Uuid
+  receiptId      String?               @map("receipt_id") @db.Uuid
+  eventIndex     Int?                  @map("event_index")
+  conversationId String?               @map("conversation_id") @db.Uuid
+  messageId      String?               @map("message_id") @db.Uuid
   kind           String
-  logicalKey     String               @map("logical_key")
+  logicalKey     String                @map("logical_key")
   cause          Json
   frozen         Json
-  state          String               @default("pending")
-  createdAt      DateTime             @default(now()) @map("created_at")
-  attempts       Int                  @default(0)
-  lockedBy       String?              @map("locked_by")
-  leaseUntil     DateTime?            @map("lease_until") @db.Timestamptz
-  nextAttemptAt  DateTime             @default(now()) @map("next_attempt_at") @db.Timestamptz
-  lastErrorCode  String?              @map("last_error_code")
-  completedAt    DateTime?            @map("completed_at") @db.Timestamptz
+  state          String                @default("pending")
+  createdAt      DateTime              @default(now()) @map("created_at")
+  attempts       Int                   @default(0)
+  lockedBy       String?               @map("locked_by")
+  leaseUntil     DateTime?             @map("lease_until") @db.Timestamptz
+  nextAttemptAt  DateTime              @default(now()) @map("next_attempt_at") @db.Timestamptz
+  lastErrorCode  String?               @map("last_error_code")
+  completedAt    DateTime?             @map("completed_at") @db.Timestamptz
   result         Json?
   progress       IngressEventProgress? @relation(fields: [workspaceId, channelId, receiptId, eventIndex], references: [workspaceId, channelId, receiptId, eventIndex], onDelete: Cascade, map: "ingress_effects_progress_fkey")
-  conversation   Conversation?        @relation(fields: [workspaceId, channelId, conversationId], references: [workspaceId, channelId, id], onDelete: NoAction, map: "ingress_effects_conversation_fkey")
-  message        Message?             @relation(fields: [workspaceId, conversationId, messageId], references: [workspaceId, conversationId, id], onDelete: NoAction, map: "ingress_effects_message_fkey")
+  conversation   Conversation?         @relation(fields: [workspaceId, channelId, conversationId], references: [workspaceId, channelId, id], onDelete: NoAction, map: "ingress_effects_conversation_fkey")
+  message        Message?              @relation(fields: [workspaceId, conversationId, messageId], references: [workspaceId, conversationId, id], onDelete: NoAction, map: "ingress_effects_message_fkey")
 
   @@unique([workspaceId, channelId, logicalKey, kind], map: "ingress_effects_scope_logical_kind_key")
   @@index([state, createdAt])
@@ -2248,26 +2249,221 @@ model IngressRecertificationRetry {
   @@map("ingress_recertification_retries")
 }
 
-
 // One durable external lead operation per scoped contact. Leases never enclose provider I/O in a DB transaction.
 model CrmLeadSync {
-  id               String    @id @default(uuid()) @db.Uuid
-  workspaceId      String    @map("workspace_id")
-  contactId        String    @map("contact_id") @db.Uuid
-  state            String    @default("pending")
-  title            String
-  remoteContactId  String?   @map("remote_contact_id")
-  remoteCompanyId  String?   @map("remote_company_id")
-  remoteLeadId     String?   @map("remote_lead_id")
-  leaseToken       String?   @map("lease_token") @db.Uuid
-  leaseUntil       DateTime? @map("lease_until")
-  lastError        String?   @map("last_error")
-  createdAt        DateTime  @default(now()) @map("created_at")
-  updatedAt        DateTime  @updatedAt @map("updated_at")
-  contact          Contact   @relation(fields: [workspaceId, contactId], references: [workspaceId, id], onDelete: Cascade)
+  id              String    @id @default(uuid()) @db.Uuid
+  workspaceId     String    @map("workspace_id")
+  contactId       String    @map("contact_id") @db.Uuid
+  state           String    @default("pending")
+  title           String
+  remoteContactId String?   @map("remote_contact_id")
+  remoteCompanyId String?   @map("remote_company_id")
+  remoteLeadId    String?   @map("remote_lead_id")
+  leaseToken      String?   @map("lease_token") @db.Uuid
+  leaseUntil      DateTime? @map("lease_until")
+  lastError       String?   @map("last_error")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+  contact         Contact   @relation(fields: [workspaceId, contactId], references: [workspaceId, id], onDelete: Cascade)
 
   @@unique([workspaceId, id])
   @@unique([workspaceId, contactId])
   @@index([state, leaseUntil])
   @@map("crm_lead_syncs")
+}
+
+// ── Orçamentos (compras): add-on liberado pelo Hub em limits.modules.orcamentos ──
+// Money is stored in cents (Int) so totals never drift; states are checked strings like the rest of the newer tables.
+
+model Supplier {
+  id          String    @id @default(uuid()) @db.Uuid
+  workspaceId String    @map("workspace_id")
+  contactId   String?   @map("contact_id") @db.Uuid
+  name        String
+  phone       String
+  contactName String?   @map("contact_name")
+  email       String?
+  cnpj        String?
+  city        String?
+  categories  String[]  @default([])
+  notes       String?
+  preferred   Boolean   @default(false)
+  blocked     Boolean   @default(false)
+  archivedAt  DateTime? @map("archived_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  contact      Contact?              @relation(fields: [workspaceId, contactId], references: [workspaceId, id], onDelete: SetNull)
+  invites      PurchaseQuoteInvite[]
+  priceHistory PriceHistory[]
+
+  @@unique([workspaceId, id])
+  @@unique([workspaceId, phone])
+  @@index([workspaceId, name])
+  @@map("suppliers")
+}
+
+model PurchaseRequest {
+  id                 String    @id @default(uuid()) @db.Uuid
+  workspaceId        String    @map("workspace_id")
+  title              String
+  status             String    @default("draft")
+  responseDeadline   DateTime  @map("response_deadline")
+  deliveryDeadline   DateTime  @map("delivery_deadline")
+  deliveryCep        String    @map("delivery_cep")
+  deliveryCity       String?   @map("delivery_city")
+  /// The company's ceiling for the whole order. Never sent to a supplier nor to the agent's model.
+  budgetCeilingCents Int?      @map("budget_ceiling_cents")
+  paymentPreference  String?   @map("payment_preference")
+  requiresInvoice    Boolean   @default(true) @map("requires_invoice")
+  notes              String?
+  negotiationRules   Json      @default("{}") @map("negotiation_rules")
+  channelId          String?   @map("channel_id") @db.Uuid
+  createdByUserId    String?   @map("created_by_user_id")
+  approvedInviteId   String?   @map("approved_invite_id") @db.Uuid
+  approvedAt         DateTime? @map("approved_at")
+  approvedByUserId   String?   @map("approved_by_user_id")
+  startedAt          DateTime? @map("started_at")
+  canceledAt         DateTime? @map("canceled_at")
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @updatedAt @map("updated_at")
+
+  items   PurchaseRequestItem[]
+  invites PurchaseQuoteInvite[]
+  events  PurchaseEvent[]
+
+  @@unique([workspaceId, id])
+  @@index([workspaceId, status, updatedAt])
+  @@map("purchase_requests")
+}
+
+model PurchaseRequestItem {
+  id            String   @id @default(uuid()) @db.Uuid
+  workspaceId   String   @map("workspace_id")
+  requestId     String   @map("request_id") @db.Uuid
+  position      Int
+  description   String
+  specification String?
+  quantity      Float
+  unit          String
+  referenceUrls String[] @default([]) @map("reference_urls")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  request PurchaseRequest     @relation(fields: [workspaceId, requestId], references: [workspaceId, id], onDelete: Cascade)
+  lines   PurchaseQuoteLine[]
+
+  @@unique([workspaceId, id])
+  @@unique([requestId, position])
+  @@map("purchase_request_items")
+}
+
+/// One supplier inside one request. Also the conversation lock for the buyer agent once it is wired.
+model PurchaseQuoteInvite {
+  id             String    @id @default(uuid()) @db.Uuid
+  workspaceId    String    @map("workspace_id")
+  requestId      String    @map("request_id") @db.Uuid
+  supplierId     String    @map("supplier_id") @db.Uuid
+  conversationId String?   @map("conversation_id") @db.Uuid
+  status         String    @default("queued")
+  /// The buyer agent's record of this conversation (FichaDoFornecedor), kept as data.
+  ficha          Json      @default("{}")
+  followupCount  Int       @default(0) @map("followup_count")
+  declinedReason String?   @map("declined_reason")
+  sentAt         DateTime? @map("sent_at")
+  lastReplyAt    DateTime? @map("last_reply_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  request  PurchaseRequest @relation(fields: [workspaceId, requestId], references: [workspaceId, id], onDelete: Cascade)
+  supplier Supplier        @relation(fields: [workspaceId, supplierId], references: [workspaceId, id], onDelete: Restrict)
+  quotes   PurchaseQuote[]
+
+  @@unique([workspaceId, id])
+  @@unique([requestId, supplierId])
+  @@index([workspaceId, conversationId])
+  @@map("purchase_quote_invites")
+}
+
+/// One version of a supplier's quote. Every price-improvement round creates a new version, so before/after stays visible.
+model PurchaseQuote {
+  id              String    @id @default(uuid()) @db.Uuid
+  workspaceId     String    @map("workspace_id")
+  inviteId        String    @map("invite_id") @db.Uuid
+  version         Int
+  kind            String    @default("initial")
+  source          String    @default("manual")
+  freightCents    Int?      @map("freight_cents")
+  deliveryText    String?   @map("delivery_text")
+  deliveryDate    DateTime? @map("delivery_date")
+  paymentTerms    String?   @map("payment_terms")
+  validUntil      DateTime? @map("valid_until")
+  observation     String?
+  /// The supplier's own words (or file name) this version came from.
+  origin          String?
+  sourceMessageId String?   @map("source_message_id") @db.Uuid
+  createdByUserId String?   @map("created_by_user_id")
+  createdAt       DateTime  @default(now()) @map("created_at")
+
+  invite PurchaseQuoteInvite @relation(fields: [workspaceId, inviteId], references: [workspaceId, id], onDelete: Cascade)
+  lines  PurchaseQuoteLine[]
+
+  @@unique([workspaceId, id])
+  @@unique([inviteId, version])
+  @@map("purchase_quotes")
+}
+
+model PurchaseQuoteLine {
+  id             String  @id @default(uuid()) @db.Uuid
+  workspaceId    String  @map("workspace_id")
+  quoteId        String  @map("quote_id") @db.Uuid
+  itemId         String  @map("item_id") @db.Uuid
+  unitPriceCents Int     @map("unit_price_cents")
+  note           String?
+
+  quote PurchaseQuote       @relation(fields: [workspaceId, quoteId], references: [workspaceId, id], onDelete: Cascade)
+  item  PurchaseRequestItem @relation(fields: [workspaceId, itemId], references: [workspaceId, id], onDelete: Cascade)
+
+  @@unique([quoteId, itemId])
+  @@map("purchase_quote_lines")
+}
+
+/// The request's timeline: what happened and why.
+model PurchaseEvent {
+  id          String   @id @default(uuid()) @db.Uuid
+  workspaceId String   @map("workspace_id")
+  requestId   String   @map("request_id") @db.Uuid
+  inviteId    String?  @map("invite_id") @db.Uuid
+  type        String
+  summary     String
+  reason      String?
+  metadata    Json     @default("{}")
+  actorUserId String?  @map("actor_user_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  request PurchaseRequest @relation(fields: [workspaceId, requestId], references: [workspaceId, id], onDelete: Cascade)
+
+  @@index([workspaceId, requestId, createdAt])
+  @@map("purchase_events")
+}
+
+model PriceHistory {
+  id             String   @id @default(uuid()) @db.Uuid
+  workspaceId    String   @map("workspace_id")
+  itemName       String   @map("item_name")
+  /// Lowercase, accent-free item name used to match a new request's items.
+  itemKey        String   @map("item_key")
+  supplierId     String?  @map("supplier_id") @db.Uuid
+  supplierName   String?  @map("supplier_name")
+  unit           String?
+  quantity       Float?
+  unitPriceCents Int      @map("unit_price_cents")
+  paidAt         DateTime @map("paid_at")
+  source         String   @default("import")
+  requestId      String?  @map("request_id") @db.Uuid
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  supplier Supplier? @relation(fields: [workspaceId, supplierId], references: [workspaceId, id], onDelete: SetNull)
+
+  @@index([workspaceId, itemKey, paidAt])
+  @@map("price_history")
 }

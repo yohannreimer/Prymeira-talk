@@ -4,7 +4,7 @@ import { TalkAlerts } from "../alerts/TalkAlerts";
 import { Bot } from "lucide-react";
 import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
-import { isTalkModuleKey, talkModules, type TalkModuleKey } from "./moduleRegistry";
+import { availableTalkModules, isTalkModuleKey, type TalkModuleKey } from "./moduleRegistry";
 
 type TalkSuiteShellProps = {
   renderModule: (moduleKey: TalkModuleKey) => ReactNode;
@@ -29,7 +29,10 @@ function buildModuleUrl(moduleKey: TalkModuleKey) {
 
 export function TalkSuiteShell({ renderModule, prefetchModule }: TalkSuiteShellProps) {
   const context = useOptionalTalkSession();
-  const [activeModule, setActiveModule] = useState<TalkModuleKey>(readModuleFromUrl);
+  const modules = availableTalkModules(context?.currentUser.addons);
+  const [requestedModule, setActiveModule] = useState<TalkModuleKey>(readModuleFromUrl);
+  // A link to an add-on the workspace does not have falls back to the default module.
+  const activeModule = modules.some((module) => module.key === requestedModule) ? requestedModule : defaultModule;
 
   const [sidebarExpanded, setSidebarExpanded] = useState<boolean>(() => {
     return localStorage.getItem("sidebar-expanded") === "true";
@@ -93,7 +96,7 @@ export function TalkSuiteShell({ renderModule, prefetchModule }: TalkSuiteShellP
           {sidebarExpanded ? "←" : "→"}
         </button>
         <nav className="rail-nav" aria-label="Modulos">
-          {talkModules.map(({ key, label, Icon }) => (
+          {modules.map(({ key, label, Icon }) => (
             <button
               aria-label={label}
               aria-pressed={activeModule === key}

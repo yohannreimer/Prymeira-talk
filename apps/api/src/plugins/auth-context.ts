@@ -28,8 +28,21 @@ declare module "fastify" {
       role: "owner" | "manager" | "agent";
       clerkToken?: string;
       clerkUserId?: string | null;
+      /** Paid add-ons the Hub released for this workspace (limits.modules), plus the internal-test override. */
+      addons?: TalkAddons;
     };
   }
+}
+
+export type TalkAddons = { orcamentos: boolean };
+/** Workspaces that get every add-on without the Hub (internal tests). "*" means all. */
+export type AddonOverrides = "*" | ReadonlySet<string>;
+
+export function readTalkAddons(limits: unknown, workspaceId: string, overrides?: AddonOverrides): TalkAddons {
+  const forced = overrides === "*" || Boolean(overrides?.has(workspaceId));
+  const modules = limits && typeof limits === "object" ? (limits as { modules?: unknown }).modules : undefined;
+  const fromHub = Boolean(modules && typeof modules === "object" && (modules as Record<string, unknown>).orcamentos === true);
+  return { orcamentos: forced || fromHub };
 }
 
 type RequireProductAccess = (
@@ -47,6 +60,7 @@ export interface AuthContextPluginOptions {
   };
   requireProductAccess?: RequireProductAccess;
   fetch?: Fetch;
+  addonOverrides?: AddonOverrides;
   /** How long an allowed access is reused for the same token (default 30 s; 0 asks the Hub on every request). */
   accessCacheMs?: number;
 }
@@ -227,7 +241,8 @@ export const authContextPlugin = fp(
           workspaceId: options.localAuthBypass.workspaceId,
           role: options.localAuthBypass.role,
           clerkToken,
-          clerkUserId: readClerkUserIdFromToken(clerkToken)
+          clerkUserId: readClerkUserIdFromToken(clerkToken),
+          addons: readTalkAddons(undefined, options.localAuthBypass.workspaceId, options.addonOverrides)
         };
         return;
       }
@@ -263,7 +278,8 @@ export const authContextPlugin = fp(
         workspaceId: parsedAccess.workspace_id,
         role: normalizeRole(parsedAccess.product_role ?? parsedAccess.workspace_role),
         clerkToken,
-        clerkUserId: readClerkUserIdFromToken(clerkToken)
+        clerkUserId: readClerkUserIdFromToken(clerkToken),
+        addons: readTalkAddons(parsedAccess.limits, parsedAccess.workspace_id, options.addonOverrides)
       };
     });
   }
