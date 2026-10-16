@@ -1,0 +1,65 @@
+name: GlitchTip Xing bridge
+
+on:
+  push:
+    branches: [codex/glitchtip-xing-events]
+    paths: [infra/glitchtip-xing/**, .github/workflows/glitchtip-xing.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  verify-and-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: disposable-ci-password
+        ports: [5432:5432]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Isolated unit tests
+        run: |
+          python3 -m venv /tmp/xing-tests
+          /tmp/xing-tests/bin/pip install --index-url https://pypi.org/simple aiohttp==3.13.5 cryptography==46.0.7
+          /tmp/xing-tests/bin/python -m unittest discover -s infra/glitchtip-xing/tests -v
+      - name: Build pinned image
+        run: docker build -t xing-bridge:test infra/glitchtip-xing
+      - name: Image and disposable database integration
+        env:
+          DATABASE_URL: postgres://postgres:disposable-ci-password@127.0.0.1:5432/postgres
+          SECRET_KEY: disposable-ci-only-secret-not-used-in-production
+          GLITCHTIP_URL: https://glitchtip.prymeiradigital.com.br
+          VALKEY_URL: ''
+          ALLOWED_HOSTS: localhost,127.0.0.1,glitchtip.prymeiradigital.com.br
+          GLITCHTIP_ENABLE_MCP: 'True'
+          GLITCHTIP_EMBED_WORKER: 'true'
+          XING_EVENTS_ENABLED: 'true'
+          XING_ORGANIZATION_SLUG: prymeira-digital
+          XING_PROJECT_ID: '3'
+          XING_PROJECT_NAME: prymeira-talk
+          XING_WEBHOOK_TOKEN: disposable_ci_url_safe_webhook_token_1234567890
+          XING_INTEGRATION_DISPOSABLE: 'yes'
+        run: |
+          env_args=(-e DATABASE_URL -e SECRET_KEY -e GLITCHTIP_URL -e VALKEY_URL -e ALLOWED_HOSTS -e GLITCHTIP_ENABLE_MCP -e GLITCHTIP_EMBED_WORKER -e XING_EVENTS_ENABLED -e XING_ORGANIZATION_SLUG -e XING_PROJECT_ID -e XING_PROJECT_NAME -e XING_WEBHOOK_TOKEN -e XING_INTEGRATION_DISPOSABLE)
+          docker run --rm --network host "${env_args[@]}" --entrypoint python xing-bridge:test manage.py migrate --noinput
+          docker run --rm --network host "${env_args[@]}" --entrypoint python xing-bridge:test manage.py createcachetable
+          docker run --rm --network host "${env_args[@]}" --entrypoint python xing-bridge:test /code/xing-alerts-scripts/smoke_image.py
+          docker run --rm --network host "${env_args[@]}" --entrypoint python xing-bridge:test /code/xing-alerts-scripts/integration_image.py
+      - name: Publish verified commit image
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE: ghcr.io/${{ github.repository_owner }}/prymeira-glitchtip-xing:${{ github.sha }}
+        run: |
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u '${{ github.actor }}' --password-stdin
+          docker tag xing-bridge:test "$IMAGE"
+          docker push "$IMAGE"
