@@ -25,6 +25,8 @@ def install(root):
             "_xing_original_send = send_issue_as_webhook\n"
             "async def send_issue_as_webhook(url, issues, issue_count=1, tags_to_add=None, **kwargs):\n"
             "    return await _xing_native_send(_xing_original_send, send_webhook, url, issues, issue_count, tags_to_add, **kwargs)\n"
+            "# Native notifications use this eagerly-bound dispatcher, not the module global.\n"
+            "ISSUE_NOTIFICATION_HANDLERS[RecipientType.GENERAL_WEBHOOK] = send_issue_as_webhook\n"
         )
     (root / "apps/mcp/server.py").write_text("from xing_alerts.mcp_server import mcp\n")
     with (root / "glitchtip/asgi.py").open("a") as handle:

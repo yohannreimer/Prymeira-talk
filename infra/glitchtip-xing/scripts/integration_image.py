@@ -212,7 +212,9 @@ async def diagnostic_projection_gate():
     from types import SimpleNamespace
     from apps.issue_events.models import Issue, IssueEvent
     from apps.issue_events.constants import IssueEventType, LogLevel
-    from apps.alerts.webhooks import send_issue_as_webhook
+    from apps.alerts import webhooks
+    from apps.alerts.models import ProjectAlert, AlertRecipient, Notification
+    from apps.alerts.constants import RecipientType
     from xing_alerts.native import select_snapshot
     from xing_alerts.privacy import normalize
 
@@ -233,16 +235,28 @@ async def diagnostic_projection_gate():
     assert snapshot["release"] == latest["release"]
     send = AsyncMock(return_value=SimpleNamespace(status=202))
     config = application.config
+    assert webhooks.ISSUE_NOTIFICATION_HANDLERS[RecipientType.GENERAL_WEBHOOK] is webhooks.send_issue_as_webhook
+    alert = await ProjectAlert.objects.acreate(project=project, name="Disposable diagnostic dispatch", quantity=1, timespan_minutes=1)
+    await AlertRecipient.objects.acreate(alert=alert, recipient_type=RecipientType.GENERAL_WEBHOOK,
+        url=config.base_url + "/xing-alerts/webhook/" + config.webhook_token, tags_to_add=["diagnostic_version"])
+    notification = await Notification.objects.acreate(project_alert=alert)
+    await notification.issues.aadd(issue)
     with patch("apps.alerts.webhooks.send_webhook", send):
-        await send_issue_as_webhook(config.base_url + "/xing-alerts/webhook/" + config.webhook_token,
-            [issue], tags_to_add=["diagnostic_version"])
+        await notification.send_notifications()
+    send.assert_awaited_once()
+    await notification.arefresh_from_db()
+    assert notification.is_sent
     attachments = [asdict(item) for item in send.call_args.args[2]]
     clean = normalize({"attachments": attachments}, config, time.time())[0]
     assert clean["diagnostic"]["code"] == "WAHA_HTTP_500"
+    assert clean["diagnostic"]["type"] == "WahaClientError"
+    assert clean["diagnostic"]["frames"] == [{"filename": "modules/agents/agent-runtime.ts", "lineno": 1539, "colno": 27}]
     assert clean["diagnostic"]["correlation_id"] == latest["correlation_id"]
     assert clean["release"] == latest["release"]
     assert "PRIVATE_DISPOSABLE" not in json.dumps(attachments)
     assert clean["context_source"] == "latest_issue_event"
+    # Later fixture ingest also runs the embedded worker; leave no test recipient.
+    await alert.adelete()
 
 
 async def native_oauth_flow(client, challenge):

@@ -6,6 +6,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from types import ModuleType
+from unittest.mock import AsyncMock
 from pathlib import Path
 from unittest.mock import patch
 
@@ -79,3 +81,40 @@ class PackagingTests(unittest.TestCase):
                 (root / "apps/mcp/server.py").read_text(),
                 "from xing_alerts.mcp_server import mcp\n",
             )
+
+    def test_installed_dispatcher_calls_diagnostic_wrapper_and_preserves_other_handlers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            native_source = (
+                "class RecipientType:\n"
+                "    GENERAL_WEBHOOK = 'general'\n"
+                "    DISCORD = 'discord'\n"
+                "async def send_issue_as_webhook(*args, **kwargs): return 'upstream'\n"
+                "async def send_webhook(*args, **kwargs): pass\n"
+                "async def discord(*args, **kwargs): pass\n"
+                "ISSUE_NOTIFICATION_HANDLERS = {RecipientType.GENERAL_WEBHOOK: send_issue_as_webhook, RecipientType.DISCORD: discord}\n"
+            )
+            original = {"apps/alerts/webhooks.py": native_source,
+                        "glitchtip/asgi.py": "original_startup\n",
+                        "apps/mcp/server.py": "broad_tools\n"}
+            expected = {}
+            for path, body in original.items():
+                file = root / path
+                file.parent.mkdir(parents=True, exist_ok=True)
+                file.write_text(body)
+                expected[path] = hashlib.sha256(body.encode()).hexdigest()
+            with patch.object(installer, "EXPECTED", expected):
+                installer.install(root)
+            fake = ModuleType("xing_alerts.native")
+            fake.native_send_issue_as_webhook = AsyncMock(return_value="diagnostic")
+            namespace = {}
+            with patch.dict(sys.modules, {"xing_alerts.native": fake}):
+                exec(compile((root / "apps/alerts/webhooks.py").read_text(), "installed_webhooks.py", "exec"), namespace)
+            handlers = namespace["ISSUE_NOTIFICATION_HANDLERS"]
+            self.assertIs(handlers["general"], namespace["send_issue_as_webhook"])
+            self.assertIsNot(handlers["general"], namespace["_xing_original_send"])
+            self.assertIs(handlers["discord"], namespace["discord"])
+            import asyncio
+            result = asyncio.run(handlers["general"]("owned", [], tags_to_add=["diagnostic_version"]))
+            self.assertEqual(result, "diagnostic")
+            fake.native_send_issue_as_webhook.assert_awaited_once()
