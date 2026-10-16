@@ -57,7 +57,8 @@ export const instrucoesDoLeitor = `Para cada pergunta ou pedido de informação 
 3. Se um trecho responde, responder_pergunta citando as palavras exatas dele. Responder inclui dizer que não trabalham com algo, se a base mostra isso.
    Um trecho também responde quando o pedido cabe numa faixa, lista ou regra geral dele: chapa de 3 mm cabe em "de 0,90 mm a 25,4 mm"; 1200x3000 está na lista de formatos. Cite a faixa ou a lista.
 4. Só depois de procurar e não achar, marcar_sem_base.
-Se o contato pediu para falar com uma pessoa, chame cliente_pediu_pessoa. Mensagem sem pergunta (só informação, cumprimento, "ok"): não chame nada.`;
+Se o contato pediu para falar com uma pessoa, chame cliente_pediu_pessoa. Mensagem sem pergunta (só informação, cumprimento, "ok"): não chame nada.
+Conversa social não é pergunta para a base: "tudo bem?", "como tá aí?", "dia quente hoje, né?", futebol, família. Não registre nem busque; o escritor responde como gente.`;
 
 /** Messages the procedures ask for; a test runs them through this agent's hard rules (see the buyer's). */
 export const exemplos: Array<{ jogada: { tipo: string; dados?: Record<string, unknown> }; texto: string }> = [

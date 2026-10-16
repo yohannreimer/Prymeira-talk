@@ -597,3 +597,19 @@ describe("procedimentos e regras não se contradizem", () => {
     expect(falhas).toEqual([]);
   });
 });
+
+describe("papo social não vai para a base", () => {
+  it("the self-check never pushes small talk into the base, but still catches a business question", async () => {
+    const { conferirLeitura } = await import("./agentes/atendimento/ferramentas.js");
+    const vazia = fichaInicialAtendimento();
+    expect(conferirLeitura({ ficha: vazia, mensagem: "opa, dia quente aqui hoje hein, como tá aí?" })).toBeNull();
+    expect(conferirLeitura({ ficha: vazia, mensagem: "tudo bem? e a família?" })).toBeNull();
+    expect(conferirLeitura({ ficha: vazia, mensagem: "calor demais kkk. vcs entregam em blumenau?" })).toMatch(/registrar_pergunta/);
+  });
+
+  it("small talk with no question recorded becomes a plain conversation, never a hand-over", () => {
+    const jogada = decidirJogadaAtendimento({ ficha: fichaInicialAtendimento(), pedido: contextoVillefer(), triagem: { kind: "humano", fonte: "regras", motivo: "" }, evento: { tipo: "mensagem", texto: "dia quente aqui, como tá aí?" } });
+    expect(jogada.tipo).toBe("conversar");
+    expect(jogada.humano ?? jogada.avisarHumano).toBeUndefined();
+  });
+});

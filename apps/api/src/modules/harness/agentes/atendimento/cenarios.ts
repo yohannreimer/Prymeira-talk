@@ -367,6 +367,30 @@ export const cenariosAoVivo: Cenario[] = [
     verificar: respostaAoVivo({ humano: true, fala: /48/, humanoFala: /desconto|tonelada/i })
   },
   {
+    id: "papo_social",
+    titulo: "Papo sem nada a ver ('dia quente aqui, como tá aí?'): conversa, não busca nem passa",
+    pedido: contextoVillefer(),
+    persona: cliente("opa, dia quente aqui hoje hein, como tá aí?"),
+    maxTrocas: 1,
+    exigeModelo: true,
+    verificar: (run) => {
+      const leitura = run.turnos.flatMap((turno) => turno.resultado.trace).filter((step) => step.fase === "leitura").flatMap((step) => step.detalhe as Array<{ ferramenta: string }>);
+      return [
+        ...respostaAoVivo({ humano: false })(run),
+        { nome: "nao_buscou_na_base", ok: !leitura.some((call) => call.ferramenta === "buscar_na_base"), detalhe: leitura.map((call) => call.ferramenta).join(", ") }
+      ];
+    }
+  },
+  {
+    id: "papo_e_pergunta",
+    titulo: "Papo e pergunta juntos: responde o papo e a pergunta pela base",
+    pedido: contextoVillefer(),
+    persona: cliente("bom dia! calor demais aqui hoje kkk. vcs entregam em blumenau?"),
+    maxTrocas: 1,
+    exigeModelo: true,
+    verificar: respostaAoVivo({ humano: false, fala: /48 horas/i })
+  },
+  {
     id: "pediu_pessoa",
     titulo: "Cliente pediu uma pessoa",
     pedido: contextoVillefer(),

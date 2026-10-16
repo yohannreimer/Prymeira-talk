@@ -161,7 +161,7 @@ export const ferramentasDoAnalista = [classificarContato, abrirPendencia, resolv
 const perguntaArgs = z.object({ texto: z.string().trim().min(3).max(300) });
 const registrarPergunta: Tool<z.infer<typeof perguntaArgs>> = {
   name: "registrar_pergunta",
-  description: "Registra cada pergunta ou pedido de informação da ÚLTIMA mensagem do contato (preço, estoque, prazo, frete, pagamento, medida, se vocês têm um produto...). Uma chamada por pergunta.",
+  description: "Registra cada pergunta ou pedido de informação sobre a empresa, os produtos ou o pedido na ÚLTIMA mensagem do contato (preço, estoque, prazo, frete, pagamento, medida, se vocês têm um produto...). Uma chamada por pergunta. Conversa social (\"tudo bem?\", \"como tá aí?\", o tempo) não se registra.",
   parameters: { type: "object", properties: { texto: { type: "string", description: "A pergunta, com as palavras do contato." } }, required: ["texto"], additionalProperties: false },
   schema: perguntaArgs,
   execute(args, context) {
@@ -255,7 +255,11 @@ export const ferramentasDeLeitura = [registrarPergunta, buscarNaBase, responderP
 
 const PALAVRAS_VAZIAS = new Set(["voces", "vcs", "tem", "qual", "quais", "para", "pra", "com", "que", "uma", "um", "dos", "das", "aceita", "aceitam", "fazem", "faz"]);
 const palavras = (text: string) => new Set((normalize(text).match(/[a-z0-9,]{3,}/g) ?? []).filter((word) => !PALAVRAS_VAZIAS.has(word)));
-const PERGUNTA = /\?|\b(qual|quais|quanto|quando|onde|como|tem|voces?|vcs|aceita|entregam|fazem|trabalham)\b/;
+/**
+ * Words of a business question. The nudge fires only with one of them, so small talk ("dia quente aqui,
+ * como tá aí?") never gets pushed into the base, where it would end as "no answer" and go to a person.
+ */
+const ASSUNTO_DO_NEGOCIO = /\b(preco|precos|valor|quanto|custa|estoque|tem|temos|prazo|entrega|entregam|frete|pagamento|boleto|pix|cartao|parcel\w*|desconto|medida|medidas|orcamento|produto|material|trabalham|vendem|fazem|aceita\w*|nota|nf|retirada|endereco|horario|abre|fecha)\b/;
 
 /**
  * After the reader: a question left unregistered, open, or called unanswerable while a passage it saw
@@ -264,8 +268,9 @@ const PERGUNTA = /\?|\b(qual|quais|quanto|quando|onde|como|tem|voces?|vcs|aceita
 export function conferirLeitura({ ficha, mensagem }: { ficha: FichaDoAtendimento; mensagem: string }): string | null {
   const atuais = ficha.perguntas.filter((item) => item.status !== "tratada");
   if (atuais.length === 0) {
-    return PERGUNTA.test(normalize(mensagem))
-      ? "a última mensagem parece ter pergunta e nada foi registrado. Registre cada pergunta com registrar_pergunta e procure na base."
+    const texto = normalize(mensagem);
+    return /\?/.test(mensagem) && ASSUNTO_DO_NEGOCIO.test(texto)
+      ? "a última mensagem parece ter pergunta sobre produto, preço, prazo, entrega ou pagamento, e nada foi registrado. Se for, registre com registrar_pergunta e procure na base. Se for só conversa, não chame nada."
       : null;
   }
   const abertas = atuais.filter((item) => item.status === "aberta");
