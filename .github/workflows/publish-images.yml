@@ -57,6 +57,17 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+      - name: Checkout pinned companion alert bridge for contract validation
+        uses: actions/checkout@v4
+        with:
+          ref: dacb23577e9924540c51756040c6294d3a11f0d2
+          path: .validation/alert-bridge
+      - name: Prepare isolated alert contract dependencies
+        run: |
+          python3 -m venv "$RUNNER_TEMP/talk-alert-python"
+          "$RUNNER_TEMP/talk-alert-python/bin/pip" install --index-url https://pypi.org/simple aiohttp==3.13.5 cryptography==46.0.7
+          echo "TALK_ALERT_BRIDGE_SOURCE=$GITHUB_WORKSPACE/.validation/alert-bridge/infra/glitchtip-xing" >> "$GITHUB_ENV"
+          echo "TALK_ALERT_PYTHON=$RUNNER_TEMP/talk-alert-python/bin/python" >> "$GITHUB_ENV"
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @prymeira-talk/api exec prisma generate --schema prisma/schema.prisma
       - name: Prepare platform tools and temporary directory
