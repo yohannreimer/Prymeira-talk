@@ -96,7 +96,12 @@ export const cenarios: Cenario[] = [
     historicoInicial: conversa(ABERTURA),
     persona: roteiro("aqui é a recepção, quem cuida disso é o sócio"),
     maxTrocas: 1,
-    verificar: (run) => [...comuns(run), { nome: "pediu_o_responsavel", ok: jogadas(run).includes("pedir_responsavel") && /nome|contato/i.test(enviados(run)[0] ?? ""), detalhe: enviados(run)[0] }]
+    verificar: (run) => [...comuns(run), {
+      nome: "pediu_o_responsavel",
+      // "quem cuida é o sócio" can be read as a referral without a contact: asking for the partner's contact is right too.
+      ok: jogadas(run).some((jogada) => jogada === "pedir_responsavel" || jogada === "pedir_contato_do_indicado") && /nome|contato/i.test(enviados(run)[0] ?? ""),
+      detalhe: enviados(run)[0]
+    }]
   },
   {
     id: "nunca_respondeu",

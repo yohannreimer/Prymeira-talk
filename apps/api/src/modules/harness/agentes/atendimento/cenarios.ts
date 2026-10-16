@@ -179,7 +179,8 @@ export const cenarios: Cenario[] = [
       "V: Nós que agradecemos!"
     ),
     exigeModelo: true,
-    verificar: espera({ jogadas: ["encerrada", "nada_aberto"] })
+    // "o caminhão já tá aí pra carregar" also reads as a carrier; every one of these moves stays silent.
+    verificar: espera({ jogadas: ["encerrada", "nada_aberto", "contato_nao_cliente"] })
   },
   {
     id: "vou_ver_com_socio",

@@ -1,6 +1,6 @@
 import type { ModelClient } from "../core/model.js";
 import { renderTranscript, runTurn, type RunnerDeps } from "../core/runner.js";
-import type { AgentDefinition, HarnessMessage, TurnResult } from "../core/types.js";
+import type { AgentDefinition, HarnessEvent, HarnessMessage, TurnResult } from "../core/types.js";
 
 /**
  * The other side of the conversation. A scripted persona answers from code (tests, exact edge cases);
@@ -33,7 +33,9 @@ export type ScenarioRun<Ficha, Pedido> = {
   pedido: Pedido;
   ficha: Ficha;
   historico: HarnessMessage[];
-  turnos: Array<{ evento: string; resultado: TurnResult<Ficha> }>;
+  /** The past conversation the run started from (follow-up scenarios), shown before the first turn. */
+  historicoInicial: HarnessMessage[];
+  turnos: Array<{ evento: string; acontecimento: HarnessEvent; resultado: TurnResult<Ficha> }>;
   humano: { motivo: string; resumo: string } | null;
   erro: string | null;
 };
@@ -52,6 +54,7 @@ export async function runScenario<Ficha, Pedido>(input: {
     pedido: scenario.pedido,
     ficha: agent.fichaInicial(scenario.pedido),
     historico: [...(scenario.historicoInicial ?? [])],
+    historicoInicial: [...(scenario.historicoInicial ?? [])],
     turnos: [],
     humano: null,
     erro: null
@@ -60,7 +63,7 @@ export async function runScenario<Ficha, Pedido>(input: {
   const step = async (evento: Parameters<typeof runTurn>[2]["evento"]) => {
     const resultado = await runTurn(agent, deps, { ficha: run.ficha, pedido: run.pedido, historico: run.historico, evento });
     run.ficha = resultado.ficha;
-    run.turnos.push({ evento: evento.tipo === "mensagem" ? `contato: ${evento.texto}` : evento.tipo, resultado });
+    run.turnos.push({ evento: evento.tipo === "mensagem" ? `contato: ${evento.texto}` : evento.tipo, acontecimento: evento, resultado });
     if (resultado.enviar) run.historico.push({ autor: "agente", texto: resultado.enviar, em: clock.tick() });
     if (resultado.humano) run.humano = resultado.humano;
     return resultado;
@@ -154,6 +157,8 @@ export async function runSuite<Ficha, Pedido>(input: {
   k: number;
   fornecedorModel?: ModelClient;
   onProgress?: (line: string) => void;
+  /** Every run with its checks, for the timeline page (HARNESS_LINHA_DO_TEMPO). */
+  onRun?: (input: { scenario: Scenario<Ficha, Pedido>; tentativa: number; run: ScenarioRun<Ficha, Pedido>; checks: Check[] }) => void;
 }): Promise<SuiteReport> {
   const cenarios: ScenarioScore[] = [];
   let firstTries = 0;
@@ -170,6 +175,7 @@ export async function runSuite<Ficha, Pedido>(input: {
       if (ok) score.acertos += 1;
       else score.falhas.push({ tentativa: attempt, checks, transcript: renderRun(run), erro: run.erro });
       if (attempt === 1 && ok) firstTries += 1;
+      input.onRun?.({ scenario, tentativa: attempt, run, checks });
       input.onProgress?.(`${scenario.id} #${attempt}: ${ok ? "ok" : `falhou (${checks.filter((check) => !check.ok).map((check) => check.nome).join(", ")})`}`);
     }
     score.passouTodas = score.acertos === input.k;
@@ -194,6 +200,10 @@ export function renderRun(run: ScenarioRun<unknown, unknown>) {
     const revisoes = turno.resultado.trace.filter((step) => step.fase === "revisao").map((step) => JSON.stringify(step.detalhe));
     lines.push(`▸ ${turno.evento}`);
     lines.push(`   jogada: ${jogada}${revisoes.length ? ` · revisão: ${revisoes.join(" → ")}` : ""}`);
+    // What the reviewer blocked never reaches the conversation; show it so a report says what was wrong with it.
+    const escritas = turno.resultado.trace.filter((step) => step.fase === "escrita").map((step) => (step.detalhe as { texto?: string }).texto);
+    const bloqueadas = escritas.filter((texto): texto is string => Boolean(texto) && texto !== turno.resultado.enviar);
+    for (const texto of bloqueadas) lines.push(`   bloqueada: ${texto}`);
     if (turno.resultado.enviar) lines.push(`   agente: ${turno.resultado.enviar}`);
     if (turno.resultado.humano) lines.push(`   → HUMANO: ${turno.resultado.humano.motivo}`);
   }

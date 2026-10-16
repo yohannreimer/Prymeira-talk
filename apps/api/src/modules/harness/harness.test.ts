@@ -464,3 +464,52 @@ describe("João (prospecção) no harness", () => {
     expect(await reviewMessage({ ...base, texto: "Faz sentido uma call de 15 minutos?" } as never)).toMatchObject({ ok: true });
   });
 });
+
+describe("linha do tempo em português", () => {
+  it("narrates tools, refusals and blocks in plain words and renders them on the page", async () => {
+    const { narrarTurno } = await import("./core/narrador.js");
+    const { renderLinhaDoTempoHtml } = await import("./simulador/linha-do-tempo.js");
+    const passos = narrarTurno({ trace: [
+      { fase: "triagem", detalhe: { kind: "humano", fonte: "regras", motivo: "mensagem de pessoa" } },
+      { fase: "leitura", detalhe: [{ ferramenta: "responder_pergunta", argumentos: { citacao: "R$ 12 o quilo" }, resultado: "Erro: a citação não está no trecho chapas." }] },
+      { fase: "jogada", detalhe: { tipo: "responder_e_passar", instrucao: "Diga que o vendedor confirma o preço." } },
+      { fase: "revisao", detalhe: { ok: false, regra: "sem_valor_novo", motivo: "R$ 12 não aparece na conversa.", fonte: "regra" } }
+    ] });
+    expect(passos.map((passo) => passo.titulo)).toEqual([
+      "Entendeu que é uma pessoa escrevendo",
+      "Leu a mensagem",
+      "Achou a resposta na base (recusado)",
+      "Decidiu: responder e passar",
+      "A regra bloqueou: sem valor novo"
+    ]);
+    expect(passos[2]).toMatchObject({ tipo: "alerta", detalhe: expect.stringContaining("O código recusou: a citação") });
+    const html = renderLinhaDoTempoHtml({ agente: "atendimento", modelo: "teste", entradas: [{
+      id: "x", titulo: "Chapa <3mm>", tentativa: 1, checks: [{ nome: "ok", ok: false }],
+      run: { pedido: null, ficha: null, historico: [], historicoInicial: [], humano: null, erro: null,
+        turnos: [{ evento: "contato: oi", acontecimento: { tipo: "mensagem", texto: "tem chapa?" }, resultado: { enviar: "Temos sim!", humano: null, ficha: null, jogada: null, trace: [] } }] }
+    }] });
+    expect(html).toContain("Chapa &lt;3mm&gt;");
+    expect(html).toContain("tem chapa?");
+    expect(html).toContain("Temos sim!");
+    expect(html).toContain("Teve problema");
+  });
+});
+
+describe("revisor vê as mesmas fontes que o escritor", () => {
+  it("hands the judge the order, the move and the agent's extra sources", async () => {
+    let visto: Record<string, unknown> = {};
+    const jev = { ask: async (dados: Record<string, unknown>) => { visto = dados; return { inventa: { noul: 0 }, segue: { noul: 1 }, responde: { noul: 1 } }; } };
+    const { createJevJudge } = await import("./core/review.js");
+    const leitor = createScriptedModel("leitor", () => ({ content: null, toolCalls: [] }));
+    const model = createScriptedModel("escritor", () => ({ content: null, toolCalls: [toolCall("responder", { texto: "Bom dia! Qual material você precisa?" })] }));
+    await runTurn(atendimento, { model, leitor, triage: createTriage(), judge: createJevJudge(jev as never) }, {
+      ficha: { ...fichaInicialAtendimento(), trechosVistos: { entrega: "Entrega em Joinville em 48 horas úteis." } },
+      pedido: contextoVillefer(),
+      historico: [{ autor: "contato", texto: "bom dia", em: "2026-10-16T12:00:00.000Z" }],
+      evento: { tipo: "mensagem", texto: "bom dia" }
+    });
+    expect(visto.pedido).toMatch(/Villefer/);
+    expect(typeof visto.jogada).toBe("string");
+    expect(visto.outrasFontes).toMatch(/48 horas/);
+  });
+});

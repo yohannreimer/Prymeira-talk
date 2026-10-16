@@ -17,7 +17,8 @@ import { createOpenAiCompatibleModel, type ModelClient } from "../src/modules/ha
 import { createJevJudge, type Judge } from "../src/modules/harness/core/review.js";
 import type { RunnerDeps } from "../src/modules/harness/core/runner.js";
 import { createTriage } from "../src/modules/harness/core/triage.js";
-import { renderReport, runSuite } from "../src/modules/harness/simulador/simulador.js";
+import { documentoHtml, renderLinhaDoTempoHtml, type EntradaDaLinha } from "../src/modules/harness/simulador/linha-do-tempo.js";
+import { renderReport, runSuite, type Check, type ScenarioRun } from "../src/modules/harness/simulador/simulador.js";
 
 config({ path: resolve(import.meta.dirname, "../../../.env") });
 
@@ -34,6 +35,8 @@ config({ path: resolve(import.meta.dirname, "../../../.env") });
 //   HARNESS_MODEL (default: the workspace's model, else gpt-6-luna) · HARNESS_MODE=tools|json (default tools)
 //   HARNESS_REASONING=none|low|medium|high · FORNECEDOR_MODEL (plays the LLM suppliers; default HARNESS_MODEL)
 //   HARNESS_K (default 4) · HARNESS_CENARIOS=id1,id2 · HARNESS_RELATORIO=path.md
+//   HARNESS_LINHA_DO_TEMPO=path.html: a page with every conversation and, between the messages, what the agent
+//   did (triage, tools and results, the move and why, the text, the review). Open it in a browser.
 //   JEV_API_KEY: JEV does the triage and judges each message (fails closed when JEV is down)
 //   HARNESS_REASONING_ANALISTA (default high): reasoning of the analyst subagent (atendimento)
 
@@ -49,6 +52,7 @@ async function main() {
   const jev = process.env.JEV_API_KEY ? createJevClient({ apiKey: process.env.JEV_API_KEY, model: process.env.JEV_MODEL }) : undefined;
   let deps: () => RunnerDeps;
   let fornecedor: ModelClient | undefined;
+  const linha = linhaDoTempo();
 
   if (offline) {
     deps = () => {
@@ -72,8 +76,10 @@ async function main() {
     scenarios,
     k,
     fornecedorModel: fornecedor,
-    onProgress: (line) => console.error(line)
+    onProgress: (line) => console.error(line),
+    onRun: linha.onRun
   });
+  await linha.salvar(report.agente, report.modelo);
   const markdown = renderReport(report);
   if (process.env.HARNESS_RELATORIO) {
     await writeFile(resolve(process.env.HARNESS_RELATORIO), markdown);
@@ -95,13 +101,16 @@ async function runAtendimento() {
   const mode = process.env.HARNESS_MODE === "json" ? "json" : "tools";
   const model = createOpenAiCompatibleModel({ ...endpoint, mode, reasoningEffort: readReasoning() });
   const analistaReasoning = process.env.HARNESS_REASONING_ANALISTA;
+  const analistaEffort = analistaReasoning === "none" || analistaReasoning === "low" || analistaReasoning === "medium" ? analistaReasoning : "high";
   const analista = createOpenAiCompatibleModel({
     ...endpoint,
-    mode,
-    reasoningEffort: analistaReasoning === "none" || analistaReasoning === "low" || analistaReasoning === "medium" ? analistaReasoning : "high",
+    // Luna refuses native tools together with reasoning_effort on /chat/completions (harness:sondar-modelo, 16/10).
+    mode: analistaEffort === "none" ? mode : "json",
+    reasoningEffort: analistaEffort,
     maxCompletionTokens: 16_000
   });
   const jev = process.env.JEV_API_KEY ? createJevClient({ apiKey: process.env.JEV_API_KEY, model: process.env.JEV_MODEL }) : undefined;
+  const linha = linhaDoTempo();
   const report = await runSuite({
     agent: atendimento,
     deps: () => ({
@@ -113,8 +122,10 @@ async function runAtendimento() {
     }),
     scenarios,
     k,
-    onProgress: (line) => console.error(line)
+    onProgress: (line) => console.error(line),
+    onRun: linha.onRun
   });
+  await linha.salvar(report.agente, report.modelo);
   const markdown = renderReport(report);
   if (process.env.HARNESS_RELATORIO) await writeFile(resolve(process.env.HARNESS_RELATORIO), markdown);
   console.log(markdown);
@@ -140,11 +151,29 @@ async function runProspeccao() {
     lead = createOpenAiCompatibleModel({ ...endpoint, model: process.env.FORNECEDOR_MODEL ?? endpoint.model, mode: "tools", temperature: 0.8 });
     deps = () => ({ model, triage: createTriage({ jev }), ...(jev ? { judge: createJevJudge(jev), judgeFailClosed: true } : {}) });
   }
-  const report = await runSuite({ agent: prospeccao, deps, scenarios, k, fornecedorModel: lead, onProgress: (line) => console.error(line) });
+  const linha = linhaDoTempo();
+  const report = await runSuite({ agent: prospeccao, deps, scenarios, k, fornecedorModel: lead, onProgress: (line) => console.error(line), onRun: linha.onRun });
+  await linha.salvar(report.agente, report.modelo);
   const markdown = renderReport(report);
   if (process.env.HARNESS_RELATORIO) await writeFile(resolve(process.env.HARNESS_RELATORIO), markdown);
   console.log(markdown);
   if (report.passK < 1) process.exitCode = 1;
+}
+
+/** Collects every run for HARNESS_LINHA_DO_TEMPO and writes the page at the end. */
+function linhaDoTempo() {
+  const entradas: EntradaDaLinha[] = [];
+  return {
+    onRun: (input: { scenario: { id: string; titulo: string }; tentativa: number; run: ScenarioRun<any, any>; checks: Check[] }) => {
+      if (process.env.HARNESS_LINHA_DO_TEMPO) entradas.push({ id: input.scenario.id, titulo: input.scenario.titulo, tentativa: input.tentativa, run: input.run, checks: input.checks });
+    },
+    salvar: async (agente: string, modelo: string) => {
+      const path = process.env.HARNESS_LINHA_DO_TEMPO;
+      if (!path) return;
+      await writeFile(resolve(path), documentoHtml(renderLinhaDoTempoHtml({ agente, modelo, geradoEm: new Date().toLocaleString("pt-BR"), entradas })));
+      console.error(`Linha do tempo salva em ${path}`);
+    }
+  };
 }
 
 function juizPorJogada(followup: Judge, geral: Judge): Judge {
