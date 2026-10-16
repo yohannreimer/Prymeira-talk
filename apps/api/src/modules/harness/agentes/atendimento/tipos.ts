@@ -10,6 +10,8 @@ export type Pendencia = {
   dono: DonoDaVez;
   descricao: string;
   prova: Prova;
+  /** The contact's own message behind it: interest in the sale (cliente) or the unanswered question (empresa). */
+  doContato?: Prova | null;
   status: "aberta" | "resolvida";
   resolvidaPor: Prova | null;
 };

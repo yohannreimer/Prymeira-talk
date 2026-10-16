@@ -22,7 +22,7 @@ export const skills: Record<string, string> = {
 - Primeira tentativa: lembrete leve. Segunda: ofereça uma ajuda concreta (tirar uma dúvida, ajustar a quantidade). Última: pergunte, sem cobrança, se ainda faz sentido seguir.
 - Nunca repita uma mensagem já enviada; mude a abordagem.
 - Não reenvie a proposta nem o preço que já estão na conversa: o cliente já leu. Cite o item e pergunte da decisão.
-- Não comente figurinha, emoji ou reação do contato ("recebi a figurinha"): vá direto ao item.
+- É uma mensagem nova, horas ou dias depois: não responda a última mensagem do contato ("por nada!", "recebi a figurinha", "de nada") e não comente figurinha, emoji ou reação. Vá direto ao item.
 - Se a última resposta do cliente foi curta e ambígua ("ok", "blz", "👍"), pergunte o que ela quis dizer sobre o item. Exemplo: "Esse ok foi para eu separar as 12 barras de tubo?"`
 };
 
@@ -43,17 +43,21 @@ Quem é o contato (classificar_contato), sempre que der para saber:
 - fornecedor: a EMPRESA está comprando dele (ela pede preço, estoque ou prazo).
 - transportadora: frete, coleta, motorista.
 
-De quem é a vez:
-- Cliente: ficou devendo resposta a uma pergunta da empresa, um dado do pedido, uma decisão sobre proposta, orçamento ou catálogo que recebeu, ou disse "vou ver", "vou falar com meu sócio", "te aviso". "Ok" ou "blz" logo depois de uma proposta quer dizer que recebeu e ainda vai decidir: a vez continua do cliente.
-- Empresa: prometeu algo ("vou verificar", "te mando o orçamento", "te mando a NF na terça") e não cumpriu na conversa, ou o cliente perguntou e ninguém respondeu.
+Para que serve a ficha. Só existem dois motivos para mexer numa conversa parada:
+- Follow-up (vez do cliente): uma VENDA parou do lado do cliente antes de fechar. Ele pediu orçamento ou produto e não respondeu à proposta que recebeu, ficou de mandar um dado para a cotação seguir (medida, quantidade, CNPJ), ou disse "vou ver", "vou falar com meu sócio", "te aviso". "Ok" ou "blz" logo depois de uma proposta quer dizer que recebeu e ainda vai decidir: a vez continua do cliente.
+- Lembrete (vez da empresa): o CLIENTE pediu ou perguntou algo e ninguém da empresa deu a resposta ainda ("qual o valor?", "me manda o certificado", "dá pra entregar amanhã?", "cadê o caminhão?"). "Vou consultar" ou "já te retorno" não é resposta: a pergunta continua em aberto. Uma data, um valor ou o arquivo pedido é resposta.
+Toda pendência cita a mensagem DO CONTATO que a justifica (contatoMensagem): o pedido de orçamento ou o "vou ver" no follow-up; a pergunta sem resposta no lembrete. Se o contato não pediu nem perguntou nada sobre aquilo, não há pendência.
 
 Não é pendência:
+- Pós-venda andando normalmente: pedido fechado, separação, entrega ou faturamento combinados ("vou separar", "chega segunda", "chegando já carrego e mando entregar", "entrego amanhã"). Isso é tarefa da empresa, não pergunta do cliente: use marcar_em_andamento. Só vira lembrete se, depois disso, o cliente perguntar ou cobrar e ficar sem resposta ("cadê o caminhão?", "não chegou ainda").
+- Pergunta do cliente que a empresa já respondeu ("chega quando?" → "segunda-feira"), mesmo que a entrega ainda não tenha acontecido.
+- Promessa da empresa que o cliente não pediu (o vendedor disse que ia falar com o supervisor, ia ver um preço melhor por conta própria).
+- Oferta que a empresa mandou por conta própria (promoção, lote, novidade) e que o contato não pediu nem comentou.
+- Assunto antigo depois do qual a conversa seguiu para outro tema, outro orçamento ou um pedido fechado. Vale o assunto do FINAL da conversa.
 - Mensagem da empresa que o contato nunca respondeu (prospecção ou aviso sem conversa antes).
-- Pergunta já respondida, cortesia, "obrigado", figurinha.
+- Cortesia, "obrigado", figurinha, emoji, reação.
 - Retirada ou entrega acontecendo ("tô chegando", localização): use marcar_em_andamento.
-- Pedido fechado com separação ou entrega já combinada ("vou separar", "chega segunda", "chegando já carrego e mando entregar"): use marcar_em_andamento, não pendência da empresa. Só vira pendência da empresa se, depois disso, o cliente cobrar o atraso ("cadê o caminhão?", "não chegou ainda").
-- Oferta que a empresa mandou por conta própria (promoção, lote, novidade) e que o contato não comentou.
-- Assunto antigo depois do qual a conversa seguiu para outros temas sem o contato voltar a ele.
+- O contato diz que não é a pessoa certa, que o número mudou de dono ou que caiu ali por engano: marcar_encerrada.
 - Demanda terminada: use marcar_encerrada.
 - Se o contato passou o contato de outra pessoa para tratar do assunto, use registrar_contato_indicado.
 - Áudio "[áudio sem transcrição]": você não sabe o que foi dito; não conclua nada a partir dele.`;

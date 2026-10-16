@@ -22,7 +22,7 @@ export function renderFicha(ficha: FichaDoAtendimento): string {
   const lines = [`Contato: ${ficha.contato.tipo}${prova(ficha.contato.prova)}`];
   if (ficha.pendencias.length === 0) lines.push("Pendências: nenhuma registrada");
   for (const item of ficha.pendencias) {
-    lines.push(`- ${item.id} [${item.status}] vez do ${item.dono}: ${item.descricao}${prova(item.prova)}${item.resolvidaPor ? ` · resolvida${prova(item.resolvidaPor)}` : ""}`);
+    lines.push(`- ${item.id} [${item.status}] vez do ${item.dono}: ${item.descricao}${prova(item.prova)}${item.doContato && item.doContato.mensagem !== item.prova.mensagem ? ` · contato${prova(item.doContato)}` : ""}${item.resolvidaPor ? ` · resolvida${prova(item.resolvidaPor)}` : ""}`);
   }
   if (ficha.encerrada) lines.push(`Encerrada: ${ficha.encerrada.motivo}${prova(ficha.encerrada.prova)}`);
   if (ficha.emAndamento) lines.push(`Em andamento: ${ficha.emAndamento.motivo}${prova(ficha.emAndamento.prova)}`);

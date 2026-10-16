@@ -313,6 +313,27 @@ describe("atendimento: follow-up no harness", () => {
     expect(result.jogada?.tipo).toBe("nada_aberto");
   });
 
+  it("a pending item needs the contact's own message: a company task or an offer nobody asked for is not one", async () => {
+    const posVenda = conversa(
+      "C: blz fechado, pode faturar as 30 telhas",
+      "E: Fechado! Vou separar e entrego amanhã",
+      "C: 👍"
+    );
+    const tarefa = await runTurn(atendimento, {
+      model: escritor("não deveria sair"),
+      analista: analistaQueRegistra(toolCall("abrir_pendencia", { dono: "empresa", descricao: "entregar as 30 telhas", mensagem: 1, trecho: "entrego amanhã", contatoMensagem: 1, contatoTrecho: "entrego amanhã" }))
+    }, { ficha: fichaInicialAtendimento(), pedido: contexto, historico: posVenda, evento: silencio });
+    expect(tarefa.ficha.pendencias).toHaveLength(0);
+    expect(tarefa.jogada?.tipo).toBe("nada_aberto");
+
+    const pergunta = conversa("C: qual o valor da chapa 3 mm?", "E: Vou consultar e já te retorno", "C: ok");
+    const lembrete = await runTurn(atendimento, {
+      model: escritor("não deveria sair"),
+      analista: analistaQueRegistra(toolCall("abrir_pendencia", { dono: "empresa", descricao: "responder o valor da chapa 3 mm", mensagem: 1, trecho: "Vou consultar", contatoMensagem: 0, contatoTrecho: "qual o valor da chapa 3 mm" }))
+    }, { ficha: fichaInicialAtendimento(), pedido: contexto, historico: pergunta, evento: silencio });
+    expect(lembrete.jogada).toMatchObject({ tipo: "lembrete_vendedor", humano: expect.stringMatching(/o cliente pediu na mensagem \[0\]: "qual o valor da chapa 3 mm"/) });
+  });
+
   it("code decides the move from the record", () => {
     const decide = (ficha: FichaDoAtendimento, pedido = contexto) => decidirJogadaAtendimento({ ficha, pedido, triagem: null, evento: silencio });
     expect(decide(fichaAtd({ contato: { tipo: "colega", prova: { mensagem: 0, trecho: "x" } }, pendencias: [pendencia("cliente", 2)] })).tipo).toBe("contato_nao_cliente");

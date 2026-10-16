@@ -39,7 +39,7 @@ export function decidirJogada(input: {
   if (daEmpresa) {
     return {
       tipo: "lembrete_vendedor",
-      humano: `Lembrete: ${daEmpresa.descricao} (mensagem [${daEmpresa.prova.mensagem}]: "${daEmpresa.prova.trecho}")`,
+      humano: `Lembrete: ${daEmpresa.descricao} (${daEmpresa.doContato ? `o cliente pediu na mensagem [${daEmpresa.doContato.mensagem}]: "${daEmpresa.doContato.trecho}"` : `mensagem [${daEmpresa.prova.mensagem}]: "${daEmpresa.prova.trecho}"`})`,
       instrucao: "A vez é da empresa.",
       dados: { pendenciaId: daEmpresa.id }
     };

@@ -54,14 +54,32 @@ const classificarContato: Tool<z.infer<typeof contatoArgs>> = {
   }
 };
 
-const abrirArgs = z.object({ dono: z.enum(["cliente", "empresa"]), descricao: z.string().trim().min(5).max(200), ...provaArgs });
+const abrirArgs = z.object({
+  dono: z.enum(["cliente", "empresa"]),
+  descricao: z.string().trim().min(5).max(200),
+  ...provaArgs,
+  contatoMensagem: provaArgs.mensagem.nullable().optional(),
+  contatoTrecho: provaArgs.trecho.nullable().optional()
+});
 const abrirPendencia: Tool<z.infer<typeof abrirArgs>> = {
   name: "abrir_pendencia",
-  description: "Registra algo que ficou em aberto e de quem é a vez. dono=cliente: o cliente ficou devendo (responder uma pergunta da empresa, enviar um dado, decidir sobre uma proposta ou catálogo que recebeu, voltar depois de 'vou ver'). dono=empresa: a empresa prometeu algo e ainda não cumpriu na conversa, ou o cliente perguntou e ficou sem resposta. A descrição é uma frase curta e concreta, com o item ou o assunto. Cite a mensagem que prova.",
+  description: [
+    "Registra algo que ficou em aberto e de quem é a vez.",
+    "dono=cliente (vira follow-up): uma venda parou do lado do cliente ANTES de fechar. Ele pediu um orçamento ou produto e não respondeu à proposta, ficou de mandar um dado para a cotação seguir, ou disse 'vou ver', 'vou falar com meu sócio'.",
+    "dono=empresa (vira lembrete para o vendedor): o cliente pediu ou perguntou algo e a empresa ainda não deu a resposta ('qual o valor?', 'me manda o certificado', 'dá pra entregar amanhã?', 'cadê o caminhão?'). 'Vou consultar' não é resposta; uma data ou um valor é.",
+    "A descrição é uma frase curta e concreta, com o item ou o assunto. mensagem/trecho: a mensagem que prova a pendência.",
+    "contatoMensagem/contatoTrecho: a mensagem DO CONTATO que mostra o interesse (dono=cliente: o pedido de orçamento ou produto, ou o 'vou ver') ou a pergunta sem resposta (dono=empresa). Se mensagem/trecho já é do contato, pode repetir."
+  ].join(" "),
   parameters: {
     type: "object",
-    properties: { dono: { type: "string", enum: ["cliente", "empresa"] }, descricao: { type: "string" }, ...PROVA_PROPS },
-    required: ["dono", "descricao", "mensagem", "trecho"],
+    properties: {
+      dono: { type: "string", enum: ["cliente", "empresa"] },
+      descricao: { type: "string" },
+      ...PROVA_PROPS,
+      contatoMensagem: { type: ["integer", "null"], description: "Número da mensagem do CONTATO com o pedido ou a pergunta." },
+      contatoTrecho: { type: ["string", "null"], description: "Palavras EXATAS dessa mensagem do contato." }
+    },
+    required: ["dono", "descricao", "mensagem", "trecho", "contatoMensagem", "contatoTrecho"],
     additionalProperties: false
   },
   schema: abrirArgs,
@@ -70,15 +88,33 @@ const abrirPendencia: Tool<z.infer<typeof abrirArgs>> = {
       throw new Error("o contato nunca respondeu nesta conversa: uma mensagem só da empresa não deixa pendência.");
     }
     const prova = conferirProva(context.historico, args.mensagem, args.trecho);
+    const doContato = provaDoContato(context.historico, args, prova);
     const id = `p${context.ficha.pendencias.length + 1}`;
     const ficha = {
       ...context.ficha,
-      pendencias: [...context.ficha.pendencias, { id, dono: args.dono, descricao: args.descricao, prova, status: "aberta" as const, resolvidaPor: null }]
+      pendencias: [...context.ficha.pendencias, { id, dono: args.dono, descricao: args.descricao, prova, doContato, status: "aberta" as const, resolvidaPor: null }]
     };
     context.setFicha(ficha);
     return ok(ficha);
   }
 };
+
+/**
+ * A follow-up or a reminder exists only because of something the contact said: interest in a sale that
+ * stopped, or a question still unanswered. An offer the company sent on its own, or a task of its own
+ * after the sale ("vou separar", "entrego amanhã"), has no such message and leaves nothing pending.
+ */
+function provaDoContato(historico: HarnessMessage[], args: z.infer<typeof abrirArgs>, prova: Prova): Prova {
+  const doContato = args.contatoMensagem != null && args.contatoTrecho
+    ? conferirProva(historico, args.contatoMensagem, args.contatoTrecho)
+    : historico[prova.mensagem]?.autor === "contato" ? prova : null;
+  const exemplo = args.dono === "empresa" ? "a pergunta ou o pedido que ficou sem resposta" : "o pedido de orçamento ou produto, ou o 'vou ver'";
+  if (!doContato) throw new Error(`cite em contatoMensagem/contatoTrecho a mensagem do contato com ${exemplo}. Sem ela não é pendência.`);
+  if (historico[doContato.mensagem]?.autor !== "contato") {
+    throw new Error(`a mensagem [${doContato.mensagem}] não é do contato. Cite a mensagem do contato com ${exemplo}; se ele não pediu nem perguntou nada, não é pendência.`);
+  }
+  return doContato;
+}
 
 const resolverArgs = z.object({ id: z.string().min(1), ...provaArgs });
 const resolverPendencia: Tool<z.infer<typeof resolverArgs>> = {
@@ -120,7 +156,7 @@ const marcarEncerrada: Tool<z.infer<typeof motivoArgs>> = {
 
 const marcarEmAndamento: Tool<z.infer<typeof motivoArgs>> = {
   name: "marcar_em_andamento",
-  description: "Retirada ou entrega combinada e acontecendo agora ('tô chegando', localização enviada, 'já saiu'). Não há o que cobrar do cliente nesse momento.",
+  description: "Pós-venda andando: pedido fechado com separação, entrega ou faturamento combinados ('vou separar', 'chega segunda'), ou retirada e entrega acontecendo agora ('tô chegando', localização enviada, 'já saiu'). Não há o que cobrar do cliente nem lembrar o vendedor nesse momento.",
   parameters: { type: "object", properties: { motivo: { type: "string" }, ...PROVA_PROPS }, required: ["motivo", "mensagem", "trecho"], additionalProperties: false },
   schema: motivoArgs,
   execute(args, context) {
