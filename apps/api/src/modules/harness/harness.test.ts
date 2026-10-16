@@ -494,3 +494,22 @@ describe("linha do tempo em português", () => {
     expect(html).toContain("Teve problema");
   });
 });
+
+describe("revisor vê as mesmas fontes que o escritor", () => {
+  it("hands the judge the order, the move and the agent's extra sources", async () => {
+    let visto: Record<string, unknown> = {};
+    const jev = { ask: async (dados: Record<string, unknown>) => { visto = dados; return { inventa: { noul: 0 }, segue: { noul: 1 }, responde: { noul: 1 } }; } };
+    const { createJevJudge } = await import("./core/review.js");
+    const leitor = createScriptedModel("leitor", () => ({ content: null, toolCalls: [] }));
+    const model = createScriptedModel("escritor", () => ({ content: null, toolCalls: [toolCall("responder", { texto: "Bom dia! Qual material você precisa?" })] }));
+    await runTurn(atendimento, { model, leitor, triage: createTriage(), judge: createJevJudge(jev as never) }, {
+      ficha: { ...fichaInicialAtendimento(), trechosVistos: { entrega: "Entrega em Joinville em 48 horas úteis." } },
+      pedido: contextoVillefer(),
+      historico: [{ autor: "contato", texto: "bom dia", em: "2026-10-16T12:00:00.000Z" }],
+      evento: { tipo: "mensagem", texto: "bom dia" }
+    });
+    expect(visto.pedido).toMatch(/Villefer/);
+    expect(typeof visto.jogada).toBe("string");
+    expect(visto.outrasFontes).toMatch(/48 horas/);
+  });
+});

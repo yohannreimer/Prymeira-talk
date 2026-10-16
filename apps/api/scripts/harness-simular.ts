@@ -101,10 +101,12 @@ async function runAtendimento() {
   const mode = process.env.HARNESS_MODE === "json" ? "json" : "tools";
   const model = createOpenAiCompatibleModel({ ...endpoint, mode, reasoningEffort: readReasoning() });
   const analistaReasoning = process.env.HARNESS_REASONING_ANALISTA;
+  const analistaEffort = analistaReasoning === "none" || analistaReasoning === "low" || analistaReasoning === "medium" ? analistaReasoning : "high";
   const analista = createOpenAiCompatibleModel({
     ...endpoint,
-    mode,
-    reasoningEffort: analistaReasoning === "none" || analistaReasoning === "low" || analistaReasoning === "medium" ? analistaReasoning : "high",
+    // Luna refuses native tools together with reasoning_effort on /chat/completions (harness:sondar-modelo, 16/10).
+    mode: analistaEffort === "none" ? mode : "json",
+    reasoningEffort: analistaEffort,
     maxCompletionTokens: 16_000
   });
   const jev = process.env.JEV_API_KEY ? createJevClient({ apiKey: process.env.JEV_API_KEY, model: process.env.JEV_MODEL }) : undefined;

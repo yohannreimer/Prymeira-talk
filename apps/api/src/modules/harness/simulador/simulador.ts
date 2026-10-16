@@ -200,6 +200,10 @@ export function renderRun(run: ScenarioRun<unknown, unknown>) {
     const revisoes = turno.resultado.trace.filter((step) => step.fase === "revisao").map((step) => JSON.stringify(step.detalhe));
     lines.push(`▸ ${turno.evento}`);
     lines.push(`   jogada: ${jogada}${revisoes.length ? ` · revisão: ${revisoes.join(" → ")}` : ""}`);
+    // What the reviewer blocked never reaches the conversation; show it so a report says what was wrong with it.
+    const escritas = turno.resultado.trace.filter((step) => step.fase === "escrita").map((step) => (step.detalhe as { texto?: string }).texto);
+    const bloqueadas = escritas.filter((texto): texto is string => Boolean(texto) && texto !== turno.resultado.enviar);
+    for (const texto of bloqueadas) lines.push(`   bloqueada: ${texto}`);
     if (turno.resultado.enviar) lines.push(`   agente: ${turno.resultado.enviar}`);
     if (turno.resultado.humano) lines.push(`   → HUMANO: ${turno.resultado.humano.motivo}`);
   }

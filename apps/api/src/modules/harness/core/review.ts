@@ -2,7 +2,13 @@ import { noul, type JevClient } from "./jev.js";
 import type { ReviewInput, ReviewRule, ReviewVerdict } from "./types.js";
 
 /** A second opinion on a message that already passed the hard rules. */
-export type Judge = (input: ReviewInput<unknown, unknown> & { fichaTexto: string }) => Promise<ReviewVerdict>;
+/**
+ * The judge sees the same sources the writer was allowed to use: the order or campaign (`pedidoTexto`),
+ * the record, the move and any agent-specific sources (`fontesExtras`, e.g. knowledge-base passages).
+ * A judge that sees less than the writer flags every true fact it cannot see as invented.
+ */
+export type JudgeInput = ReviewInput<unknown, unknown> & { fichaTexto: string; pedidoTexto?: string; fontesExtras?: string };
+export type Judge = (input: JudgeInput) => Promise<ReviewVerdict>;
 
 const MAX_CHARACTERS = 600;
 
@@ -61,6 +67,8 @@ export async function reviewMessage<Ficha, Pedido>(input: ReviewInput<Ficha, Ped
   judge?: Judge;
   judgeFailClosed?: boolean;
   fichaTexto: string;
+  pedidoTexto?: string;
+  fontesExtras?: string;
 }): Promise<ReviewOutcome> {
   const all = [...(coreRules as ReviewRule<Ficha, Pedido>[]), ...input.rules];
   for (const rule of all) {
@@ -69,7 +77,7 @@ export async function reviewMessage<Ficha, Pedido>(input: ReviewInput<Ficha, Ped
   }
   if (!input.judge) return { ok: true, juiz: "sem_juiz" };
   try {
-    const verdict = await input.judge(input as ReviewInput<unknown, unknown> & { fichaTexto: string });
+    const verdict = await input.judge(input as JudgeInput);
     return verdict.ok ? { ok: true, juiz: "aprovou" } : { ok: false, regra: verdict.regra, motivo: verdict.motivo, fonte: "juiz" };
   } catch {
     return input.judgeFailClosed === false
@@ -78,17 +86,28 @@ export async function reviewMessage<Ficha, Pedido>(input: ReviewInput<Ficha, Ped
   }
 }
 
+/** Shared by every judge: what counts as invented, given all the sources the writer had. */
+export const PERGUNTA_INVENTA =
+  "A mensagemCandidata afirma número, preço, prazo, estoque, condição, compromisso ou fato concreto que NÃO aparece em nenhuma das fontes (pedido, ficha, jogada, outrasFontes, ultimasMensagens)? Cumprimento, apresentação da empresa ou de quem escreve feita a partir do pedido, agradecimento e pergunta não contam como afirmação.";
+export const CRITERIO_INVENTA = {
+  true: "Afirma algo concreto que não está em nenhuma fonte.",
+  false: "Tudo que afirma está em alguma fonte, ou a mensagem só cumprimenta, se apresenta, agradece ou pergunta."
+};
+
 /** JEV as the judge: three yes/no questions about the candidate message. */
 export function createJevJudge(jev: JevClient, thresholds = { inventa: 0.6, segue: 0.2, responde: 0.15 }): Judge {
-  return async ({ texto, jogada, historico, fichaTexto }) => {
+  return async ({ texto, jogada, historico, fichaTexto, pedidoTexto, fontesExtras }) => {
     const answers = await jev.ask(
-      { ficha: fichaTexto, jogada: jogada.instrucao, ultimasMensagens: historico.slice(-8), mensagemCandidata: texto },
       {
-        inventa: {
-          type: "noul",
-          instructions: "A mensagemCandidata afirma número, preço, prazo, condição, compromisso ou fato que não está na ficha nem nas últimas mensagens?",
-          criteria: { true: "Afirma algo sem base na ficha ou na conversa.", false: "Tudo que afirma tem base na ficha ou na conversa." }
-        },
+        pedido: pedidoTexto ?? "",
+        ficha: fichaTexto,
+        jogada: jogada.instrucao,
+        ...(fontesExtras ? { outrasFontes: fontesExtras } : {}),
+        ultimasMensagens: historico.slice(-8),
+        mensagemCandidata: texto
+      },
+      {
+        inventa: { type: "noul", instructions: PERGUNTA_INVENTA, criteria: CRITERIO_INVENTA },
         segue: {
           type: "noul",
           instructions: "A mensagemCandidata faz o que a jogada pede?",

@@ -27,6 +27,8 @@ export const atendimento: AgentDefinition<FichaDoAtendimento, ContextoDoAtendime
   decidirJogada,
   aposEnvio,
   regras,
+  // The passages the reader already pulled from the base are true facts the judge must also see.
+  fontesDoRevisor: (ficha) => Object.entries(ficha.trechosVistos).map(([id, texto]) => `[${id}] ${texto}`).join("\n"),
   janelaDeMensagens: 20,
   motivosParaHumano: {
     sem_base_para_retomar: "num follow-up, a pendência depende de um fato (preço, prazo, estoque) que não está na conversa",

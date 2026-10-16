@@ -321,7 +321,9 @@ async function writeAndReview<Ficha, Pedido>(
       rules: agent.regras,
       judge: deps.judge,
       judgeFailClosed: deps.judgeFailClosed,
-      fichaTexto
+      fichaTexto,
+      pedidoTexto: agent.renderPedidoPublico(input.pedido),
+      fontesExtras: agent.fontesDoRevisor?.(input.ficha, input.pedido)
     });
     trace.push({ fase: "revisao", detalhe: outcome, ms: Date.now() - reviewStarted });
     if (outcome.ok) return { texto };

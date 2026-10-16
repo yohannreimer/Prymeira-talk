@@ -112,6 +112,8 @@ export type AgentDefinition<Ficha, Pedido> = {
    * Without it the writer may hand over for any reason, which is how "anything hard goes to a human" starts.
    */
   motivosParaHumano?: Record<string, string>;
+  /** Extra sources the writer could use and the judge must see too (e.g. knowledge-base passages already read). */
+  fontesDoRevisor?: (ficha: Ficha, pedido: Pedido) => string;
   /**
    * Subagent that runs on a silence, before the move: it reads the WHOLE conversation (numbered) and
    * brings the record up to date with its own tools. It only reads; it never writes to the contact.
