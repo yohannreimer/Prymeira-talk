@@ -176,11 +176,11 @@ class Store:
             new = []
             seen = set()
             for alert in alerts:
-                identity = hashlib.sha256(
-                    canonical(
-                        {k: v for k, v in alert.items() if k != "timestamp"}
-                    ).encode()
-                ).hexdigest()
+                # Correlation identifies a sample, never the stable incident identity.
+                stable = {k: v for k, v in alert.items() if k not in ("timestamp", "occurred_at")}
+                if "diagnostic" in stable:
+                    stable["diagnostic"] = {k: v for k, v in stable["diagnostic"].items() if k != "correlation_id"}
+                identity = hashlib.sha256(canonical(stable).encode()).hexdigest()
                 if (
                     identity in seen
                     or self.db.execute(
@@ -292,12 +292,16 @@ class Store:
             )
 
     def status(self, owner, now):
-        self.prune(now)
+        # Pure SELECT projection, including effective expiry/retention. Maintenance
+        # remains the delivery worker's job, never a read-only MCP tool side effect.
         counts = {"pending": 0, "accepted": 0, "failed": 0, "cancelled": 0}
         rows = self.db.execute(
-            """SELECT d.state,COUNT(*) n FROM deliveries d
-            JOIN subscriptions s ON s.id=d.subscription_id WHERE s.owner=? GROUP BY d.state""",
-            (owner,),
+            """SELECT CASE WHEN d.state='pending' AND (s.active=0 OR s.expires<=?)
+              THEN 'cancelled' ELSE d.state END AS state,COUNT(*) n FROM deliveries d
+            JOIN subscriptions s ON s.id=d.subscription_id
+            JOIN events e ON e.id=d.event_id WHERE s.owner=? AND e.created>=?
+            GROUP BY 1""",
+            (now, owner, now - self.retention),
         ).fetchall()
         for row in rows:
             counts[row["state"]] = row["n"]

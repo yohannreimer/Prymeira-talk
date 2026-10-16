@@ -2,60 +2,13 @@
 
 import re
 from datetime import datetime, timezone
+from .diagnostics import CONTRACT, TAG_NAMES, normalize_diagnostic
 
-POINTS = frozenset(
-    [
-        "api",
-        "ingress_http",
-        "transport_setup",
-        "transport_delivery",
-        "application_retry",
-        "application_dead_letter",
-        "recertification_event",
-        "recertification_sweep",
-        "effect_loop",
-        "effect_handler",
-        "effect_exhausted",
-        "waha_history",
-        "gap_recovery",
-        "lid_resolution",
-        "fatal",
-    ]
-)
-NAMED_CODES = frozenset(
-    [
-        "HISTORY_DUPLICATE_MESSAGE",
-        "MEDIA_UNAVAILABLE",
-        "MEDIA_TIMEOUT",
-        "MEDIA_TOO_LARGE",
-        "UNSUPPORTED_MEDIA_TYPE",
-        "PROSPECTING_STATE_UNKNOWN",
-        "EFFECT_WITHOUT_MESSAGE",
-        "NOT_AN_ATTACHMENT",
-        "STALE_SOURCE",
-        "INVALID_UNICODE",
-        "UNEXPECTED_ERROR",
-    ]
-)
-BROKER_CODES = frozenset(
-    [
-        "publisher_backpressure",
-        "publisher_unavailable",
-        "publication_in_progress",
-        "publish_deadline",
-        "publish_nack",
-        "publish_error",
-        "unroutable",
-        "broker_blocked",
-        "channel_error",
-        "channel_closed",
-        "connection_error",
-        "connection_closed",
-        "publisher_closed",
-    ]
-)
+POINTS = frozenset(CONTRACT["points"])
+NAMED_CODES = frozenset(CONTRACT["namedCodes"])
+BROKER_CODES = frozenset(CONTRACT["brokerCodes"])
 CODE_RE = re.compile(
-    r"(?:P\d{4}|HISTORY_HTTP_\d{3}|EVOLUTION_HTTP_\d{3}|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|EPIPE|HANDLER_THREW)",
+    r"(?:P\d{4}|HISTORY_HTTP_[1-5]\d{2}|EVOLUTION_HTTP_[1-5]\d{2}|WAHA_HTTP_[1-5]\d{2}|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|EPIPE|HANDLER_THREW)",
     re.ASCII,
 )
 SERVICES = frozenset(["api", "ingress", "ingress_worker", "unknown"])
@@ -67,6 +20,7 @@ FIELD_NAMES = {
     "Service": "service",
     "Release": "release",
 }
+FIELD_NAMES.update({name.capitalize(): name for name in TAG_NAMES + ["diagnostic_source", "diagnostic_occurred_at"]})
 
 
 class InvalidPayload(ValueError):
@@ -156,4 +110,18 @@ def normalize(payload, config, received_at):
                 + match[1],
             }
         )
+    for alert, attachment in zip(output, attachments):
+        tags = {FIELD_NAMES[f["title"]]: f.get("value") for f in attachment["fields"]
+                if isinstance(f.get("title"), str) and f["title"] in FIELD_NAMES}
+        diagnostic = normalize_diagnostic(tags, alert["failure_point"], alert["failure_code"], safe_code)
+        if diagnostic is not None:
+            alert["diagnostic"] = diagnostic
+        if tags.get("diagnostic_source") == "latest_issue_event":
+            at = tags.get("diagnostic_occurred_at")
+            if isinstance(at, str) and re.fullmatch(r"20[0-9]{2}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?Z", at, re.ASCII):
+                try:
+                    alert["occurred_at"] = datetime.fromisoformat(at.replace("Z", "+00:00")).isoformat().replace("+00:00", "Z")
+                    alert["context_source"] = "latest_issue_event"
+                except ValueError:
+                    pass
     return output

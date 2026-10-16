@@ -1,7 +1,7 @@
 # GlitchTip → Dot Xing events (Talk only)
 
 This image extends official GlitchTip **6.1.8** in its existing ASGI process.
-The base multiarch digest and exact upstream ASGI/MCP hashes are checked at build.
+The base multiarch digest and exact upstream ASGI/MCP/native-webhook hashes are checked at build.
 The entrypoint, embedded worker, Django frontend and ingest code remain upstream.
 The extension replaces the broad MCP catalog with one read-only delivery-status
 tool. Existing OAuth authority, consent UI, registration, token and revocation
@@ -44,6 +44,9 @@ Configure a native **general webhook** recipient on the Talk project alert
 (quantity 1, timespan 1 minute), with destination
 `https://glitchtip.prymeiradigital.com.br/xing-alerts/webhook/<secret>` and
 `tags_to_add`: `failure_point`, `failure_code`, `service`, `release`.
+After deploying and approving the diagnostic extension, append `diagnostic_version`
+to opt this dedicated recipient into coherent technical snapshots. See
+[DIAGNOSTICS.md](DIAGNOSTICS.md) for the paired release/test/approval gates.
 Do not place this secret path in request/access logs; reverse proxy and Granian
 access logging must redact this route or disable access logs. The bridge itself
 logs fixed categories only, never URLs, bodies, credentials or exception text.
@@ -67,12 +70,16 @@ initialization remains supported and advertises only the status tool. Events
 are discovered through modern `server/discover`; legacy initialization does
 not advertise them.
 
-The payload includes only the approved failure point/code, service, hexadecimal
+Legacy payloads include the approved failure point/code, service, hexadecimal
 release (or null), configured project ID and an exact own issue URL. The envelope
 timestamp is **webhook receipt time**: upstream general webhooks do not include
 the underlying error occurrence time. Titles, culprits, messages, server names,
 environment, unknown tags and private fields are discarded by reconstruction.
-All attachments must identify the exact Talk project; mixed-project batches fail.
+Enhanced payloads add the versioned, reconstructed technical diagnostic and a
+coherent native sample time/source. No free message text or private identifiers
+are added. All attachments must identify the exact Talk project; mixed-project
+batches fail. The enhanced dedicated formatter projects permitted tags from a
+single newest issue event, avoiding mixed issue-level aggregate tags.
 
 Every RPC and delivery checks bearer resource, finite lifetime, `event:read`,
 active user and current project access via `get_projects_queryset` restricted by
@@ -106,7 +113,7 @@ rearms resolved issues when they reopen; the bridge does not patch ingestion or
 native alert behavior. Events without an active subscription are not replayed to
 later subscriptions (`cursor: null`); only already-queued delivery retries persist.
 
-`get_alert_delivery_status` returns only the authenticated owner's aggregate
+`get_alert_delivery_status` performs only SELECTs and returns the authenticated owner's aggregate
 pending/accepted/failed/cancelled counts and active subscription count. HTTP
 acceptance is **not** proof of processing or a visible notification in Dot.
 Invalid bridge setup fails closed for its state and keeps upstream ingest running.

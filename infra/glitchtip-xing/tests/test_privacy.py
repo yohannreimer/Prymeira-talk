@@ -83,4 +83,4 @@ class PrivacyTests(unittest.TestCase):
             "MEDIA_TOO_LARGE " + PRIVATE,
         ]:
             self.assertFalse(safe_code(code), code)
-        self.assertEqual(len(POINTS), 15)
+        self.assertTrue({"agent_runtime", "agent_scheduler", "fatal", "application_dead_letter"}.issubset(POINTS))
