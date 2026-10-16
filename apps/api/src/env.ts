@@ -89,6 +89,8 @@ export const envSchema = z
     /** Imports channel history through the canonical store instead of writing messages directly. */
     CANONICAL_HISTORY_IMPORT_ENABLED: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
     /** Workspaces (comma-separated ids, or '*') served by the independent ingress; the legacy webhook refuses them with 409. */
+    /** Workspaces that get the paid add-ons (Orçamentos) without the Hub, for internal tests. "*" = all, e.g. the local demo. */
+    TALK_ADDON_WORKSPACES: z.string().default('').transform((value) => value.trim() === '*' ? '*' as const : new Set(value.split(',').map((id) => id.trim()).filter(Boolean))),
     LEGACY_WEBHOOK_DELEGATED_WORKSPACES: z.string().default('').transform((value) => value.trim() === '*' ? '*' as const : new Set(value.split(',').map((id) => id.trim()).filter(Boolean))),
     /** Runs the durable ingress effects (assistant, agent, follow-ups, triage, automations, realtime) in this API process. */
     EFFECTS_ENABLED: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
