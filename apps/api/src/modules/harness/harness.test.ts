@@ -960,3 +960,45 @@ describe("sombra de 16/10, terceira rodada", () => {
     expect(result.enviar).toBe(atendimento.avisoDeRepasse);
   });
 });
+
+describe("atendimento no motor de produção", () => {
+  it("is off unless the agent lists the channel", async () => {
+    const { readHarnessConfig, harnessNoCanal } = await import("./agentes/atendimento/producao.js");
+    expect(readHarnessConfig({})).toBeNull();
+    expect(readHarnessConfig({ harness: { agente: "atendimento" } })).toBeNull();
+    const config = readHarnessConfig({ harness: { agente: "atendimento", canais: ["canal-1"], catalogo: "villefer", propostaVillefer: true } });
+    expect(config).toMatchObject({ canais: ["canal-1"], catalogo: "villefer", propostaVillefer: true });
+    expect(harnessNoCanal(config, "canal-1")).toBe(true);
+    expect(harnessNoCanal(config, "canal-2")).toBe(false);
+  });
+
+  it("answers the contact's burst as one message, with the processed text of the current one", async () => {
+    const { conversaParaOHarness } = await import("./agentes/atendimento/producao.js");
+    const { historico, texto } = conversaParaOHarness([
+      { id: "1", autor: "contato", tipo: "text", texto: "oi", em: "2026-10-16T12:00:00.000Z" },
+      { id: "2", autor: "agente", tipo: "text", texto: "Olá! Como posso ajudar?", em: "2026-10-16T12:01:00.000Z" },
+      { id: "3", autor: "contato", tipo: "text", texto: "preciso de tubo", em: "2026-10-16T12:02:00.000Z" },
+      { id: "4", autor: "contato", tipo: "audio", texto: null, em: "2026-10-16T12:03:00.000Z" }
+    ], { id: "4", texto: "50x50 parede 2 mm, 20 barras", em: "2026-10-16T12:03:00.000Z" });
+    expect(texto).toBe("preciso de tubo\n50x50 parede 2 mm, 20 barras");
+    expect(historico.map((mensagem) => mensagem.autor)).toEqual(["contato", "agente", "contato"]);
+    expect(historico.at(-1)!.texto).toBe(texto);
+  });
+
+  it("offers only https PDFs of the base for sending, and reloads a saved record with new fields filled", async () => {
+    const { anexosDasFontes, fichaSalva, contextoDeProducao } = await import("./agentes/atendimento/producao.js");
+    const fontes = [
+      { id: "a", title: "Catálogo Villefer", content: "Catálogo.", fileUrl: "https://villefer.com.br/catalogo.pdf", fileName: "catalogo.pdf", mimeType: "application/pdf" },
+      { id: "b", title: "Planilha", content: null, fileUrl: "http://interno/planilha.pdf", fileName: "planilha.pdf", mimeType: "application/pdf" },
+      { id: "c", title: "Pedidos mínimos", content: "Tubo: cerca de 1.000 kg." }
+    ];
+    expect(anexosDasFontes(fontes)).toEqual([{ id: "catalogo", titulo: "Catálogo Villefer", url: "https://villefer.com.br/catalogo.pdf", nomeArquivo: "catalogo.pdf", mimeType: "application/pdf" }]);
+    const ficha = fichaSalva({ handoffBrief: {}, harness: { ficha: { ...fichaInicialAtendimento(), anexosEnviados: ["catalogo"], pesosDaVez: undefined } } });
+    expect(ficha.anexosEnviados).toEqual(["catalogo"]);
+    expect(fichaSalva({}).perguntas).toEqual([]);
+    const pedido = await contextoDeProducao({ agente: "atendimento", canais: ["c"], catalogo: "villefer" }, fontes);
+    expect(pedido.catalogo).toBeDefined();
+    expect(pedido.termosInternos).toEqual(["EA36"]);
+    expect(pedido.base?.todos?.().some((trecho) => /1\.000 kg/.test(trecho.texto))).toBe(true);
+  });
+});

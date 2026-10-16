@@ -11,7 +11,7 @@ import type { ContextoDoAtendimento, FichaDoAtendimento } from "./tipos.js";
  * - Live reply: the reader registers each question and looks it up in the base; code answers what has a
  *   quoted passage and hands over only what the base does not cover.
  * - Silence (follow-up): the analyst subagent keeps the record true, code picks the move.
- * Still runs only in the simulator; the live engine is the current one.
+ * Live only where the agent turns it on for a channel (producao.ts); elsewhere the current engine answers.
  */
 export const atendimento: AgentDefinition<FichaDoAtendimento, ContextoDoAtendimento> = {
   id: "atendimento",

@@ -68,6 +68,9 @@ import type { ConversationFollowupsObserver } from "../followups/conversation-fo
 import type { InboxTriageObserver } from "../conversations/inbox-triage.service.js";
 
 import { blocksAutonomousAgent } from '../assistant/assistant-policy.js';
+import { harnessNoCanal, readHarnessConfig, responderComHarness, type MensagemDaConversa } from "../harness/agentes/atendimento/producao.js";
+import type { JevClient } from "../harness/core/jev.js";
+import { createOpenAiCompatibleModel, type ModelClient } from "../harness/core/model.js";
 type JsonValue = unknown;
 type AgentRunStatus = "completed" | "handoff_requested" | "failed" | "skipped";
 type AgentRunTrigger = "automation" | "manual_test";
@@ -180,6 +183,7 @@ type AgentSessionRecord = {
   workspaceId: string;
   agentId: string;
   conversationId: string;
+  metadata?: JsonValue;
 };
 
 type AgentRuntimePrismaLike = Omit<
@@ -301,6 +305,15 @@ export function createAgentRuntime(input: {
   /** Plans the messages sent before a booked call; without it no reminder is scheduled. */
   meetingReminders?: Pick<MeetingReminderService, "scheduleForBooking">;
   logger?: { warn(fields: Record<string, unknown>, message: string): void };
+  /**
+   * The new attendance agent (modules/harness), used only where the agent's behaviorConfig.harness turns it
+   * on for the conversation's channel. JEV triages and judges its replies; the model defaults to the
+   * workspace's provider in JSON mode with low reasoning, the configuration tested in the shadow runs.
+   */
+  harness?: {
+    jev?: JevClient;
+    modelFactory?: (settings: OpenAiCompatibleSettings, modelo?: string) => ModelClient | null;
+  };
 }) {
   const { prisma, provider } = input;
 
@@ -1235,6 +1248,14 @@ export function createAgentRuntime(input: {
         const allowedTags = toAllowedTags(agent);
         const approvedAttachments = knowledge.flatMap(toApprovedAttachment);
         const approvedAttachmentUrls = new Set(approvedAttachments.map((attachment) => attachment.url));
+        const harnessConfig = prospecting ? null : readHarnessConfig(agent.behaviorConfig);
+        const harnessModel = harnessNoCanal(harnessConfig, conversation.channelId ?? conversation.channel?.id)
+          ? (input.harness?.modelFactory ?? harnessModelFor)(providerSettings, harnessConfig.modelo)
+          : null;
+        // The harness does its own triage, reading, review and catalogue sending: the quote-desk
+        // preflight, the keyword safety output and the catalogue shortcut below are not used for it.
+        const harnessActive = Boolean(harnessConfig && harnessModel);
+        let harnessFicha: unknown = null;
         const taxonomy = readKnowledgeTaxonomy(agent.behaviorConfig);
         const decisionContext = buildAgentDecisionContext({
           messages: conversationContext.messages,
@@ -1346,7 +1367,7 @@ export function createAgentRuntime(input: {
           isDocumentDependentQuestion(effectiveText, taxonomy) &&
           knowledgeSelection.selected.length === 0;
         const approvedCatalogSelection =
-          !prospecting && !safetyOutput && !documentRequiresHuman && allowedActions.includes("send_attachment")
+          !prospecting && !harnessActive && !safetyOutput && !documentRequiresHuman && allowedActions.includes("send_attachment")
             ? selectRequestedCatalog(effectiveText, approvedAttachments)
             : null;
         let replyPreflight: AgentReplyPreflightResult | undefined;
@@ -1355,7 +1376,7 @@ export function createAgentRuntime(input: {
 
         // The reply preflight plans quote-desk steps (stock, made-to-order, catalog) and
         // has no notion of cold outreach, so prospecting replies skip it.
-        if (input.replyPreflight && !prospecting && !mediaFallback && (!safetyOutput || canReviewApprovedRefusal) && !documentRequiresHuman) {
+        if (input.replyPreflight && !prospecting && !harnessActive && !mediaFallback && (!safetyOutput || canReviewApprovedRefusal) && !documentRequiresHuman) {
           try {
             replyPreflight = await input.replyPreflight.evaluate({
               agentRules: effectiveSystemPrompt,
@@ -1425,6 +1446,44 @@ export function createAgentRuntime(input: {
             actions: [],
             handoff: { required: false, reason: null }
           };
+        } else if (harnessActive && harnessConfig && harnessModel) {
+          runModel = harnessModel.id;
+          const saida = await responderComHarness({
+            config: harnessConfig,
+            model: harnessModel,
+            jev: input.harness?.jev,
+            // Without send_attachment the agent is not told about the PDFs, so it never promises one.
+            fontes: allowedActions.includes("send_attachment") ? knowledge : knowledge.map((source) => ({ ...source, fileUrl: null })),
+            mensagens: await harnessMessages(runInput.workspaceId, conversation.id, conversationContext.messages),
+            atual: { id: message.id, texto: effectiveText, em: new Date(message.createdAt).toISOString() },
+            sessionMetadata: session.metadata
+          }).catch(error => { throw new AgentGenerationFailure(error); });
+          harnessFicha = saida.ficha;
+          contextSummary = {
+            ...contextSummary,
+            harness: { jogada: saida.jogada, trace: saida.trace.map((step) => ({ fase: step.fase, ms: step.ms, detalhe: step.detalhe })) }
+          };
+          if (saida.silencio) {
+            await operational.aiAgentSession.update({
+              where: { workspaceId_id: { workspaceId: runInput.workspaceId, id: session.id } },
+              data: { lastRunAt: new Date(), metadata: withHarnessFicha(session.metadata, saida.ficha) }
+            });
+            const run = await createRun({
+              workspaceId: runInput.workspaceId,
+              agentId: agent.id,
+              sessionId: session.id,
+              conversationId: conversation.id,
+              trigger: runInput.trigger,
+              input: runInputPayload,
+              contextSummary,
+              knowledgeMatches,
+              model: runModel,
+              status: "skipped"
+            });
+            return { status: "skipped", runId: run.id, message: `harness: ${saida.jogada ?? "silêncio"}` };
+          }
+          providerOutput = { confidence: 1, reply: saida.reply, actions: saida.actions, handoff: saida.handoff };
+          modelReply = saida.reply;
         } else if (safetyOutput) {
           providerOutput = safetyOutput;
         } else if (documentRequiresHuman) {
@@ -1548,7 +1607,8 @@ export function createAgentRuntime(input: {
           }
         }
 
-        const contextualHandoff = usesQualificationHandoff(agent.behaviorConfig) || Boolean(prospecting);
+        // The harness writes its hand-over message itself (or sends a fixed notice), so it is kept.
+        const contextualHandoff = usesQualificationHandoff(agent.behaviorConfig) || Boolean(prospecting) || harnessActive;
         // A failed image is an internal handoff: normalization would synthesize a customer reply.
         providerOutput = unreadableImageRequiresHandoff
           ? providerOutput
@@ -1651,8 +1711,9 @@ export function createAgentRuntime(input: {
         await applyBoardRulesForActionResults(runInput.workspaceId, actionResults,
           meetingResult?.status === "completed" && allowedActions.includes("add_tag") ? bookedTag?.id : undefined);
 
+        // The harness may send the catalogue the contact asked for and hand the rest to a seller in the same turn.
         const pendingAttachments =
-          !handoffReason && allowedActions.includes("send_attachment")
+          (!handoffReason || harnessActive) && allowedActions.includes("send_attachment")
             ? actionResults
                 .flatMap(toPendingAttachment)
                 .filter((attachment) => approvedAttachmentUrls.has(attachment.url))
@@ -1795,7 +1856,8 @@ export function createAgentRuntime(input: {
             handoffReason,
             handoffActionCompletedAt: null,
             lastRunAt: new Date(),
-            messageCount: { increment: 1 }
+            messageCount: { increment: 1 },
+            ...(harnessFicha ? { metadata: withHarnessFicha(session.metadata, harnessFicha) } : {})
           }
         }));
 
@@ -1851,6 +1913,23 @@ export function createAgentRuntime(input: {
       }
     }
   };
+
+  /** Who sent each message, which the normalized context leaves out: the AI agent, a seller, or the company's automations. */
+  async function harnessMessages(workspaceId: string, conversationId: string, messages: Array<{ id: string; direction: string | null; type: string | null; label: string; body: string | null; createdAt: string | null }>): Promise<MensagemDaConversa[]> {
+    const outboundIds = messages.filter((entry) => entry.direction === "outbound").map((entry) => entry.id);
+    const senders = outboundIds.length
+      ? await prisma.message.findMany({ where: { workspaceId, conversationId, id: { in: outboundIds } }, select: { id: true, metadata: true, sentByUserId: true } }) as Array<Pick<MessageRecord, "id" | "metadata" | "sentByUserId">>
+      : [];
+    const byId = new Map(senders.map((entry) => [entry.id, entry]));
+    return messages.map((entry) => {
+      const sender = byId.get(entry.id);
+      const source = sender && isRecord(sender.metadata ?? null) ? (sender.metadata as Record<string, unknown>).source : undefined;
+      const autor: MensagemDaConversa["autor"] = entry.label === "cliente" ? "contato"
+        : entry.direction !== "outbound" ? "sistema"
+          : source === "ai_agent" || !sender?.sentByUserId ? "agente" : "humano";
+      return { id: entry.id, autor, tipo: entry.type, texto: entry.body, em: entry.createdAt };
+    });
+  }
 
   async function loadMeetingScheduling(
     allowedActions: readonly AiAgentAllowedAction[],
@@ -2441,6 +2520,23 @@ function getHandoffReason(output: AgentOutput, confidenceThreshold: number) {
   const providerReason = output.handoff.reason?.trim() ?? "";
 
   return actionReason || providerReason || "Agent requested human handoff.";
+}
+
+function harnessModelFor(settings: OpenAiCompatibleSettings, modelo?: string): ModelClient | null {
+  if (!settings.active) return null;
+  return createOpenAiCompatibleModel({
+    baseUrl: settings.baseUrl,
+    apiKey: settings.apiKey,
+    model: modelo ?? settings.chatModel,
+    mode: "json",
+    reasoningEffort: "low"
+  });
+}
+
+/** The session metadata with the harness record, keeping what other services store there (the handoff brief). */
+function withHarnessFicha(metadata: JsonValue | undefined, ficha: unknown) {
+  const current = metadata && typeof metadata === "object" && !Array.isArray(metadata) ? metadata : {};
+  return { ...current, harness: { ficha, atualizadoEm: new Date().toISOString() } } as JsonValue;
 }
 
 function isRecord(value: JsonValue): value is Record<string, unknown> {

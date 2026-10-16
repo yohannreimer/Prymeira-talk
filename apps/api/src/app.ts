@@ -15,6 +15,7 @@ import { createJevFollowupDecision } from "./modules/agents/jev-followup-decisio
 import { createJevFollowupEligibility } from "./modules/followups/jev-followup-eligibility.js";
 import { createLunaFollowupEligibility } from "./modules/followups/luna-followup-eligibility.js";
 import { createJevReplyPreflight } from "./modules/agents/jev-reply-preflight.js";
+import { createJevClient } from "./modules/harness/core/jev.js";
 import {
   createJevAgentImprovementDetector,
   createJevAgentImprovementNormalizer
@@ -508,7 +509,8 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
           meetingScheduler,
           meetingReminders,
           durableMedia: durableMedia?.media,
-          transcriptions: durableMedia?.transcriptions
+          transcriptions: durableMedia?.transcriptions,
+          harness: { jev: env.JEV_API_KEY ? createJevClient({ apiKey: env.JEV_API_KEY, model: env.JEV_MODEL }) : undefined }
         });
   const agentReplyScheduler =
     options.prismaEnabled === false || !agentRuntime
