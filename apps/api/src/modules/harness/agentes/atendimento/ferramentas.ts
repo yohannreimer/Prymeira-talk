@@ -252,3 +252,32 @@ const pediuPessoa: Tool<Record<string, never>> = {
 };
 
 export const ferramentasDeLeitura = [registrarPergunta, buscarNaBase, responderPergunta, marcarSemBase, pediuPessoa];
+
+const PALAVRAS_VAZIAS = new Set(["voces", "vcs", "tem", "qual", "quais", "para", "pra", "com", "que", "uma", "um", "dos", "das", "aceita", "aceitam", "fazem", "faz"]);
+const palavras = (text: string) => new Set((normalize(text).match(/[a-z0-9,]{3,}/g) ?? []).filter((word) => !PALAVRAS_VAZIAS.has(word)));
+const PERGUNTA = /\?|\b(qual|quais|quanto|quando|onde|como|tem|voces?|vcs|aceita|entregam|fazem|trabalham)\b/;
+
+/**
+ * After the reader: a question left unregistered, open, or called unanswerable while a passage it saw
+ * shares its key words gets one more look. Seen in the 16/10 runs (boleto 28 dias, prazo para Jaraguá).
+ */
+export function conferirLeitura({ ficha, mensagem }: { ficha: FichaDoAtendimento; mensagem: string }): string | null {
+  const atuais = ficha.perguntas.filter((item) => item.status !== "tratada");
+  if (atuais.length === 0) {
+    return PERGUNTA.test(normalize(mensagem))
+      ? "a última mensagem parece ter pergunta e nada foi registrado. Registre cada pergunta com registrar_pergunta e procure na base."
+      : null;
+  }
+  const abertas = atuais.filter((item) => item.status === "aberta");
+  if (abertas.length) return `a pergunta ${abertas.map((item) => item.id).join(", ")} ficou sem desfecho: busque e responda com a base, ou marque sem base depois de buscar.`;
+  for (const pergunta of atuais.filter((item) => item.status === "sem_base")) {
+    const chaves = palavras(pergunta.texto);
+    const parecidos = Object.entries(ficha.trechosVistos)
+      .filter(([, texto]) => [...palavras(texto)].filter((word) => chaves.has(word)).length >= 2)
+      .map(([id]) => id);
+    if (parecidos.length) {
+      return `você marcou ${pergunta.id} sem base, mas o trecho ${parecidos.join(", ")} fala do mesmo assunto. Releia: se ele responde (inclusive por faixa, lista ou regra geral), use responder_pergunta com as palavras exatas. Se não responde mesmo, não chame nada.`;
+    }
+  }
+  return null;
+}

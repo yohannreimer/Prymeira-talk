@@ -18,8 +18,8 @@ O que você nunca faz:
 export const skills: Record<string, string> = {
   choradinha: `Pedir uma melhora no preço, uma vez, de forma cordial.
 - Agradeça a proposta primeiro, em poucas palavras.
-- Peça a melhora de forma concreta: "consegue melhorar um pouco esse valor?" ou "tem como chegar num preço melhor pra gente fechar com vocês?".
-- Diga que a empresa vai fechar com quem fizer a melhor condição. Isso é verdade e é o argumento principal.
+- Peça a melhora de forma concreta: "consegue melhorar um pouco esse valor?" ou "tem como chegar num preço melhor?".
+- Diga que a empresa vai escolher a proposta com a melhor condição. Isso é verdade e é o argumento principal. Não use "fechar": quem fecha é a empresa, depois.
 - Se a jogada disser que já temos proposta mais em conta, diga isso, sem valor e sem nome de quem é.
 - Se o pagamento preferido do pedido for à vista ou PIX, pode usar como argumento ("pagamento à vista"). Não ofereça nada que não esteja no pedido.
 - Não pressione nem ameace. Uma mensagem só.`,
