@@ -137,3 +137,21 @@ build installer checks all three upstream source hashes before editing any file.
 Rollback only the reviewed images and the appended opt-in tag, preserving the
 subscription identity/state/secrets. Legacy payloads remain accepted; rollback
 does not replay events that arrived without an active subscription.
+
+## Integration on the current release line — 16 October 2026
+
+User authorization covers integrating and deploying PRs 35/36 on the current
+Talk release line, preserving later updates. Talk starts at `61ad7e2` (PRs 38–41)
+and the companion bridge starts at `50fcd9e`. PR42 remains a separate open change.
+The scheduler merge preserves session identity, certified generation retries,
+backoff, leases and human handoff from stabilization. Technical generation errors
+that now return `handoff_requested` are reported when an error was actually
+remembered; ordinary handoffs and reset/ownership skips remain silent. The
+original generation cause is sanitized before reporting; product results and
+retry permissions are unchanged.
+
+The release workflow pins the independently tested bridge commit and runs the
+cross-checkout contract using an isolated Python environment. Disposable full
+PostgreSQL/RabbitMQ and bridge image/Django/PostgreSQL gates remain required
+before production updates. Deploy bridge first, preserve the existing native
+subscription, add only the validated opt-in tag, then update the Talk services.
