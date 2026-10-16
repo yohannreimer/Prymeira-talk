@@ -19,15 +19,15 @@ import { gzipSync } from "node:zlib";
 // Output: <SAIDA>.jsonl.gz, <SAIDA>-vendedores.jsonl.gz and <SAIDA>-base.jsonl. It prints the workspaces
 // and channels it used, so a wrong name shows up before anyone reads the files.
 
-const prisma = new PrismaClient();
-const lista = (value: string | undefined) => (value ?? "").split(",").map((item) => item.trim()).filter(Boolean);
+export const prisma = new PrismaClient();
+export const lista = (value: string | undefined) => (value ?? "").split(",").map((item) => item.trim()).filter(Boolean);
 const dias = Number(process.env.DIAS ?? 30);
 const limite = Number(process.env.LIMITE ?? 400);
 const limiteVendedores = Number(process.env.LIMITE_VENDEDORES ?? 400);
 const canais = lista(process.env.CANAIS).map((nome) => nome.toLowerCase());
 const saida = process.env.SAIDA ?? "conversas";
 
-const hash = (value: string) => createHash("sha256").update(value).digest("hex").slice(0, 12);
+export const hash = (value: string) => createHash("sha256").update(value).digest("hex").slice(0, 12);
 
 /** A self-introduction followed by capitalised words (with "da", "de", "e", "-" between them): the name. */
 const APRESENTACAO = /\b([Mm]e chamo|[Mm]eu nome [eé]|[Aa]qui [eé] (?:o|a)|[Ss]ou (?:o|a)|[Ff]alo da(?: empresa)?|[Dd]a empresa|[Ee]mpresa|[Cc]omprador(?:a)? d[aoe])\s+[A-ZÀ-Ý][\wÀ-ÿ.&-]*(?:(?:\s+(?:d[aeo]s?|e|-))?\s+[A-ZÀ-Ý][\wÀ-ÿ.&-]*)*/g;
@@ -46,7 +46,7 @@ export function mascarar(texto: string, nomes: string[] = []) {
   return result;
 }
 
-const autorDe = (message: { type: string; direction: string; metadata: unknown; sentByUserId: string | null }) => {
+export const autorDe = (message: { type: string; direction: string; metadata: unknown; sentByUserId: string | null }) => {
   if (message.type === "internal_note") return "nota_interna";
   if (message.type === "system") return "sistema";
   if (message.direction === "inbound") return "contato";
@@ -54,7 +54,7 @@ const autorDe = (message: { type: string; direction: string; metadata: unknown; 
   return source === "ai_agent" ? "agente" : message.sentByUserId ? "vendedor" : "empresa_automatico";
 };
 
-async function resolverWorkspaces() {
+export async function resolverWorkspaces() {
   const ids = lista(process.env.HARNESS_WORKSPACE_ID);
   const nomes = lista(process.env.HARNESS_WORKSPACE);
   if (!ids.length && !nomes.length) throw new Error("Defina HARNESS_WORKSPACE (nomes) ou HARNESS_WORKSPACE_ID (ids), separados por vírgula.");

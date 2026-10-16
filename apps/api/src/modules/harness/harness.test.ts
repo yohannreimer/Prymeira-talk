@@ -1002,3 +1002,31 @@ describe("atendimento no motor de produção", () => {
     expect(pedido.base?.todos?.().some((trecho) => /1\.000 kg/.test(trecho.texto))).toBe(true);
   });
 });
+
+describe("sombra do follow-up", () => {
+  it("a follow-up the reviewer blocks sends nothing and does not become a seller reminder", async () => {
+    const { seguirComHarness } = await import("./agentes/atendimento/producao.js");
+    const ficha = { ...fichaInicialAtendimento(), contato: { tipo: "cliente" as const, prova: null },
+      pendencias: [{ id: "p1", dono: "cliente" as const, descricao: "informar a espessura", prova: { mensagem: 1, trecho: "Qual espessura?" }, status: "aberta" as const, resolvidaPor: null }] };
+    const analista = createScriptedModel("analista", () => ({ content: null, toolCalls: [] }));
+    const model = createScriptedModel("escritor", () => ({ content: null, toolCalls: [toolCall("responder", { texto: "Segue o catálogo em PDF." })] }));
+    const result = await seguirComHarness({
+      config: { agente: "atendimento", canais: ["c"] }, model, analista, fontes: [], sessionMetadata: { harness: { ficha } }, agora: new Date("2026-10-11T12:00:00.000Z"),
+      mensagens: [
+        { id: "0", autor: "contato", tipo: "text", texto: "Preciso de chapas", em: "2026-10-10T12:00:00.000Z" },
+        { id: "1", autor: "agente", tipo: "text", texto: "Qual espessura?", em: "2026-10-10T12:01:00.000Z" }
+      ]
+    });
+    expect(result.tipo).toBe("nada");
+    expect(result.jogada).toBe("cobrar_pendencia");
+  });
+
+  it("names the old decision in the same words as the new one", async () => {
+    const { acaoAntiga } = await import("../../../scripts/harness-sombra-followup.js");
+    expect(acaoAntiga({ status: "sent", tipo: "human_commercial", enviadoPor: "automatico" })).toBe("enviou");
+    expect(acaoAntiga({ status: "sent", tipo: "human_commercial", enviadoPor: "vendedor" })).toBe("vendedor_enviou");
+    expect(acaoAntiga({ status: "review", tipo: "seller_reminder", enviadoPor: null })).toBe("lembrete");
+    expect(acaoAntiga({ status: "review", tipo: "human_commercial", enviadoPor: null })).toBe("rascunho");
+    expect(acaoAntiga({ status: "skipped", tipo: "human_commercial", enviadoPor: null })).toBe("nada");
+  });
+});

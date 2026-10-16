@@ -248,7 +248,10 @@ export async function seguirComHarness(input: {
   const jogada = resultado.jogada?.tipo ?? "nada";
   const base = { jogada, ficha: resultado.ficha, trace: resultado.trace };
   if (resultado.enviar) return { ...base, tipo: "mensagem", texto: resultado.enviar };
-  if (resultado.humano) return { ...base, tipo: "lembrete_vendedor", motivo: resultado.humano.motivo, resumo: resultado.humano.resumo };
+  // Only the reminder move goes to the seller. A follow-up the reviewer blocked (not worth sending, judge down)
+  // also comes back as a hand-over; on a silence that means sending nothing, not bothering the seller.
+  if (resultado.humano && jogada === "lembrete_vendedor") return { ...base, tipo: "lembrete_vendedor", motivo: resultado.humano.motivo, resumo: resultado.humano.resumo };
+  if (resultado.humano) return { ...base, tipo: "nada", motivo: resultado.humano.motivo };
   return { ...base, tipo: "nada", motivo: resultado.jogada?.instrucao ?? "sem jogada" };
 }
 
