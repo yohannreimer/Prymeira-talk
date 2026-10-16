@@ -7,6 +7,7 @@ import {
   Radio,
   Send,
   Settings,
+  ShoppingCart,
   Sparkles,
   UserRoundCog,
   Users,
@@ -19,6 +20,7 @@ export type TalkModuleKey =
   | "followups"
   | "contatos"
   | "leads"
+  | "orcamentos"
   | "canais"
   | "automacoes"
   | "disparos"
@@ -32,6 +34,8 @@ export type TalkModule = {
   key: TalkModuleKey;
   label: string;
   Icon: LucideIcon;
+  /** A paid add-on: the tab only shows once the Hub releases it for the workspace. */
+  addon?: "orcamentos";
 };
 
 export const talkModules: TalkModule[] = [
@@ -54,6 +58,12 @@ export const talkModules: TalkModule[] = [
     key: "leads",
     label: "Leads",
     Icon: MapPinned
+  },
+  {
+    key: "orcamentos",
+    label: "Orçamentos",
+    Icon: ShoppingCart,
+    addon: "orcamentos"
   },
   {
     key: "canais",
@@ -99,4 +109,8 @@ export const talkModules: TalkModule[] = [
 
 export function isTalkModuleKey(value: string | null): value is TalkModuleKey {
   return talkModules.some((module) => module.key === value);
+}
+
+export function availableTalkModules(addons: { orcamentos: boolean } | undefined) {
+  return talkModules.filter((module) => !module.addon || addons?.[module.addon] === true);
 }
