@@ -569,3 +569,31 @@ describe("ajustes da rodada de 16/10 com Luna e JEV", () => {
     expect(visto.outrasFontes).toMatch(/Procedimento/);
   });
 });
+
+describe("procedimentos e regras não se contradizem", () => {
+  it("every example message the procedures ask for passes the agent's own hard rules", async () => {
+    const { exemplos: doComprador } = await import("./agentes/comprador/instrucoes.js");
+    const { exemplos: doAtendimento } = await import("./agentes/atendimento/instrucoes.js");
+    const { exemplos: doJoao } = await import("./agentes/prospeccao/instrucoes.js");
+    const { campanhaBase } = await import("./agentes/prospeccao/cenarios.js");
+    const { fichaInicial: fichaDoLead } = await import("./agentes/prospeccao/ficha.js");
+    const casos = [
+      { agente: comprador, exemplos: doComprador, ficha: fichaCom({ propostas: [{ ...propostaCompleta, versao: 1, em: "2026-10-16T12:00:00.000Z" } as never] }), pedido, historico: [] },
+      { agente: atendimento, exemplos: doAtendimento, ficha: { ...fichaInicialAtendimento(), trechosVistos: { entrega: "Jaraguá do Sul e Blumenau em até 48 horas úteis após o faturamento" } }, pedido: contextoVillefer(),
+        historico: conversa("C: quanto fica 30 telhas?", "E: As 30 telhas ficam R$ 8.940.", "C: vou ver com meu sócio, somos 3 pessoas") },
+      { agente: prospeccao, exemplos: doJoao, ficha: fichaDoLead(), pedido: campanhaBase("Casa Mil"),
+        historico: conversa("E: Oi! Aqui é o João, da Prymeira.", "C: Oi, aqui é a Débora. Somos 3 pessoas atendendo loja e WhatsApp ao mesmo tempo") }
+    ];
+    const falhas: string[] = [];
+    for (const caso of casos) {
+      for (const exemplo of caso.exemplos) {
+        const outcome = await reviewMessage({
+          texto: exemplo.texto, ficha: caso.ficha as never, pedido: caso.pedido as never, historico: caso.historico,
+          jogada: { ...exemplo.jogada, instrucao: "" }, rules: caso.agente.regras as never, fichaTexto: ""
+        });
+        if (!outcome.ok) falhas.push(`${caso.agente.id}/${exemplo.jogada.tipo}: ${outcome.regra} — "${exemplo.texto}"`);
+      }
+    }
+    expect(falhas).toEqual([]);
+  });
+});
