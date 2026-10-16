@@ -6,7 +6,7 @@ import { aposEnvio, aposTriagem, decidirJogada } from "./agentes/comprador/jogad
 import { createFakeComprador } from "./agentes/comprador/modelos-falsos.js";
 import type { FichaDoFornecedor } from "./agentes/comprador/tipos.js";
 import { findMoneyAmounts, formatBRL, parseBRNumber } from "./core/dinheiro.js";
-import { createScriptedModel, parseJsonModeResponse, toolCall } from "./core/model.js";
+import { createOpenAiCompatibleModel, createScriptedModel, parseJsonModeResponse, toolCall } from "./core/model.js";
 import { reviewMessage } from "./core/review.js";
 import { runTurn } from "./core/runner.js";
 import { createTriage, triageByRules } from "./core/triage.js";
@@ -631,5 +631,44 @@ describe("papo social não vai para a base", () => {
     const jogada = decidirJogadaAtendimento({ ficha: fichaInicialAtendimento(), pedido: contextoVillefer(), triagem: { kind: "humano", fonte: "regras", motivo: "" }, evento: { tipo: "mensagem", texto: "dia quente aqui, como tá aí?" } });
     expect(jogada.tipo).toBe("conversar");
     expect(jogada.humano ?? jogada.avisarHumano).toBeUndefined();
+  });
+});
+
+describe("modelo na Responses API", () => {
+  it("sends tools with a reasoning effort to /responses and reads calls and text back", async () => {
+    let url = "";
+    let body: any = null;
+    const fetchImpl = (async (input: string, init: RequestInit) => {
+      url = input;
+      body = JSON.parse(String(init.body));
+      return new Response(JSON.stringify({
+        output: [
+          { type: "reasoning", summary: [] },
+          { type: "function_call", call_id: "call_1", name: "registrar_pergunta", arguments: "{\"texto\":\"aceitam boleto?\"}" },
+          { type: "message", content: [{ type: "output_text", text: "ok" }] }
+        ]
+      }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const model = createOpenAiCompatibleModel({ baseUrl: "https://ai.example/v1/", apiKey: "k", model: "gpt-6-luna", mode: "responses", reasoningEffort: "low", fetchImpl });
+    const resposta = await model.complete({
+      messages: [
+        { role: "system", content: "leia" },
+        { role: "user", content: "aceitam boleto?" },
+        { role: "assistant", content: null, toolCalls: [{ id: "call_0", name: "buscar_na_base", arguments: "{}" }] },
+        { role: "tool", toolCallId: "call_0", name: "buscar_na_base", content: "[pagamento] Boleto 28 dias" }
+      ],
+      tools: [{ name: "registrar_pergunta", description: "d", parameters: { type: "object", properties: {} } }]
+    });
+    expect(url).toBe("https://ai.example/v1/responses");
+    expect(body).toMatchObject({ model: "gpt-6-luna", store: false, reasoning: { effort: "low" }, tool_choice: "auto", tools: [{ type: "function", name: "registrar_pergunta" }] });
+    expect(body.temperature).toBeUndefined();
+    expect(body.input).toEqual([
+      { role: "system", content: "leia" },
+      { role: "user", content: "aceitam boleto?" },
+      { type: "function_call", call_id: "call_0", name: "buscar_na_base", arguments: "{}" },
+      { type: "function_call_output", call_id: "call_0", output: "[pagamento] Boleto 28 dias" }
+    ]);
+    expect(resposta).toEqual({ content: "ok", toolCalls: [{ id: "call_1", name: "registrar_pergunta", arguments: "{\"texto\":\"aceitam boleto?\"}" }] });
+    expect(model.id).toBe("gpt-6-luna (responses)");
   });
 });

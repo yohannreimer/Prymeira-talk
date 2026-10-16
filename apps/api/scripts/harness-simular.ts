@@ -32,7 +32,7 @@ config({ path: resolve(import.meta.dirname, "../../../.env") });
 //   HARNESS_BASE_URL + HARNESS_API_KEY   any OpenAI-compatible endpoint
 //   HARNESS_OFFLINE=1                    deterministic fake models (only scenarios that don't need a model)
 // Options:
-//   HARNESS_MODEL (default: the workspace's model, else gpt-6-luna) · HARNESS_MODE=tools|json (default tools)
+//   HARNESS_MODEL (default: the workspace's model, else gpt-6-luna) · HARNESS_MODE=tools|json|responses (default tools)
 //   HARNESS_REASONING=none|low|medium|high · FORNECEDOR_MODEL (plays the LLM suppliers; default HARNESS_MODEL)
 //   HARNESS_K (default 4) · HARNESS_CENARIOS=id1,id2 · HARNESS_RELATORIO=path.md
 //   HARNESS_LINHA_DO_TEMPO=path.html: a page with every conversation and, between the messages, what the agent
@@ -63,7 +63,7 @@ async function main() {
     const endpoint = await resolveEndpoint();
     const model = createOpenAiCompatibleModel({
       ...endpoint,
-      mode: process.env.HARNESS_MODE === "json" ? "json" : "tools",
+      mode: readMode(),
       reasoningEffort: readReasoning()
     });
     fornecedor = createOpenAiCompatibleModel({ ...endpoint, model: process.env.FORNECEDOR_MODEL ?? endpoint.model, mode: "tools", temperature: 0.8 });
@@ -98,14 +98,14 @@ async function runAtendimento() {
   const scenarios = [...cenariosAoVivo, ...cenariosAtendimento, ...casos].filter((scenario) => !wanted.length || wanted.includes(scenario.id));
   if (process.env.HARNESS_OFFLINE === "1") throw new Error("Os cenários de atendimento precisam de modelo: use HARNESS_WORKSPACE_ID ou HARNESS_BASE_URL.");
   const endpoint = await resolveEndpoint();
-  const mode = process.env.HARNESS_MODE === "json" ? "json" : "tools";
+  const mode = readMode();
   const model = createOpenAiCompatibleModel({ ...endpoint, mode, reasoningEffort: readReasoning() });
   const analistaReasoning = process.env.HARNESS_REASONING_ANALISTA;
   const analistaEffort = analistaReasoning === "none" || analistaReasoning === "low" || analistaReasoning === "medium" ? analistaReasoning : "high";
   const analista = createOpenAiCompatibleModel({
     ...endpoint,
-    // Luna refuses native tools together with reasoning_effort on /chat/completions (harness:sondar-modelo, 16/10).
-    mode: analistaEffort === "none" ? mode : "json",
+    // Luna refuses native tools together with reasoning_effort on /chat/completions; /responses takes both.
+    mode: analistaEffort === "none" || mode === "responses" ? mode : "json",
     reasoningEffort: analistaEffort,
     maxCompletionTokens: 16_000
   });
@@ -147,7 +147,7 @@ async function runProspeccao() {
     };
   } else {
     const endpoint = await resolveEndpoint();
-    const model = createOpenAiCompatibleModel({ ...endpoint, mode: process.env.HARNESS_MODE === "json" ? "json" : "tools", reasoningEffort: readReasoning() });
+    const model = createOpenAiCompatibleModel({ ...endpoint, mode: readMode(), reasoningEffort: readReasoning() });
     lead = createOpenAiCompatibleModel({ ...endpoint, model: process.env.FORNECEDOR_MODEL ?? endpoint.model, mode: "tools", temperature: 0.8 });
     deps = () => ({ model, triage: createTriage({ jev }), ...(jev ? { judge: createJevJudge(jev), judgeFailClosed: true } : {}) });
   }
@@ -194,6 +194,11 @@ async function resolveEndpoint(): Promise<{ baseUrl: string; apiKey: string; mod
   } finally {
     await prisma.$disconnect();
   }
+}
+
+function readMode() {
+  const value = process.env.HARNESS_MODE;
+  return value === "json" || value === "responses" ? value : "tools";
 }
 
 function readReasoning() {
