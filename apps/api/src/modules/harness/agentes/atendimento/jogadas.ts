@@ -123,7 +123,7 @@ function jogadaDaMensagem(ficha: FichaDoAtendimento, triagem: TriageResult | nul
     tipo: "conversar",
     instrucao: naoBuscadas.length
       ? `Sobre ${naoBuscadas.map((item) => `"${item.texto}"`).join(", ")}: não afirme preço, prazo, estoque nem condição. Pergunte o detalhe que falta (produto, medida, quantidade, cidade).`
-      : "Responda ao que o contato disse, curto. Se faltar algo para o pedido andar (produto, medida, quantidade, cidade), pergunte uma coisa só."
+      : "Responda ao que o contato disse, curto. Se for só conversa (cumprimento, o tempo, futebol), responda numa frase simpática acompanhando o que ele contou, sem dizer nada sobre você ou sobre o tempo aí da empresa, e pergunte se pode ajudar em algo. Se faltar algo para o pedido andar (produto, medida, quantidade, cidade), pergunte uma coisa só."
   };
 }
 

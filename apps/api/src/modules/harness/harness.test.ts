@@ -74,6 +74,16 @@ describe("triagem por regras", () => {
 });
 
 describe("jogadas do comprador", () => {
+  it("keeps earlier proposal fields when the model sends null for what the message did not say", async () => {
+    const { ferramentasDeLeitura } = await import("./agentes/comprador/ferramentas.js");
+    const registrar = ferramentasDeLeitura.find((tool) => tool.name === "registrar_proposta")!;
+    let ficha = fichaCom({ propostas: [propostaCompleta] });
+    const context = { ficha, pedido, setFicha: (next: FichaDoFornecedor) => { ficha = next; }, mensagemAtual: "consigo 850 a cadeira", historico: [] };
+    registrar.execute(registrar.schema.parse({ itens: [{ itemId: pedido.itens[0].id, precoUnitario: 850 }], frete: null, prazoEntrega: null, pagamento: null, validade: null, observacao: null }) as never, context as never);
+    const atual = ficha.propostas.at(-1)!;
+    expect(atual.itens.find((line) => line.itemId === pedido.itens[0].id)?.precoUnitario).toBe(850);
+    expect(atual).toMatchObject({ frete: propostaCompleta.frete, prazoEntrega: propostaCompleta.prazoEntrega, pagamento: propostaCompleta.pagamento });
+  });
   it("treats a 'no' to the discount ask as no discount: the proposal still goes to the company", () => {
     const recusa = { kind: "recusa" as const, fonte: "jev" as const, motivo: "não consigo baixar" };
     const antes = fichaCom({ propostas: [propostaCompleta], etapa: "choradinha", versoesNaTriagem: 1, choradinhas: { usadas: 1, totalAntes: null } });
@@ -625,6 +635,12 @@ describe("papo social não vai para a base", () => {
     expect(conferirLeitura({ ficha: vazia, mensagem: "opa, dia quente aqui hoje hein, como tá aí?" })).toBeNull();
     expect(conferirLeitura({ ficha: vazia, mensagem: "tudo bem? e a família?" })).toBeNull();
     expect(conferirLeitura({ ficha: vazia, mensagem: "calor demais kkk. vcs entregam em blumenau?" })).toMatch(/registrar_pergunta/);
+    const { ferramentasDeLeitura } = await import("./agentes/atendimento/ferramentas.js");
+    const registrar = ferramentasDeLeitura.find((tool) => tool.name === "registrar_pergunta")!;
+    const context = { ficha: vazia, pedido: {}, setFicha: () => {}, mensagemAtual: "", historico: [] };
+    expect(() => registrar.execute({ texto: "como tá aí?" } as never, context as never)).toThrow(/conversa social/);
+    expect(() => registrar.execute({ texto: "dia quente aqui hoje hein" } as never, context as never)).toThrow(/conversa social/);
+    expect(() => registrar.execute({ texto: "quanto tempo leva a entrega pra Blumenau?" } as never, context as never)).not.toThrow();
   });
 
   it("small talk with no question recorded becomes a plain conversation, never a hand-over", () => {

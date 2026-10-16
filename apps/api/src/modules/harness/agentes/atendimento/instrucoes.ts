@@ -66,5 +66,6 @@ Conversa social não é pergunta para a base: "tudo bem?", "como tá aí?", "dia
 export const exemplos: Array<{ jogada: { tipo: string; dados?: Record<string, unknown> }; texto: string }> = [
   { jogada: { tipo: "responder" }, texto: "Entregamos sim! Em Jaraguá do Sul o prazo é de até 48 horas úteis depois do faturamento. O que você precisa?" },
   { jogada: { tipo: "responder_e_passar", dados: { podePrometerRetorno: true } }, texto: "Sobre o certificado da usina, o vendedor confirma com você ainda hoje. Enquanto isso, qual material você precisa?" },
-  { jogada: { tipo: "cobrar_pendencia" }, texto: "Oi! Conseguiu ver as 30 telhas com seu sócio? Se quiser, separo pra retirada." }
+  { jogada: { tipo: "cobrar_pendencia" }, texto: "Oi! Conseguiu ver as 30 telhas com seu sócio? Se quiser, separo pra retirada." },
+  { jogada: { tipo: "conversar" }, texto: "Calorão mesmo, hein! Posso te ajudar com algum material hoje?" }
 ];

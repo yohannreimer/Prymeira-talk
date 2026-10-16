@@ -165,6 +165,11 @@ const registrarPergunta: Tool<z.infer<typeof perguntaArgs>> = {
   parameters: { type: "object", properties: { texto: { type: "string", description: "A pergunta, com as palavras do contato." } }, required: ["texto"], additionalProperties: false },
   schema: perguntaArgs,
   execute(args, context) {
+    // "Como tá aí?" registered as a question goes to the base, finds nothing and is handed to a seller.
+    const texto = normalize(args.texto);
+    if (PAPO_SOCIAL.test(texto) && !ASSUNTO_DO_NEGOCIO.test(texto) && !/\d/.test(texto)) {
+      throw new Error("isso é conversa social, não pergunta sobre a empresa ou o pedido: não registre. Se a mensagem também tiver uma pergunta de negócio, registre só ela.");
+    }
     const id = `q${context.ficha.perguntas.length + 1}`;
     const ficha = { ...context.ficha, perguntas: [...context.ficha.perguntas, { id, texto: args.texto, status: "aberta" as const, resposta: null, buscas: 0 }] };
     context.setFicha(ficha);
@@ -262,6 +267,7 @@ const palavras = (text: string) => new Set((normalize(text).match(/[a-z0-9,]{3,}
  * Words of a business question. The nudge fires only with one of them, so small talk ("dia quente aqui,
  * como tá aí?") never gets pushed into the base, where it would end as "no answer" and go to a person.
  */
+const PAPO_SOCIAL = /\b(tudo bem|tudo bom|tudo certo|como (ta|esta|vai|anda)|e ai|calor|quente|frio|chuva|chovendo|sol|tempo|familia|fim de semana|feriado|futebol|jogo|time)\b/;
 const ASSUNTO_DO_NEGOCIO = /\b(preco|precos|valor|quanto|custa|estoque|tem|temos|prazo|entrega|entregam|frete|pagamento|boleto|pix|cartao|parcel\w*|desconto|medida|medidas|orcamento|produto|material|trabalham|vendem|fazem|aceita\w*|nota|nf|retirada|endereco|horario|abre|fecha)\b/;
 
 /**

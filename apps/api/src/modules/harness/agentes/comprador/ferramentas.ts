@@ -49,11 +49,11 @@ const registrarProposta: Tool<z.infer<typeof propostaArgs>> = {
     for (const line of args.itens ?? []) itens.set(line.itemId, line.precoUnitario);
     const next: VersaoDaProposta = {
       itens: [...itens].map(([itemId, precoUnitario]) => ({ itemId, precoUnitario })),
-      frete: args.frete !== undefined ? args.frete : before?.frete ?? null,
-      prazoEntrega: args.prazoEntrega !== undefined ? args.prazoEntrega : before?.prazoEntrega ?? null,
-      pagamento: args.pagamento !== undefined ? args.pagamento : before?.pagamento ?? null,
-      validade: args.validade !== undefined ? args.validade : before?.validade ?? null,
-      observacao: args.observacao !== undefined ? args.observacao : before?.observacao ?? null,
+      frete: args.frete ?? before?.frete ?? null,
+      prazoEntrega: args.prazoEntrega ?? before?.prazoEntrega ?? null,
+      pagamento: args.pagamento ?? before?.pagamento ?? null,
+      validade: args.validade ?? before?.validade ?? null,
+      observacao: args.observacao ?? before?.observacao ?? null,
       origem: context.mensagemAtual.slice(0, 500)
     };
     const ficha = { ...context.ficha, propostas: [...context.ficha.propostas, next], fornecedorVaiVerificar: false };
