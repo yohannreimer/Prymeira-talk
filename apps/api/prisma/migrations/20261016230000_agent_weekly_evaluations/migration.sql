@@ -1,7 +1,8 @@
+-- The weekly evaluation of each customer's new attendance agent (one customer may span several workspaces).
 CREATE TABLE "ai_agent_evaluations" (
     "id" UUID NOT NULL DEFAULT gen_random_uuid(),
-    "workspace_id" TEXT NOT NULL,
-    "agent_id" UUID NOT NULL,
+    "client_key" TEXT NOT NULL,
+    "agents" JSONB NOT NULL DEFAULT '[]',
     "period_start" TIMESTAMP(3) NOT NULL,
     "period_end" TIMESTAMP(3) NOT NULL,
     "status" TEXT NOT NULL DEFAULT 'running',
@@ -15,16 +16,8 @@ CREATE TABLE "ai_agent_evaluations" (
     CONSTRAINT "ai_agent_evaluations_pkey" PRIMARY KEY ("id")
 );
 
-CREATE UNIQUE INDEX "ai_agent_evaluations_workspace_id_id_key"
-  ON "ai_agent_evaluations"("workspace_id", "id");
+CREATE UNIQUE INDEX "ai_agent_evaluations_client_key_period_start_key"
+  ON "ai_agent_evaluations"("client_key", "period_start");
 
-CREATE UNIQUE INDEX "ai_agent_evaluations_workspace_id_agent_id_period_start_key"
-  ON "ai_agent_evaluations"("workspace_id", "agent_id", "period_start");
-
-CREATE INDEX "ai_agent_evaluations_workspace_id_agent_id_created_at_idx"
-  ON "ai_agent_evaluations"("workspace_id", "agent_id", "created_at");
-
-ALTER TABLE "ai_agent_evaluations"
-  ADD CONSTRAINT "ai_agent_evaluations_workspace_id_agent_id_fkey"
-  FOREIGN KEY ("workspace_id", "agent_id") REFERENCES "ai_agents"("workspace_id", "id")
-  ON DELETE CASCADE ON UPDATE CASCADE;
+CREATE INDEX "ai_agent_evaluations_client_key_created_at_idx"
+  ON "ai_agent_evaluations"("client_key", "created_at");

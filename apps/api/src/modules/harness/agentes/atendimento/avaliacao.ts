@@ -40,6 +40,8 @@ export type TipoDeErro = "nao_devia" | "assunto" | "texto" | "nenhum";
 export type CasoDaSemana = {
   followupId: string;
   conversationId: string;
+  /** The workspace of the conversation, when a customer's agent runs in several. */
+  workspaceId?: string;
   decididoEm: string;
   rotulo: RotuloDoFollowup;
   /** The draft the agent wrote and what went out (the seller's version, when edited). */

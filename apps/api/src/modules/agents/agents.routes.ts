@@ -2,12 +2,6 @@ import type { FastifyPluginAsync, FastifyReply } from "fastify";
 import { z } from "zod";
 import { canPerform } from "../access/roles.js";
 import {
-  AgentEvaluationError,
-  createAgentEvaluationsService,
-  type AgentEvaluationsPrismaLike,
-  type AgentEvaluationsService
-} from "./agent-evaluations.service.js";
-import {
   AgentTestChatError,
   createAgentTestChatService,
   type AgentTestChatPrismaLike
@@ -43,21 +37,6 @@ const knowledgeSourceParamsSchema = agentParamsSchema.extend({
 const improvementParamsSchema = agentParamsSchema.extend({
   improvementId: uuidSchema
 });
-
-const evaluationProposalParamsSchema = agentParamsSchema.extend({
-  evaluationId: uuidSchema,
-  proposalId: z.string().min(1).max(20)
-});
-const evaluationDecisionSchema = z.object({ decision: z.enum(["approve", "reject"]) });
-const evaluationRuleSchema = z.object({ rule: z.string().min(1).max(400) });
-
-function handleAgentEvaluationsError(reply: FastifyReply, error: unknown) {
-  if (error instanceof AgentEvaluationError) {
-    const statusCode = error.code === "NOT_FOUND" ? 404 : 409;
-    return reply.code(statusCode).send({ code: `EVALUATION_${error.code}`, error: error.message });
-  }
-  throw error;
-}
 
 const allowedActionSchema = z.enum([
   "send_message",
@@ -254,7 +233,6 @@ export interface AgentsRoutesOptions {
   publicTalkUrl?: string;
   uploadDir?: string;
   agentImprovements?: AgentImprovementsService;
-  agentEvaluations?: AgentEvaluationsService;
 }
 
 export const agentsRoutes: FastifyPluginAsync<AgentsRoutesOptions> = async (app, options) => {
@@ -334,56 +312,6 @@ export const agentsRoutes: FastifyPluginAsync<AgentsRoutesOptions> = async (app,
       return reply.code(204).send();
     } catch (error) {
       return handleAgentsError(reply, error);
-    }
-  });
-
-  const evaluationsService = options.agentEvaluations ?? createAgentEvaluationsService({
-    prisma: app.prisma as unknown as AgentEvaluationsPrismaLike
-  });
-
-  app.get("/agents/:agentId/evaluations", async (request, reply) => {
-    if (!requireAgentManage(request.talk.role, reply)) return reply;
-    const params = agentParamsSchema.safeParse(request.params);
-    if (!params.success) return reply.code(400).send({ error: "Invalid agent evaluation request." });
-    try {
-      return await evaluationsService.list({ workspaceId: request.talk.workspaceId, agentId: params.data.agentId });
-    } catch (error) {
-      return handleAgentEvaluationsError(reply, error);
-    }
-  });
-
-  // An evaluation takes minutes: it starts here and the page reloads the list until it is ready.
-  app.post("/agents/:agentId/evaluations/run", async (request, reply) => {
-    if (!requireAgentManage(request.talk.role, reply)) return reply;
-    const params = agentParamsSchema.safeParse(request.params);
-    if (!params.success) return reply.code(400).send({ error: "Invalid agent evaluation request." });
-    const workspaceId = request.talk.workspaceId;
-    void evaluationsService.runWeek({ workspaceId, agentId: params.data.agentId, periodEnd: new Date(), force: true })
-      .catch((error) => request.log.error({ err: error }, "Agent evaluation failed."));
-    return reply.code(202).send({ started: true });
-  });
-
-  app.post("/agents/:agentId/evaluations/:evaluationId/proposals/:proposalId", async (request, reply) => {
-    if (!requireAgentManage(request.talk.role, reply)) return reply;
-    const params = evaluationProposalParamsSchema.safeParse(request.params);
-    const body = evaluationDecisionSchema.safeParse(request.body);
-    if (!params.success || !body.success) return reply.code(400).send({ error: "Invalid agent evaluation request." });
-    try {
-      return await evaluationsService.decideProposal({ workspaceId: request.talk.workspaceId, ...params.data, decision: body.data.decision });
-    } catch (error) {
-      return handleAgentEvaluationsError(reply, error);
-    }
-  });
-
-  app.post("/agents/:agentId/evaluation-rules/remove", async (request, reply) => {
-    if (!requireAgentManage(request.talk.role, reply)) return reply;
-    const params = agentParamsSchema.safeParse(request.params);
-    const body = evaluationRuleSchema.safeParse(request.body);
-    if (!params.success || !body.success) return reply.code(400).send({ error: "Invalid agent evaluation request." });
-    try {
-      return await evaluationsService.removeRule({ workspaceId: request.talk.workspaceId, agentId: params.data.agentId, rule: body.data.rule });
-    } catch (error) {
-      return handleAgentEvaluationsError(reply, error);
     }
   });
 

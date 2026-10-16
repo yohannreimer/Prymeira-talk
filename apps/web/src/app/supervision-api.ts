@@ -100,3 +100,73 @@ export type PlatformHealthChannel = {
 export async function apiPlatformHealth(getToken: GetToken, signal?: AbortSignal) {
   return await (await request("/supervision/admin/health", getToken, signal)).json() as { generatedAt: string; channels: PlatformHealthChannel[] };
 }
+
+/* ---------- The weekly evaluation of each customer's new attendance agent (Hub admins only) ---------- */
+
+export type AgentEvaluationCase = {
+  followupId: string;
+  conversationId: string;
+  /** The workspace of the conversation: a customer may run the agent in several. */
+  workspaceId?: string;
+  decididoEm: string;
+  rotulo: "aprovado" | "editado" | "descartado" | "respondeu" | "sem_resposta";
+  rascunho: string | null;
+  enviado: string | null;
+  resposta: string | null;
+  ultimas: Array<{ autor: string; texto: string }>;
+  erro?: { tipo: "nao_devia" | "assunto" | "texto" | "nenhum"; explicacao: string };
+};
+export type AgentEvaluationProposal = {
+  id: string;
+  regra: string;
+  porque: string;
+  casos: string[];
+  validacao: { corrige: number; erradosTestados: number; quebra: number; bonsTestados: number } | null;
+  status: "pendente" | "aprovada" | "recusada";
+  decididaEm?: string;
+};
+export type AgentEvaluation = {
+  id: string;
+  clientKey: string;
+  periodStart: string;
+  periodEnd: string;
+  status: "running" | "ready" | "failed";
+  summary: {
+    rotulos: Record<AgentEvaluationCase["rotulo"], number>;
+    aprovacao: number | null;
+    resposta: number | null;
+    erros: { nao_devia: number; assunto: number; texto: number };
+    decisoes: { mensagem: number; lembrete: number; nada: number };
+  } | null;
+  cases: AgentEvaluationCase[];
+  proposals: AgentEvaluationProposal[];
+  rules: string[];
+  error: string | null;
+  createdAt: string;
+};
+/** A customer and the agents it runs, one per workspace. */
+export type EvaluationClient = {
+  key: string;
+  name: string;
+  agents: Array<{ workspaceId: string; workspaceName: string | null; agentId: string; agentName: string; channels: number }>;
+  rules: string[];
+  latest: { periodStart: string; status: AgentEvaluation["status"] } | null;
+  pendingProposals: number;
+};
+const evaluationPath = (clientKey: string) => `/supervision/admin/agent-evaluations/${encodeURIComponent(clientKey)}`;
+export async function apiEvaluationClients(getToken: GetToken, signal?: AbortSignal) {
+  return ((await (await request("/supervision/admin/agent-evaluations", getToken, signal)).json()) as { clients: EvaluationClient[] }).clients;
+}
+export async function apiClientEvaluations(clientKey: string, getToken: GetToken, signal?: AbortSignal) {
+  return ((await (await request(evaluationPath(clientKey), getToken, signal)).json()) as { evaluations: AgentEvaluation[] }).evaluations;
+}
+/** Starts the evaluation of the last 7 days; it takes minutes and the page reloads the list meanwhile. */
+export async function apiRunClientEvaluation(clientKey: string, getToken: GetToken) {
+  return await (await request(`${evaluationPath(clientKey)}/run`, getToken, undefined, {})).json() as { started: boolean };
+}
+export async function apiDecideClientProposal(clientKey: string, evaluationId: string, proposalId: string, decision: "approve" | "reject", getToken: GetToken) {
+  return await (await request(`${evaluationPath(clientKey)}/proposals`, getToken, undefined, { evaluationId, proposalId, decision })).json() as AgentEvaluation;
+}
+export async function apiRemoveClientRule(clientKey: string, rule: string, getToken: GetToken) {
+  return await (await request(`${evaluationPath(clientKey)}/rules/remove`, getToken, undefined, { rule })).json() as { rules: string[] };
+}

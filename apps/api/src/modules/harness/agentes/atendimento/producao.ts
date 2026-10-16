@@ -31,6 +31,11 @@ export type HarnessConfig = {
   modelo?: string;
   /** Rules for follow-ups approved from the weekly evaluation. */
   regrasDoFollowup?: string[];
+  /**
+   * The customer this agent belongs to ("Villefer"), when one customer runs the same agent in several
+   * workspaces: they are evaluated together and an approved rule goes to all of them.
+   */
+  cliente?: string;
 };
 
 const EMPRESA_VILLEFER = {
@@ -55,7 +60,8 @@ export function readHarnessConfig(behaviorConfig: unknown): HarnessConfig | null
     ...(empresa ? { empresa } : {}),
     ...(Array.isArray(value.termosInternos) ? { termosInternos: value.termosInternos.filter((termo): termo is string => typeof termo === "string") } : {}),
     ...(typeof value.modelo === "string" && value.modelo ? { modelo: value.modelo } : {}),
-    ...(Array.isArray(value.regrasDoFollowup) ? { regrasDoFollowup: value.regrasDoFollowup.filter((regra): regra is string => typeof regra === "string" && regra.trim().length > 0) } : {})
+    ...(Array.isArray(value.regrasDoFollowup) ? { regrasDoFollowup: value.regrasDoFollowup.filter((regra): regra is string => typeof regra === "string" && regra.trim().length > 0) } : {}),
+    ...(typeof value.cliente === "string" && value.cliente.trim() ? { cliente: value.cliente.trim() } : {})
   };
 }
 

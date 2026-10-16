@@ -36,10 +36,11 @@ const modules = {
 };
 const SupervisionPage = lazy(() => import('../features/supervision/SupervisionPage').then(module => ({ default: module.SupervisionPage })));
 const PlatformHealthPage = lazy(() => import('../features/platform-health/PlatformHealthPage').then(module => ({ default: module.PlatformHealthPage })));
-/** Standalone pages outside the workspace shell: a manager's supervision and the product owner's health board. */
+const AgentEvaluationPage = lazy(() => import('../features/platform-health/AgentEvaluationPage').then(module => ({ default: module.AgentEvaluationPage })));
+/** Standalone pages outside the workspace shell: a manager's supervision and the product owner's health board and agent evaluation. */
 function standaloneRoute() {
   const module = new URLSearchParams(window.location.search).get("module");
-  return module === "supervisao" || module === "saude" ? module : null;
+  return module === "supervisao" || module === "saude" || module === "avaliacao" ? module : null;
 }
 
 function renderModule(moduleKey: TalkModuleKey) {
@@ -57,7 +58,8 @@ export function App() {
   }, []);
   return (
     <AuthGate>
-      {standalone === "saude" ? <Suspense fallback={<div className="center-state">Carregando saúde dos números…</div>}><PlatformHealthPage /></Suspense>
+      {standalone === "avaliacao" ? <Suspense fallback={<div className="center-state">Carregando avaliação dos agentes…</div>}><AgentEvaluationPage /></Suspense>
+        : standalone === "saude" ? <Suspense fallback={<div className="center-state">Carregando saúde dos números…</div>}><PlatformHealthPage /></Suspense>
         : standalone === "supervisao" ? <Suspense fallback={<div className="center-state">Carregando supervisão…</div>}><SupervisionPage /></Suspense> : <TalkSessionProvider><TalkSuiteShell renderModule={renderModule} prefetchModule={prefetchModule} /></TalkSessionProvider>}
     </AuthGate>
   );

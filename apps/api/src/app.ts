@@ -720,7 +720,16 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
     durableMedia: durableMedia?.media,
     transcriptions: durableMedia?.transcriptions
   });
-  await app.register(supervisionRoutes, { evolution: evolutionRuntime });
+  const agentEvaluations = options.prismaEnabled === false ? undefined : createAgentEvaluationsService({
+    prisma: app.prisma as unknown as AgentEvaluationsPrismaLike,
+    jev: harnessJev
+  });
+  const agentEvaluationsScheduler = agentEvaluations && env.NODE_ENV !== "test"
+    ? createAgentEvaluationsScheduler({ service: agentEvaluations, onError: (error) => app.log.error({ err: error }, "Weekly agent evaluation failed.") })
+    : undefined;
+  agentEvaluationsScheduler?.start();
+  if (agentEvaluationsScheduler) app.addHook("onClose", async () => { await agentEvaluationsScheduler.stop(); });
+  await app.register(supervisionRoutes, { evolution: evolutionRuntime, agentEvaluations });
   if (inboxTriage) await app.register(inboxTriageRoutes, { triage: inboxTriage });
   if (followupService && followupOutbound) {
     await app.register(conversationFollowupsRoutes, {
@@ -794,20 +803,10 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   await app.register(teamRoutes);
   await app.register(tagsRoutes);
   await app.register(agentPackageRoutes);
-  const agentEvaluations = options.prismaEnabled === false ? undefined : createAgentEvaluationsService({
-    prisma: app.prisma as unknown as AgentEvaluationsPrismaLike,
-    jev: harnessJev
-  });
-  const agentEvaluationsScheduler = agentEvaluations && env.NODE_ENV !== "test"
-    ? createAgentEvaluationsScheduler({ service: agentEvaluations, onError: (error) => app.log.error({ err: error }, "Weekly agent evaluation failed.") })
-    : undefined;
-  agentEvaluationsScheduler?.start();
-  if (agentEvaluationsScheduler) app.addHook("onClose", async () => { await agentEvaluationsScheduler.stop(); });
   await app.register(agentsRoutes, {
     publicTalkUrl: env.PUBLIC_TALK_URL,
     uploadDir: env.TALK_UPLOAD_DIR,
-    agentImprovements,
-    agentEvaluations
+    agentImprovements
   });
   await app.register(assistantRoutes);
   await app.register(assistantInboxRoutes, { scheduler: assistantScheduler, handoffBriefService, evolution: evolutionRuntime });
