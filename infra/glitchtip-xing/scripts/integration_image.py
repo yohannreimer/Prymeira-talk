@@ -211,6 +211,7 @@ async def diagnostic_projection_gate():
     from unittest.mock import AsyncMock, patch
     from types import SimpleNamespace
     from apps.issue_events.models import Issue, IssueEvent
+    from apps.issue_events.constants import IssueEventType, LogLevel
     from apps.alerts.webhooks import send_issue_as_webhook
     from xing_alerts.native import select_snapshot
     from xing_alerts.privacy import normalize
@@ -221,12 +222,12 @@ async def diagnostic_projection_gate():
             "correlation_id": "op_" + "a" * 32, "impact": "operation_failed", "recovery": "unknown",
             "diagnostic_frame_0": "modules/agents/agent-runtime.ts:1539:27"}
     await IssueEvent.objects.acreate(issue=issue, organization=organization, timestamp=datetime.now(timezone.utc),
-        type=0, level=40, data={"request": "PRIVATE_DISPOSABLE_BODY"}, tags=tags)
+        type=IssueEventType.ERROR, level=LogLevel.ERROR, data={"request": "PRIVATE_DISPOSABLE_BODY"}, tags=tags)
     await asyncio.sleep(0.002)
     latest = {**tags, "failure_code": "WAHA_HTTP_500", "error_type": "WahaClientError",
               "release": "b" * 40, "correlation_id": "op_" + "b" * 32}
     await IssueEvent.objects.acreate(issue=issue, organization=organization, timestamp=datetime.now(timezone.utc),
-        type=0, level=40, data={"request": "PRIVATE_DISPOSABLE_BODY"}, tags=latest)
+        type=IssueEventType.ERROR, level=LogLevel.ERROR, data={"request": "PRIVATE_DISPOSABLE_BODY"}, tags=latest)
     snapshot, _ = await select_snapshot(issue)
     assert snapshot["correlation_id"] == latest["correlation_id"]
     assert snapshot["release"] == latest["release"]
