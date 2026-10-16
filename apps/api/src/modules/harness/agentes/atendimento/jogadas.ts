@@ -95,8 +95,11 @@ function jogadaDaMensagem(ficha: FichaDoAtendimento, triagem: TriageResult | nul
       : pedido.anexos?.length ? ["Nenhum arquivo vai anexado nesta mensagem: não diga que está enviando catálogo ou arquivo."] : [])
   ];
   // The company asked for this choice the first time a made-to-order item comes up.
+  const respondidas = ficha.perguntas.filter((item) => item.status === "respondida").flatMap(citacoes);
+  if (respondidas.some(recusa)) extras.push("Atenção: a base diz que a empresa NÃO fornece ou NÃO atende parte do que foi pedido. Diga isso com clareza; não ofereça esse item.");
+  // Not after a "no": a catalogue offer right after refusing the item or the region reads as ignoring it.
   const encomenda = !anexos.length && !(ficha.anexosEnviados ?? []).length && pedido.anexos?.some((anexo) => /catalogo/i.test(semAcento(anexo.titulo))) &&
-    ficha.perguntas.some((item) => item.status === "respondida" && citacoes(item).some((citacao) => /encomenda/i.test(citacao)));
+    respondidas.some((citacao) => /encomenda/i.test(citacao)) && !respondidas.some(recusa);
   if (encomenda && (jogada.tipo === "responder" || jogada.tipo === "conversar")) {
     extras.push("É um item sob encomenda: termine perguntando se ele prefere ver o catálogo em PDF ou falar com um vendedor, no lugar de outra pergunta.");
   }
@@ -104,6 +107,9 @@ function jogadaDaMensagem(ficha: FichaDoAtendimento, triagem: TriageResult | nul
 }
 
 const semAcento = (texto: string) => texto.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+/** A passage that says no: what the company does not supply, the places it does not serve. */
+export const RECUSA = /\bnao (fornece|fornecemos|fornecidas?|trabalhamos|atendemos|vendemos|fazemos)\b/;
+const recusa = (citacao: string) => RECUSA.test(semAcento(citacao));
 /** Every passage that answers the question, in the order the reader cited them. */
 export const citacoes = (pergunta: FichaDoAtendimento["perguntas"][number]) => [pergunta.resposta, ...(pergunta.maisRespostas ?? [])].filter((item) => item !== null).map((item) => item.citacao);
 

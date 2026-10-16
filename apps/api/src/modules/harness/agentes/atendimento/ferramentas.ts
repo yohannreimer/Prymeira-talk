@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { HarnessMessage, HarnessTool } from "../../core/types.js";
 import { ferramentasDoCatalogo } from "./catalogo.js";
-import { renderFicha } from "./ficha.js";
+import { frasesDe, renderFicha } from "./ficha.js";
 import type { ContextoDoAtendimento, FichaDoAtendimento, Prova } from "./tipos.js";
 
 type Tool<Args> = HarnessTool<FichaDoAtendimento, ContextoDoAtendimento, Args>;
@@ -216,6 +216,34 @@ const buscarNaBase: Tool<z.infer<typeof buscaArgs>> = {
   }
 };
 
+/**
+ * The citation grows to the whole sentences that hold it. "vergalhões da linha de construção civil" cut out
+ * of "NÃO FORNECE: …; vergalhões da linha de construção civil" reads as a yes; seen twice in the shadow
+ * rerun of 16/10. A citation with "..." is several pieces of the same passage, in order.
+ */
+export function citacaoInteira(trecho: string, citacao: string): string | null {
+  const pedacos = citacao.split(/\s*(?:\.{3}|…)\s*/).map(normalize).filter(Boolean);
+  if (!pedacos.length) return null;
+  const contem = (texto: string) => {
+    let desde = 0;
+    for (const pedaco of pedacos) {
+      const achou = texto.indexOf(pedaco, desde);
+      if (achou < 0) return false;
+      desde = achou + pedaco.length;
+    }
+    return true;
+  };
+  if (!contem(normalize(trecho))) return null;
+  const frases = frasesDe(trecho);
+  for (let tamanho = 1; tamanho <= frases.length; tamanho += 1) {
+    for (let inicio = 0; inicio + tamanho <= frases.length; inicio += 1) {
+      const janela = frases.slice(inicio, inicio + tamanho).join("");
+      if (contem(normalize(janela))) return janela.trim();
+    }
+  }
+  return trecho.trim();
+}
+
 const respostaArgs = z.object({ perguntaId: idDaPergunta, trechoId: z.string().min(1), citacao: z.string().trim().min(3) });
 const responderPergunta: Tool<z.infer<typeof respostaArgs>> = {
   name: "responder_pergunta",
@@ -230,8 +258,9 @@ const responderPergunta: Tool<z.infer<typeof respostaArgs>> = {
   execute(args, context) {
     const texto = context.ficha.trechosVistos[args.trechoId];
     if (!texto) throw new Error(`o trecho ${args.trechoId} não apareceu em nenhuma busca.`);
-    if (!normalize(texto).includes(normalize(args.citacao))) throw new Error(`a citação não está no trecho ${args.trechoId}. Copie as palavras exatas.`);
-    const nova = { trechoId: args.trechoId, citacao: args.citacao };
+    const inteira = citacaoInteira(texto, args.citacao);
+    if (!inteira) throw new Error(`a citação não está no trecho ${args.trechoId}. Copie as palavras exatas.`);
+    const nova = { trechoId: args.trechoId, citacao: inteira };
     // A second passage adds to the answer ("we supply it" and then the minimum, the weight) instead of replacing it.
     const ficha = {
       ...context.ficha,

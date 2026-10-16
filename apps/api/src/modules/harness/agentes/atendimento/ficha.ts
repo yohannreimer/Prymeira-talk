@@ -97,11 +97,13 @@ export function trechosDeFontes(fontes: Array<{ title: string; content: string |
   return trechos;
 }
 
+/** Sentences, ending at punctuation followed by a space: "6.000 mm" and "1,5" stay whole. Nothing is dropped. */
+export const frasesDe = (texto: string) => (texto.match(/[\s\S]+?(?:[.!?]+(?=\s|$)\s*|$)/g) ?? [texto]).filter((frase) => frase.length > 0);
+
 /** Long text into pieces of whole sentences. */
 function cortar(texto: string, tamanho: number): string[] {
   if (texto.length <= tamanho) return [texto];
-  // A sentence ends at punctuation followed by a space: "6.000 mm" and "1,5" stay whole.
-  const frases = texto.match(/[\s\S]+?(?:[.!?]+(?=\s|$)\s*|$)/g) ?? [texto];
+  const frases = frasesDe(texto);
   const pedacos: string[] = [];
   let atual = "";
   for (const frase of frases) {

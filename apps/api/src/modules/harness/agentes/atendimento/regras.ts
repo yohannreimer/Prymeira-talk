@@ -1,4 +1,4 @@
-import { citacoes } from "./jogadas.js";
+import { citacoes, RECUSA } from "./jogadas.js";
 import { findMoneyAmounts, findPercentages, sameAmount } from "../../core/dinheiro.js";
 import type { ReviewRule } from "../../core/types.js";
 import type { ContextoDoAtendimento, FichaDoAtendimento } from "./tipos.js";
@@ -55,7 +55,6 @@ const semPressao: Rule = {
 };
 
 const sem = (text: string) => text.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
-const RECUSA = /\bnao (fornece|fornecemos|fornecidas?|trabalhamos|atendemos|vendemos|fazemos)\b/;
 
 /**
  * A question answered by "não fornece" must be answered with a "no". Seen in the shadow run of 16/10: the
@@ -79,4 +78,15 @@ const naoPrometeAnexo: Rule = {
     : { ok: true }
 };
 
-export const regras: Rule[] = [naoRepete, semValorNovo, semPressao, naoInverteRecusa, naoPrometeAnexo];
+/** Notes the base marks as internal ("EA36 é anotação interna"): seen in a reply on the shadow rerun of 16/10. */
+const semTermoInterno: Rule = {
+  id: "sem_termo_interno",
+  check: ({ texto, pedido }) => {
+    const termo = (pedido.termosInternos ?? []).find((item) => new RegExp(`\\b${sem(item)}\\b`).test(sem(texto)));
+    return termo
+      ? { ok: false, regra: "sem_termo_interno", motivo: `A mensagem cita "${termo}", que é anotação interna da empresa. Não cite; diga que o vendedor confirma a especificação.` }
+      : { ok: true };
+  }
+};
+
+export const regras: Rule[] = [naoRepete, semValorNovo, semPressao, naoInverteRecusa, naoPrometeAnexo, semTermoInterno];

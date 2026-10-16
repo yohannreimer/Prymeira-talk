@@ -889,9 +889,9 @@ describe("ajustes da sombra de 16/10, segunda leva", () => {
     await responder.execute(responder.schema.parse({ perguntaId: "q1", trechoId: "t1", citacao: "sob encomenda" }), context());
     await responder.execute(responder.schema.parse({ perguntaId: "q1", trechoId: "t47", citacao: "Alumínio: aproximadamente 300 kg" }), context());
     expect(ficha.perguntas[0].resposta?.trechoId).toBe("t1");
-    expect(ficha.perguntas[0].maisRespostas).toEqual([{ trechoId: "t47", citacao: "Alumínio: aproximadamente 300 kg" }]);
+    expect(ficha.perguntas[0].maisRespostas).toEqual([{ trechoId: "t47", citacao: "Alumínio: aproximadamente 300 kg." }]);
     const jogada = decidirJogada({ ficha, pedido: contextoVillefer(), triagem: null, evento: { tipo: "mensagem", texto: "" } });
-    expect(jogada.instrucao).toMatch(/"sob encomenda" e "Alumínio: aproximadamente 300 kg"/);
+    expect(jogada.instrucao).toMatch(/"Chapa de piso de alumínio: sob encomenda\." e "Alumínio: aproximadamente 300 kg\."/);
     expect(jogada.instrucao).toMatch(/calculado pelo sistema: .*504 kg/);
   });
 
@@ -927,5 +927,23 @@ describe("ajustes da sombra de 16/10, segunda leva", () => {
     expect(result.anexos).toEqual([{ url: catalogoPdf.url, legenda: catalogoPdf.titulo, nomeArquivo: catalogoPdf.nomeArquivo, mimeType: catalogoPdf.mimeType }]);
     expect(result.ficha.anexosEnviados).toEqual(["catalogo"]);
     expect(result.ficha.anexosDaVez).toEqual([]);
+  });
+});
+
+describe("sombra de 16/10, segunda rodada", () => {
+  it("a citation keeps the 'não fornece' of its sentence, so the reply cannot turn it into a yes", async () => {
+    const { citacaoInteira } = await import("./agentes/atendimento/ferramentas.js");
+    const trecho = "Pedido misto: separar. NÃO FORNECE: chapas expandidas; ferragem armada e vergalhões da linha de construção civil; oxicorte ou material cortado. Termo ambíguo exige esclarecimento.";
+    expect(citacaoInteira(trecho, "vergalhões da linha de construção civil")).toBe("NÃO FORNECE: chapas expandidas; ferragem armada e vergalhões da linha de construção civil; oxicorte ou material cortado.");
+    expect(citacaoInteira(trecho, "NÃO FORNECE: ... material cortado")).toMatch(/^NÃO FORNECE/);
+    expect(citacaoInteira(trecho, "telhas")).toBeNull();
+  });
+
+  it("blocks internal notes of the base in a reply", async () => {
+    const { regras } = await import("./agentes/atendimento/regras.js");
+    const regra = regras.find((item) => item.id === "sem_termo_interno")!;
+    const base = { ficha: fichaInicialAtendimento(), jogada: { tipo: "responder", instrucao: "" }, historico: [] };
+    expect(regra.check({ ...base, pedido: contextoVillefer({ termosInternos: ["EA36"] }), texto: "Na informação disponível consta eA36, não 1045." } as never)).toMatchObject({ ok: false });
+    expect(regra.check({ ...base, pedido: contextoVillefer({ termosInternos: ["EA36"] }), texto: "O vendedor confirma o material com você." } as never)).toMatchObject({ ok: true });
   });
 });

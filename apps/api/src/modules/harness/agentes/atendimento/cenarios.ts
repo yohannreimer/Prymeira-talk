@@ -415,7 +415,9 @@ export const contextoDaBaseReal = (base: BaseDeConhecimento, catalogo?: Catalogo
   empresa: { nome: "Villefer", oQueVende: "Distribuidora de aço para indústria e caldeiraria: chapas e laminados (barras, cantoneiras, vigas, perfis), tubos e inox ou alumínio sob encomenda." },
   base,
   catalogo,
-  anexos
+  anexos,
+  // The base itself says EA36 is an internal note, never something to offer.
+  termosInternos: ["EA36"]
 });
 
 export function cenariosDaBaseReal(base: BaseDeConhecimento, catalogo?: Catalogo, anexos?: AnexoAprovado[]): Cenario[] {

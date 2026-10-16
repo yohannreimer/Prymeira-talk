@@ -84,4 +84,6 @@ export type ContextoDoAtendimento = {
   catalogo?: Catalogo;
   /** Files approved for sending, such as the PDF catalogue. */
   anexos?: AnexoAprovado[];
+  /** Internal notes of the base that never go to the contact ("EA36"). */
+  termosInternos?: string[];
 };
