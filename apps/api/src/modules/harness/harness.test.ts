@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { comprador } from "./agentes/comprador/index.js";
 import { cenarios, MELHOR_CONCORRENTE, pedidoBase, roteiro } from "./agentes/comprador/cenarios.js";
 import { fichaInicial, totalDaProposta } from "./agentes/comprador/ficha.js";
-import { decidirJogada } from "./agentes/comprador/jogadas.js";
+import { aposEnvio, aposTriagem, decidirJogada } from "./agentes/comprador/jogadas.js";
 import { createFakeComprador } from "./agentes/comprador/modelos-falsos.js";
 import type { FichaDoFornecedor } from "./agentes/comprador/tipos.js";
 import { findMoneyAmounts, formatBRL, parseBRNumber } from "./core/dinheiro.js";
@@ -74,6 +74,20 @@ describe("triagem por regras", () => {
 });
 
 describe("jogadas do comprador", () => {
+  it("treats a 'no' to the discount ask as no discount: the proposal still goes to the company", () => {
+    const recusa = { kind: "recusa" as const, fonte: "jev" as const, motivo: "não consigo baixar" };
+    const antes = fichaCom({ propostas: [propostaCompleta], etapa: "choradinha", versoesNaTriagem: 1, choradinhas: { usadas: 1, totalAntes: null } });
+    const ficha = aposTriagem({ ficha: antes, triagem: recusa });
+    expect(ficha.etapa).toBe("choradinha");
+    expect(ficha.semDesconto).toBe(true);
+    const jogada = decidirJogada({ ficha, pedido, triagem: recusa, evento: { tipo: "mensagem", texto: "não consigo baixar mais não" } });
+    expect(jogada.tipo).toBe("fechar_rodada");
+    expect(aposEnvio({ ficha, jogada, texto: "ok" }).etapa).toBe("aguardando_empresa");
+  });
+  it("still treats a refusal before any proposal as declining to quote", () => {
+    const ficha = aposTriagem({ ficha: fichaCom({ etapa: "conversando" }), triagem: { kind: "recusa", fonte: "jev", motivo: "não trabalhamos" } });
+    expect(ficha.etapa).toBe("declinou");
+  });
   it("asks for what is missing in one move", () => {
     const ficha = fichaCom({ propostas: [{ ...propostaCompleta, frete: null, pagamento: null }] });
     const jogada = decidirJogada({ ficha, pedido, triagem: { kind: "humano", fonte: "regras", motivo: "" }, evento: { tipo: "mensagem", texto: "x" } });
@@ -540,6 +554,12 @@ describe("ajustes da rodada de 16/10 com Luna e JEV", () => {
     expect(conferirLeitura({ ficha, mensagem: "aceita boleto 28 dias?" })).toMatch(/pagamento/);
     expect(conferirLeitura({ ficha: fichaInicialAtendimento(), mensagem: "vcs entregam em jaraguá?" })).toMatch(/registrar_pergunta/);
     expect(conferirLeitura({ ficha: fichaInicialAtendimento(), mensagem: "beleza, obrigado" })).toBeNull();
+    const inox: FichaDoAtendimento = {
+      ...fichaInicialAtendimento(),
+      perguntas: [{ id: "q1", texto: "tem barra redonda de inox 316 de 2 polegadas?", status: "sem_base", resposta: null, buscas: 1 }],
+      trechosVistos: { chapas: "Chapas de aço carbono laminadas a frio e a quente.", linha: "Não trabalhamos com aço inox nem com alumínio." }
+    };
+    expect(conferirLeitura({ ficha: inox, mensagem: "tem barra redonda de inox 316 de 2 polegadas?" })).toMatch(/linha/);
 
     let rodada = 0;
     const leitor = createScriptedModel("leitor", () => {

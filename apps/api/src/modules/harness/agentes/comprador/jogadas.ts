@@ -36,7 +36,7 @@ export function decidirJogada(input: {
   // A person from the company took over, or the conversation is closed.
   if (ficha.etapa === "humano" || ficha.etapa === "encerrado") return { tipo: "conversa_fechada", instrucao: "", silencio: true };
   if (triagem?.kind === "robo") return { tipo: "aguardar_pessoa", instrucao: "", silencio: true };
-  if (ficha.etapa === "declinou" || triagem?.kind === "recusa") {
+  if (ficha.etapa === "declinou" || (triagem?.kind === "recusa" && !recusaODesconto(ficha))) {
     return {
       tipo: "agradecer_recusa",
       instrucao: "O fornecedor não vai cotar. Agradeça em uma frase, sem insistir e sem nova pergunta."
@@ -148,11 +148,16 @@ function withExtras(jogada: Jogada, extras: string[]): Jogada {
   return extras.length ? { ...jogada, instrucao: `${extras.join(" ")} ${jogada.instrucao}` } : jogada;
 }
 
+/** During the discount ask, a "no" is about the price, not about quoting. */
+const recusaODesconto = (ficha: FichaDoFornecedor) => ficha.etapa === "choradinha" && ficha.propostas.length > 0;
+
 /** Keeps the record in step with what was actually sent. */
 export function aposTriagem(input: { ficha: FichaDoFornecedor; triagem: TriageResult }): FichaDoFornecedor {
   const { triagem } = input;
   const ficha = { ...input.ficha, versoesNaTriagem: input.ficha.propostas.length };
   if (triagem.kind === "robo") return { ...ficha, contato: { ...ficha.contato, ehRobo: true } };
+  // "Não consigo baixar" after the discount ask turns down the discount, not the quote: the proposal stands.
+  if (triagem.kind === "recusa" && recusaODesconto(ficha)) return { ...ficha, contato: { ...ficha.contato, humanoConfirmado: true }, semDesconto: true };
   if (triagem.kind === "recusa" && !["encerrado", "humano"].includes(ficha.etapa)) return { ...ficha, etapa: "declinou", motivoRecusa: triagem.motivo };
   const contato = { ...ficha.contato, humanoConfirmado: true };
   return { ...ficha, contato, etapa: ficha.etapa === "abordado" || ficha.etapa === "nao_iniciado" ? "conversando" : ficha.etapa };

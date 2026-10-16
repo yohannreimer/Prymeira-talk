@@ -172,7 +172,10 @@ const registrarPergunta: Tool<z.infer<typeof perguntaArgs>> = {
   }
 };
 
-const buscaArgs = z.object({ perguntaId: z.string().min(1), consulta: z.string().trim().min(2).max(200) });
+/** The model sometimes writes "1" for "q1"; both mean the same registered question. */
+const idDaPergunta = z.string().trim().min(1).transform((id) => (/^\d+$/.test(id) ? `q${id}` : id));
+
+const buscaArgs = z.object({ perguntaId: idDaPergunta, consulta: z.string().trim().min(2).max(200) });
 const buscarNaBase: Tool<z.infer<typeof buscaArgs>> = {
   name: "buscar_na_base",
   description: "Procura a resposta de uma pergunta nos documentos aprovados da empresa (catálogo, políticas, perguntas frequentes). Pode buscar mais de uma vez com palavras diferentes.",
@@ -198,7 +201,7 @@ const buscarNaBase: Tool<z.infer<typeof buscaArgs>> = {
   }
 };
 
-const respostaArgs = z.object({ perguntaId: z.string().min(1), trechoId: z.string().min(1), citacao: z.string().trim().min(3) });
+const respostaArgs = z.object({ perguntaId: idDaPergunta, trechoId: z.string().min(1), citacao: z.string().trim().min(3) });
 const responderPergunta: Tool<z.infer<typeof respostaArgs>> = {
   name: "responder_pergunta",
   description: "Marca a pergunta como respondida pela base, citando as palavras EXATAS do trecho que responde. Use só quando o trecho responde de verdade o que foi perguntado.",
@@ -224,7 +227,7 @@ const responderPergunta: Tool<z.infer<typeof respostaArgs>> = {
   }
 };
 
-const semBaseArgs = z.object({ perguntaId: z.string().min(1) });
+const semBaseArgs = z.object({ perguntaId: idDaPergunta });
 const marcarSemBase: Tool<z.infer<typeof semBaseArgs>> = {
   name: "marcar_sem_base",
   description: "Marca que os documentos não respondem a pergunta. Só depois de buscar. Uma pessoa da empresa vai responder essa parte.",
@@ -265,6 +268,8 @@ const ASSUNTO_DO_NEGOCIO = /\b(preco|precos|valor|quanto|custa|estoque|tem|temos
  * After the reader: a question left unregistered, open, or called unanswerable while a passage it saw
  * shares its key words gets one more look. Seen in the 16/10 runs (boleto 28 dias, prazo para Jaraguá).
  */
+const NEGA_LINHA = /\bn[aã]o (trabalhamos|temos|vendemos|fazemos|fabricamos|atendemos|entregamos|aceitamos|oferecemos)\b/;
+
 export function conferirLeitura({ ficha, mensagem }: { ficha: FichaDoAtendimento; mensagem: string }): string | null {
   const atuais = ficha.perguntas.filter((item) => item.status !== "tratada");
   if (atuais.length === 0) {
@@ -278,7 +283,11 @@ export function conferirLeitura({ ficha, mensagem }: { ficha: FichaDoAtendimento
   for (const pergunta of atuais.filter((item) => item.status === "sem_base")) {
     const chaves = palavras(pergunta.texto);
     const parecidos = Object.entries(ficha.trechosVistos)
-      .filter(([, texto]) => [...palavras(texto)].filter((word) => chaves.has(word)).length >= 2)
+      .filter(([, texto]) => {
+        const comuns = [...palavras(texto)].filter((word) => chaves.has(word)).length;
+        // "Não trabalhamos com inox" answers "tem barra de inox?" with a single word in common.
+        return comuns >= 2 || (comuns >= 1 && NEGA_LINHA.test(normalize(texto)));
+      })
       .map(([id]) => id);
     if (parecidos.length) {
       return `você marcou ${pergunta.id} sem base, mas o trecho ${parecidos.join(", ")} fala do mesmo assunto. Releia: se ele responde (inclusive por faixa, lista ou regra geral), use responder_pergunta com as palavras exatas. Se não responde mesmo, não chame nada.`;

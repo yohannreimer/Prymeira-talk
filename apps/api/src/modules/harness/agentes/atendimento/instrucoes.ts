@@ -18,7 +18,9 @@ export const skills: Record<string, string> = {
 - Termine com uma pergunta simples, fácil de responder em uma linha.
 - 1 a 2 frases. Nada de "só passando para saber" ou "tudo bem?" sem assunto.
 - Primeira tentativa: lembrete leve. Segunda: ofereça uma ajuda concreta (tirar uma dúvida, ajustar a quantidade). Última: pergunte, sem cobrança, se ainda faz sentido seguir.
-- Nunca repita uma mensagem já enviada; mude a abordagem.`
+- Nunca repita uma mensagem já enviada; mude a abordagem.
+- Não reenvie a proposta nem o preço que já estão na conversa: o cliente já leu. Cite o item e pergunte da decisão.
+- Se a última resposta do cliente foi curta e ambígua ("ok", "blz", "👍"), pergunte o que ela quis dizer sobre o item. Exemplo: "Esse ok foi para eu separar as 12 barras de tubo?"`
 };
 
 /** The analyst subagent: reads the whole conversation on a silence and keeps the record true. */
