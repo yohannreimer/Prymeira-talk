@@ -743,6 +743,16 @@ describe("catálogo de medidas e pesos", () => {
     expect(catalogo.buscar("tubo de 2 polegadas")[0].id).toMatch(/^tubo-/);
   });
 
+  it("reads the real Villefer tables: metalon, gauges, inches and a sheet in mm", async () => {
+    const { catalogoEmMemoria } = await import("./agentes/atendimento/catalogo.js");
+    const { readFileSync } = await import("node:fs");
+    const catalogo = catalogoEmMemoria(JSON.parse(readFileSync(new URL("./agentes/atendimento/dados/catalogo-villefer.json", import.meta.url), "utf8")));
+    expect(catalogo.buscar("metalon 40x40 parede 1,5")[0]).toMatchObject({ descricao: expect.stringMatching(/40x40.*parede 1,5 mm/), kgPorMetro: 1.82 });
+    expect(catalogo.buscar("metalon 40x40 chapa 18")[0].descricao).toMatch(/40x40.*parede 1,2 mm/);
+    expect(catalogo.buscar("cantoneira 2 x 1/4")[0].descricao).toMatch(/cantoneira abas iguais 2" x 1\/4"/);
+    expect(catalogo.buscar("chapa 6,35 mm")[0].familia).toBe("chapa");
+  });
+
   it("computes the weight in code and keeps it as a citable source", async () => {
     const { catalogoEmMemoria } = await import("./agentes/atendimento/catalogo.js");
     const { ferramentasDeLeitura } = await import("./agentes/atendimento/ferramentas.js");

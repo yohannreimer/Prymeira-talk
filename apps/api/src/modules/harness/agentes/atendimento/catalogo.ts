@@ -16,6 +16,8 @@ export type LinhaDoCatalogo = {
   descricao: string;
   kgPorMetro: number | null;
   kgPorMetroQuadrado: number | null;
+  /** The table's own dimension fields; "bitolaMsg" on sheets lets "chapa 18" mean 1,2 mm. */
+  medidas?: Record<string, unknown>;
   nota?: string | null;
 };
 
@@ -49,7 +51,7 @@ function tokens(text: string): { palavras: Set<string>; numeros: Set<string> } {
   }
   const numeros = new Set<string>();
   // Inches as written in the tables (2", 1.1/2") or by customers ("2 polegadas"); kept apart from mm.
-  const POLEGADA = /\d+(?:\.\d+\/\d+|\/\d+)?\s*(?:"|”|polegadas?|pol\b)/g;
+  const POLEGADA = /\d+(?:\.\d+\/\d+|\/\d+)?\s*(?:"|”|polegadas?|pol\b)|\d+(?:\.\d+)?\/\d+/g;
   for (const polegada of texto.match(POLEGADA) ?? []) numeros.add(`${polegada.match(/[\d./]+/)![0]}"`);
   const semPolegadas = texto.replace(POLEGADA, " ");
   for (const medida of semPolegadas.match(/\d+(?:[.,]\d+)?(?:\s*x\s*\d+(?:[.,]\d+)?)+/g) ?? []) numeros.add(medida.replace(/\s/g, "").replace(/,/g, "."));
@@ -57,16 +59,43 @@ function tokens(text: string): { palavras: Set<string>; numeros: Set<string> } {
   return { palavras, numeros };
 }
 
-/** In-memory search: sizes weigh more than words, since every row of a family shares its words. */
+/** 6,35 mm written by a customer is the 6,3 mm of the table: plain numbers within 2% are the same size. */
+function perto(a: string, b: string): boolean {
+  const x = Number(a);
+  const y = Number(b);
+  return Number.isFinite(x) && Number.isFinite(y) && x > 0 && Math.abs(x - y) / Math.max(x, y) <= 0.02;
+}
+
+/** Family words a customer may write first; "metalon" is a tube, "tarugo" a bar. */
+const FAMILIAS: Record<string, string> = { tubo: "tubo", metalon: "tubo", chapa: "chapa", cantoneira: "cantoneira", barra: "barra", tarugo: "barra", vergalhao: "barra", viga: "viga", perfil: "perfil", w: "perfil w" };
+/** "#18", "chapa 18", "bitola 18", "18 msg": a sheet gauge, i.e. a wall or sheet thickness. */
+const BITOLA = /(?:#\s*|\b(?:chapa|bitola|msg|ch)\s+)(\d{1,2})\b(?!\s*(?:mm|x|[.,]\d))|\b(\d{1,2})\s*msg\b/g;
+
+/**
+ * In-memory search: sizes weigh more than words, since every row of a family shares its words. A family
+ * the customer names ("chapa 6,35", "cantoneira") narrows the search to it, and a gauge becomes millimetres.
+ */
 export function catalogoEmMemoria(linhas: LinhaDoCatalogo[], limite = 8): Catalogo {
   const indice = linhas.map((linha) => ({ linha, ...tokens(`${linha.familia} ${linha.material.join(" ")} ${linha.descricao}`) }));
   const porId = new Map(linhas.map((linha) => [linha.id, linha]));
+  const bitolas = new Map<number, number[]>();
+  for (const linha of linhas) {
+    const bitola = Number(linha.medidas?.bitolaMsg);
+    const espessura = Number(linha.medidas?.espessuraMm);
+    if (bitola && espessura) bitolas.set(bitola, [...new Set([...(bitolas.get(bitola) ?? []), espessura])]);
+  }
   return {
     buscar(consulta) {
-      const busca = tokens(consulta);
-      return indice
+      const texto = normalize(consulta).replace(BITOLA, (_, a: string | undefined, b: string | undefined) => {
+        const mm = bitolas.get(Number(a ?? b));
+        return mm ? ` ${mm.map((valor) => String(valor).replace(".", ",")).join(" ")} mm ` : " ";
+      });
+      const busca = tokens(texto.replace(/(\d+(?:\.\d+\/\d+)?)\s*x\s*(\d+\/\d+)/g, '$1" x $2"'));
+      const familias = [...busca.palavras].map((palavra) => FAMILIAS[palavra]).filter(Boolean);
+      const daFamilia = familias.length ? indice.filter((item) => familias.some((familia) => item.linha.familia.startsWith(familia) || (familia === "viga" && item.linha.familia === "perfil w"))) : indice;
+      return (daFamilia.length ? daFamilia : indice)
         .map((item) => {
-          const numeros = [...busca.numeros].filter((numero) => item.numeros.has(numero)).length;
+          const numeros = [...busca.numeros].filter((numero) => item.numeros.has(numero) || [...item.numeros].some((outro) => perto(numero, outro))).length;
           const palavras = [...busca.palavras].filter((palavra) => item.palavras.has(palavra)).length;
           return { linha: item.linha, numeros, score: numeros * 3 + palavras };
         })
