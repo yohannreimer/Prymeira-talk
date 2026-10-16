@@ -6,6 +6,7 @@ import { resolveOpenAiCompatibleSettings } from "../src/modules/agents/ai-provid
 import { atendimento } from "../src/modules/harness/agentes/atendimento/index.js";
 import { cenarios as cenariosAtendimento, cenariosAoVivo, cenariosDaBaseReal, cenariosDeCasos } from "../src/modules/harness/agentes/atendimento/cenarios.js";
 import { baseCompleta, trechosDeFontes } from "../src/modules/harness/agentes/atendimento/ficha.js";
+import { catalogoEmMemoria, type LinhaDoCatalogo } from "../src/modules/harness/agentes/atendimento/catalogo.js";
 import { aplicarPropostaVillefer } from "../src/modules/harness/agentes/atendimento/proposta-villefer.js";
 import { createJuizDeFollowup } from "../src/modules/harness/agentes/atendimento/juiz.js";
 import { cenarios } from "../src/modules/harness/agentes/comprador/cenarios.js";
@@ -42,6 +43,7 @@ config({ path: resolve(import.meta.dirname, "../../../.env") });
 //   JEV_API_KEY: JEV does the triage and judges each message (fails closed when JEV is down)
 //   HARNESS_BASE_FONTES=conversas-base.jsonl (atendimento): adds the questions the old agent handed over although
 //     the real base answers them, run against that base. HARNESS_BASE_AGENTE=<agentId> picks one agent's sources.
+//     HARNESS_CATALOGO=villefer adds the product tables (sizes and kg/m) as a tool.
 //     HARNESS_BASE_PROPOSTA=1 applies the new minimums and delivery cities (proposta-villefer.ts) on top.
 //   HARNESS_REASONING_ANALISTA (default high): reasoning of the analyst subagent (atendimento)
 
@@ -101,7 +103,7 @@ async function runAtendimento() {
     ? cenariosDeCasos((await readFile(resolve(process.env.HARNESS_CASOS), "utf8")).split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line)))
     : [];
   const baseReal = process.env.HARNESS_BASE_FONTES ? await carregarBaseReal(process.env.HARNESS_BASE_FONTES) : null;
-  const scenarios = [...cenariosAoVivo, ...cenariosAtendimento, ...casos, ...(baseReal ? cenariosDaBaseReal(baseReal) : [])].filter((scenario) => !wanted.length || wanted.includes(scenario.id));
+  const scenarios = [...cenariosAoVivo, ...cenariosAtendimento, ...casos, ...(baseReal ? cenariosDaBaseReal(baseReal, await carregarCatalogo()) : [])].filter((scenario) => !wanted.length || wanted.includes(scenario.id));
   if (process.env.HARNESS_OFFLINE === "1") throw new Error("Os cenários de atendimento precisam de modelo: use HARNESS_WORKSPACE_ID ou HARNESS_BASE_URL.");
   const endpoint = await resolveEndpoint();
   const mode = readMode();
@@ -182,6 +184,16 @@ async function carregarBaseReal(caminho: string) {
   const caracteres = trechos.reduce((soma, trecho) => soma + trecho.titulo.length + trecho.texto.length, 0);
   console.error(`Base real: agente ${agente}, ${doAgente.length} fontes, ${trechos.length} trechos, ${caracteres} caracteres, ${base.todos ? "lida inteira" : "por busca"}${proposta ? ", com a proposta de mínimos e região" : ""}.`);
   return base;
+}
+
+/** HARNESS_CATALOGO=villefer (the tables extracted from its PDF catalogue) or a path to the same JSON format. */
+async function carregarCatalogo() {
+  const origem = process.env.HARNESS_CATALOGO;
+  if (!origem) return undefined;
+  const caminho = origem === "villefer" ? resolve(import.meta.dirname, "../src/modules/harness/agentes/atendimento/dados/catalogo-villefer.json") : resolve(origem);
+  const linhas: LinhaDoCatalogo[] = JSON.parse(await readFile(caminho, "utf8"));
+  console.error(`Catálogo: ${linhas.length} linhas de ${caminho}.`);
+  return catalogoEmMemoria(linhas);
 }
 
 /** Collects every run for HARNESS_LINHA_DO_TEMPO and writes the page at the end. */

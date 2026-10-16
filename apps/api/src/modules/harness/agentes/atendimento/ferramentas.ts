@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { HarnessMessage, HarnessTool } from "../../core/types.js";
+import { ferramentasDoCatalogo } from "./catalogo.js";
 import { renderFicha } from "./ficha.js";
 import type { ContextoDoAtendimento, FichaDoAtendimento, Prova } from "./tipos.js";
 
@@ -268,7 +269,7 @@ const pediuPessoa: Tool<Record<string, never>> = {
   }
 };
 
-export const ferramentasDeLeitura = [registrarPergunta, buscarNaBase, responderPergunta, marcarSemBase, pediuPessoa];
+export const ferramentasDeLeitura = [registrarPergunta, buscarNaBase, ...ferramentasDoCatalogo, responderPergunta, marcarSemBase, pediuPessoa];
 
 const PALAVRAS_VAZIAS = new Set(["voces", "vcs", "tem", "qual", "quais", "para", "pra", "com", "que", "uma", "um", "dos", "das", "aceita", "aceitam", "fazem", "faz"]);
 const palavras = (text: string) => new Set((normalize(text).match(/[a-z0-9,]{3,}/g) ?? []).filter((word) => !PALAVRAS_VAZIAS.has(word)));

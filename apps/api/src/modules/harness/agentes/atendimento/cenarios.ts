@@ -2,6 +2,7 @@ import type { HarnessMessage } from "../../core/types.js";
 import type { Check, Scenario, ScenarioRun } from "../../simulador/simulador.js";
 import { semelhanca } from "./regras.js";
 import { baseEmMemoria } from "./ficha.js";
+import type { Catalogo } from "./catalogo.js";
 import type { BaseDeConhecimento, ContextoDoAtendimento, FichaDoAtendimento, TrechoDaBase } from "./tipos.js";
 
 type Cenario = Scenario<FichaDoAtendimento, ContextoDoAtendimento>;
@@ -409,10 +410,11 @@ const NEGA = /n[aã]o (fornecemos|trabalhamos|vendemos|fazemos|atendemos|temos)/
  * base answers them (minimum order, what it does not supply). Run with the base exported from production
  * (HARNESS_BASE_FONTES): a hand-over here is the failure we are measuring.
  */
-export function cenariosDaBaseReal(base: BaseDeConhecimento): Cenario[] {
+export function cenariosDaBaseReal(base: BaseDeConhecimento, catalogo?: Catalogo): Cenario[] {
   const pedido = contextoVillefer({
     empresa: { nome: "Villefer", oQueVende: "Distribuidora de aço para indústria e caldeiraria: chapas e laminados (barras, cantoneiras, vigas, perfis), tubos e inox ou alumínio sob encomenda." },
-    base
+    base,
+    catalogo
   });
   const caso = (id: string, titulo: string, mensagens: string[], fala?: RegExp, espera: Parameters<typeof respostaAoVivo>[0] = { humano: false, fala }): Cenario => ({
     id: `base_real_${id}`,
@@ -440,6 +442,8 @@ export function cenariosDaBaseReal(base: BaseDeConhecimento): Cenario[] {
     caso("regiao_joinville", "Entrega em Joinville: confirma, não passa", ["vcs entregam em joinville?"], /sim|entregamos|atendemos/i),
     caso("regiao_pomerode", "Entrega em Pomerode: confirma, não passa", ["sou de pomerode, vcs atendem aqui?"], /sim|entregamos|atendemos/i),
     caso("regiao_bahia", "Entrega na Bahia: diz que não atendem, não passa", ["vcs entregam em salvador bahia?"], NEGA),
+    // This one needs the catalogue (HARNESS_CATALOGO): 10 × 6 m × 1,82 kg/m is about 109 kg, far from 1.000 kg.
+    caso("metalon_peso", "10 barras de metalon 40x40: calcula uns 109 kg e diz o mínimo de 1.000 kg", ["quero 10 barras de metalon 40x40 parede 1,5 de 6 metros, da pra fazer?"], undefined, { humano: false, fala: /1[01]\d ?(kg|quilos)/i }),
     caso("regiao_lages", "Cidade fora da lista: não promete nem recusa, o vendedor confirma", ["entregam em lages?"], undefined, { fala: /vendedor/i, naoFala: new RegExp(`^sim|${NEGA.source}`, "i") })
   ];
 }

@@ -1,3 +1,4 @@
+import type { Catalogo } from "./catalogo.js";
 /** Where a finding comes from: the message number in the numbered conversation and the exact words. */
 export type Prova = { mensagem: number; trecho: string };
 
@@ -68,4 +69,6 @@ export type ContextoDoAtendimento = {
   regrasDaEmpresa?: string;
   /** The approved knowledge. Without it every question ends up with a person. */
   base?: BaseDeConhecimento;
+  /** Product tables (sizes, theoretical weights), consulted by a tool. What is supplied is still the base. */
+  catalogo?: Catalogo;
 };

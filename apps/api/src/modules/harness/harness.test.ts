@@ -726,3 +726,34 @@ describe("proposta de mínimos e região da Villefer", () => {
     expect(naoEncontradas).toHaveLength(3);
   });
 });
+
+describe("catálogo de medidas e pesos", () => {
+  const linhas = [
+    { id: "tubo-1", familia: "tubo industrial", material: ["aço carbono"], descricao: "tubo redondo 2\" (50,8 mm) · quadrado 40x40 · retangular 50x30 · parede 1,50 mm (FF)", kgPorMetro: 1.82, kgPorMetroQuadrado: null },
+    { id: "tubo-2", familia: "tubo industrial", material: ["aço carbono"], descricao: "tubo redondo 2\" (50,8 mm) · quadrado 40x40 · retangular 50x30 · parede 2,00 mm (FQ)", kgPorMetro: 2.41, kgPorMetroQuadrado: null },
+    { id: "chapa-1", familia: "chapa", material: ["aço carbono"], descricao: "chapa bitola MSG 14 · 1,90 mm", kgPorMetro: null, kgPorMetroQuadrado: 15.2 }
+  ];
+
+  it("finds the size a customer writes, with synonyms, sizes weighing more than words", async () => {
+    const { catalogoEmMemoria } = await import("./agentes/atendimento/catalogo.js");
+    const catalogo = catalogoEmMemoria(linhas);
+    expect(catalogo.buscar("metalon 40x40 parede 1,5")[0].id).toBe("tubo-1");
+    expect(catalogo.buscar("metalon 40 x 40 #2.00")[0].id).toBe("tubo-2");
+    expect(catalogo.buscar("viga 300")).toEqual([]);
+    expect(catalogo.buscar("tubo de 2 polegadas")[0].id).toMatch(/^tubo-/);
+  });
+
+  it("computes the weight in code and keeps it as a citable source", async () => {
+    const { catalogoEmMemoria } = await import("./agentes/atendimento/catalogo.js");
+    const { ferramentasDeLeitura } = await import("./agentes/atendimento/ferramentas.js");
+    const consultar = ferramentasDeLeitura.find((tool) => tool.name === "consultar_catalogo")!;
+    const calcular = ferramentasDeLeitura.find((tool) => tool.name === "calcular_peso")!;
+    let ficha = fichaInicialAtendimento();
+    const context = () => ({ ficha, pedido: contextoVillefer({ catalogo: catalogoEmMemoria(linhas) }), setFicha: (next: typeof ficha) => { ficha = next; }, mensagemAtual: "", historico: [] });
+    expect(await consultar.execute({ consulta: "metalon 40x40 1,5" } as never, context() as never)).toMatch(/\[tubo-1\].*1,82 kg\/m/);
+    expect(await calcular.execute({ linhaId: "tubo-1", pecas: 4, comprimentoM: 4, larguraM: null } as never, context() as never)).toMatch(/\[peso1\].*aproximadamente 29,1 kg/);
+    expect(ficha.trechosVistos.peso1).toMatch(/4 × 4 m × 1,82 kg\/m/);
+    expect(() => calcular.execute({ linhaId: "chapa-1", pecas: 2, comprimentoM: 3, larguraM: null } as never, context() as never)).toThrow(/larguraM/);
+    expect(await calcular.execute({ linhaId: "chapa-1", pecas: 2, comprimentoM: 3, larguraM: 1.2 } as never, context() as never)).toMatch(/aproximadamente 109,4 kg/);
+  });
+});
