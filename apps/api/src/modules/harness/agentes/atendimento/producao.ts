@@ -1,4 +1,4 @@
-import { createJevJudge } from "../../core/review.js";
+import { createJevJudge, type Judge } from "../../core/review.js";
 import { runTurn } from "../../core/runner.js";
 import type { JevClient } from "../../core/jev.js";
 import type { OpenAiCompatibleSettings } from "../../../agents/ai-provider-settings.js";
@@ -8,6 +8,7 @@ import type { HarnessMessage, TraceStep } from "../../core/types.js";
 import { catalogoEmMemoria, type Catalogo, type LinhaDoCatalogo } from "./catalogo.js";
 import { baseCompleta, fichaInicial, trechosDeFontes } from "./ficha.js";
 import { atendimento } from "./index.js";
+import { createJuizDeFollowup } from "./juiz.js";
 import { aplicarPropostaVillefer } from "./proposta-villefer.js";
 import type { AnexoAprovado, ContextoDoAtendimento, FichaDoAtendimento } from "./tipos.js";
 
@@ -62,6 +63,12 @@ export const harnessNoCanal = (config: HarnessConfig | null, channelId: string |
 export function modeloDoHarness(settings: OpenAiCompatibleSettings, modelo?: string): ModelClient | null {
   if (!settings.active) return null;
   return createOpenAiCompatibleModel({ baseUrl: settings.baseUrl, apiKey: settings.apiKey, model: modelo ?? settings.chatModel, mode: "json", reasoningEffort: "low" });
+}
+
+/** The follow-up analyst reads the whole conversation: more reasoning, and JSON mode, where Luna takes tools with reasoning. */
+export function modeloDoAnalista(settings: OpenAiCompatibleSettings, modelo?: string): ModelClient | null {
+  if (!settings.active) return null;
+  return createOpenAiCompatibleModel({ baseUrl: settings.baseUrl, apiKey: settings.apiKey, model: modelo ?? settings.chatModel, mode: "json", reasoningEffort: "high", maxCompletionTokens: 16_000 });
 }
 
 /** Who sent a stored message: the contact, the AI agent or the company's automations, or a seller. */
@@ -204,6 +211,50 @@ export async function responderComHarness(input: {
     jogada: resultado.jogada?.tipo ?? null,
     trace: resultado.trace
   };
+}
+
+export type FollowupDoHarness =
+  | { tipo: "nada"; jogada: string; motivo: string; ficha: FichaDoAtendimento; trace: TraceStep[] }
+  | { tipo: "lembrete_vendedor"; jogada: string; motivo: string; resumo: string; ficha: FichaDoAtendimento; trace: TraceStep[] }
+  | { tipo: "mensagem"; jogada: string; texto: string; ficha: FichaDoAtendimento; trace: TraceStep[] };
+
+/**
+ * One follow-up of a quiet conversation: the analyst subagent reads the whole conversation and brings the
+ * record up to date, code picks the move (chase the contact, remind the seller, or stay quiet), the writer
+ * writes and the "is it worth sending?" judge reviews. Timing and delivery stay with the follow-up engine.
+ */
+export async function seguirComHarness(input: {
+  config: HarnessConfig;
+  model: ModelClient;
+  analista: ModelClient;
+  jev?: JevClient;
+  fontes: FonteDaBase[];
+  mensagens: MensagemDaConversa[];
+  sessionMetadata: unknown;
+  agora: Date;
+}): Promise<FollowupDoHarness> {
+  const pedido = await contextoDeProducao(input.config, input.fontes.map((fonte) => ({ ...fonte, fileUrl: null })));
+  const historico: HarnessMessage[] = input.mensagens
+    .filter((mensagem) => mensagem.autor !== "sistema")
+    .map((mensagem) => ({ autor: mensagem.autor, texto: mensagem.texto?.trim() || SEM_TEXTO[mensagem.tipo ?? ""] || `[${mensagem.tipo ?? "mensagem"}]`, em: mensagem.em ?? input.agora.toISOString() }));
+  const ultima = historico.at(-1)?.em;
+  const horasSemResposta = ultima ? Math.max(0, (input.agora.getTime() - Date.parse(ultima)) / 3_600_000) : 0;
+  const judge: Judge | undefined = input.jev ? createJuizDeFollowup(input.jev) : undefined;
+  const resultado = await runTurn(atendimento, {
+    model: input.model,
+    analista: input.analista,
+    ...(judge ? { judge, judgeFailClosed: true } : {})
+  }, { ficha: fichaSalva(input.sessionMetadata), pedido, historico, evento: { tipo: "silencio", horasSemResposta } });
+  const jogada = resultado.jogada?.tipo ?? "nada";
+  const base = { jogada, ficha: resultado.ficha, trace: resultado.trace };
+  if (resultado.enviar) return { ...base, tipo: "mensagem", texto: resultado.enviar };
+  if (resultado.humano) return { ...base, tipo: "lembrete_vendedor", motivo: resultado.humano.motivo, resumo: resultado.humano.resumo };
+  return { ...base, tipo: "nada", motivo: resultado.jogada?.instrucao ?? "sem jogada" };
+}
+
+/** The session metadata with the harness record, keeping what other services store there (the handoff brief). */
+export function metadataComFicha(metadata: unknown, ficha: FichaDoAtendimento) {
+  return { ...(isObject(metadata) ? metadata : {}), harness: { ficha, atualizadoEm: new Date().toISOString() } };
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {

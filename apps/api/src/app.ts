@@ -574,7 +574,8 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
           replyPreflight,
           outbound: followupOutbound,
           publisher: followupPublisher,
-          followupBrain
+          followupBrain,
+          harness: { jev: harnessJev }
         });
   const conversationFollowupScheduler = followupService
     ? createConversationFollowupScheduler({
