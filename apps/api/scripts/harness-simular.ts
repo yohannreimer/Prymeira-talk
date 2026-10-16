@@ -8,6 +8,9 @@ import { cenarios as cenariosAtendimento, cenariosAoVivo, cenariosDeCasos } from
 import { createJuizDeFollowup } from "../src/modules/harness/agentes/atendimento/juiz.js";
 import { cenarios } from "../src/modules/harness/agentes/comprador/cenarios.js";
 import { comprador } from "../src/modules/harness/agentes/comprador/index.js";
+import { cenarios as cenariosProspeccao } from "../src/modules/harness/agentes/prospeccao/cenarios.js";
+import { prospeccao } from "../src/modules/harness/agentes/prospeccao/index.js";
+import { createFakeProspeccao } from "../src/modules/harness/agentes/prospeccao/modelos-falsos.js";
 import { createFakeComprador } from "../src/modules/harness/agentes/comprador/modelos-falsos.js";
 import { createJevClient } from "../src/modules/harness/core/jev.js";
 import { createOpenAiCompatibleModel, type ModelClient } from "../src/modules/harness/core/model.js";
@@ -19,7 +22,7 @@ import { renderReport, runSuite } from "../src/modules/harness/simulador/simulad
 config({ path: resolve(import.meta.dirname, "../../../.env") });
 
 // Runs an agent against its scenarios and prints the scorecard (pass^k).
-// HARNESS_AGENTE=comprador (default) or atendimento (live replies with the knowledge base, and follow-up on silence; HARNESS_CASOS=cases.jsonl adds
+// HARNESS_AGENTE=comprador (default), prospeccao (João, the 13/10 conversations) or atendimento (live replies with the knowledge base, and follow-up on silence; HARNESS_CASOS=cases.jsonl adds
 // labeled real conversations in the evaluate-followup-brain format).
 // Nothing is sent to WhatsApp and nothing is written to the database.
 //
@@ -36,6 +39,7 @@ config({ path: resolve(import.meta.dirname, "../../../.env") });
 
 async function main() {
   if (process.env.HARNESS_AGENTE === "atendimento") return runAtendimento();
+  if (process.env.HARNESS_AGENTE === "prospeccao") return runProspeccao();
   const k = Number(process.env.HARNESS_K ?? 4);
   const wanted = (process.env.HARNESS_CENARIOS ?? "").split(",").map((id) => id.trim()).filter(Boolean);
   const offline = process.env.HARNESS_OFFLINE === "1";
@@ -111,6 +115,32 @@ async function runAtendimento() {
     k,
     onProgress: (line) => console.error(line)
   });
+  const markdown = renderReport(report);
+  if (process.env.HARNESS_RELATORIO) await writeFile(resolve(process.env.HARNESS_RELATORIO), markdown);
+  console.log(markdown);
+  if (report.passK < 1) process.exitCode = 1;
+}
+
+async function runProspeccao() {
+  const k = Number(process.env.HARNESS_K ?? 4);
+  const wanted = (process.env.HARNESS_CENARIOS ?? "").split(",").map((id) => id.trim()).filter(Boolean);
+  const offline = process.env.HARNESS_OFFLINE === "1";
+  const scenarios = cenariosProspeccao.filter((scenario) => (!wanted.length || wanted.includes(scenario.id)) && (!offline || !scenario.exigeModelo));
+  const jev = process.env.JEV_API_KEY ? createJevClient({ apiKey: process.env.JEV_API_KEY, model: process.env.JEV_MODEL }) : undefined;
+  let deps: () => RunnerDeps;
+  let lead: ModelClient | undefined;
+  if (offline) {
+    deps = () => {
+      const fake = createFakeProspeccao();
+      return { model: fake.escritor, leitor: fake.leitor, triage: createTriage() };
+    };
+  } else {
+    const endpoint = await resolveEndpoint();
+    const model = createOpenAiCompatibleModel({ ...endpoint, mode: process.env.HARNESS_MODE === "json" ? "json" : "tools", reasoningEffort: readReasoning() });
+    lead = createOpenAiCompatibleModel({ ...endpoint, model: process.env.FORNECEDOR_MODEL ?? endpoint.model, mode: "tools", temperature: 0.8 });
+    deps = () => ({ model, triage: createTriage({ jev }), ...(jev ? { judge: createJevJudge(jev), judgeFailClosed: true } : {}) });
+  }
+  const report = await runSuite({ agent: prospeccao, deps, scenarios, k, fornecedorModel: lead, onProgress: (line) => console.error(line) });
   const markdown = renderReport(report);
   if (process.env.HARNESS_RELATORIO) await writeFile(resolve(process.env.HARNESS_RELATORIO), markdown);
   console.log(markdown);

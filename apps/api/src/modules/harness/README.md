@@ -39,6 +39,7 @@ Um agente novo é uma pasta em `agentes/` que preenche `AgentDefinition` (`core/
 
 Agentes:
 - `comprador`: módulo de orçamentos.
+- `prospeccao` (João): conversa fria aberta por campanha. Robô de recepção recebe silêncio, recusa educada recebe um agradecimento pelo nome, toda explicação termina com o próximo passo, e aceite ou indicação avisam o time. Os cenários são as conversas de 13/10.
 - `atendimento`: respostas ao vivo e follow-up. Ainda roda só no simulador; o atendimento real continua no motor atual.
   - **Ao vivo**, o leitor registra cada pergunta e procura nos documentos (`buscar_na_base`). Ela só conta como respondida com a citação exata de um trecho, e só pode ser marcada "sem base" depois de procurar. O código responde o que tem trecho e passa para o vendedor só o que a base não cobre, com uma frase sobre aquele assunto (jogada `responder_e_passar`).
   - **No silêncio**, o analista confere a ficha e o código decide entre cobrar o cliente, lembrar o vendedor ou ficar quieto.
@@ -62,6 +63,10 @@ HARNESS_WORKSPACE_ID=<id> pnpm --filter @prymeira-talk/api harness:sondar-modelo
 ```
 
 ```bash
+# João, sem modelo (os cenários de robô, recusa e recepção) ou com a Luna (todos)
+HARNESS_AGENTE=prospeccao HARNESS_OFFLINE=1 pnpm --filter @prymeira-talk/api harness:simular
+HARNESS_AGENTE=prospeccao HARNESS_WORKSPACE_ID=<id> JEV_API_KEY=... pnpm --filter @prymeira-talk/api harness:simular
+
 # follow-up do atendimento (precisa de modelo); HARNESS_CASOS junta conversas reais rotuladas
 HARNESS_AGENTE=atendimento HARNESS_WORKSPACE_ID=<id> JEV_API_KEY=... pnpm --filter @prymeira-talk/api harness:simular
 HARNESS_AGENTE=atendimento HARNESS_WORKSPACE_ID=<id> HARNESS_CASOS=casos.jsonl pnpm --filter @prymeira-talk/api harness:simular

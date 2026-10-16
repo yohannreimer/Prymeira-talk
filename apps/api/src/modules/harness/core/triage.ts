@@ -14,6 +14,16 @@ const INJECTION = /\b(ignore|ignora|desconsidere|esqueca)\b.{0,40}\b(instruc|reg
 const DECLINE = /\b(nao (trabalhamos|trabalho|mexemos|vendemos|vendo|fornecemos) com|nao (vendemos|fornecemos) (esse|este|essa|esta|isso)|nao e (o nosso|nosso) (ramo|segmento)|fora do nosso (ramo|segmento)|nao (conseguimos|consigo) atender)\b/;
 const SOCIAL_ONLY = /^(ok|okay|blz|beleza|certo|perfeito|obrigad[oa]|obg|valeu|vlw|show|top|combinado|disponha|de nada|tmj|👍|🙏|😊|😉|tchau|ate mais|abracos?|bom dia|boa tarde|boa noite)[\s!.,🙏👍😊]*((obrigad[oa]|valeu|abracos?|ate mais|tchau)[\s!.,🙏👍😊]*)*$/u;
 
+// Reception bots the shared loop guard misses (seen on 13/10): inline menus, "a attendant will answer soon",
+// virtual assistants that introduce themselves. Checked on the accent-free text.
+const RECEPTION_BOT = [
+  /\bdigite\s+\d{1,2}\s+(para|pra)\b/,
+  /\b(em breve|logo|ja ja)\b.{0,40}\b(atendentes?|consultor(es|a)?|equipe|alguem)\b.{0,30}\b(ira|vai|irao|vao)\b.{0,20}\b(responder|atender|retornar|falar)/,
+  /\bseja bem[- ]vind[oa]\b.{0,120}\b(em breve|aguarde|atendentes?|retornaremos|responderemos)\b/,
+  /\bassistente virtual\b/,
+  /\b(esta e uma )?mensagem automatica\b/
+];
+
 function isFlatDecline(text: string) {
   const match = DECLINE.exec(text);
   if (!match) return false;
@@ -32,6 +42,7 @@ export function triageByRules(mensagem: string): TriageResult {
   if (guard.triggered && (guard.guard === "automated_menu" || guard.guard === "waiting_reception")) {
     return { kind: "robo", fonte: "regras", motivo: guard.guard };
   }
+  if (RECEPTION_BOT.some((pattern) => pattern.test(text))) return { kind: "robo", fonte: "regras", motivo: "recepção automática" };
   if (INJECTION.test(text)) return { kind: "injecao", fonte: "regras", motivo: "pede para ignorar instruções ou revelar regras" };
   if (isExplicitProspectingRefusal(mensagem) || isFlatDecline(text)) return { kind: "recusa", fonte: "regras", motivo: "recusa ou não trabalha com o item" };
   if (SOCIAL_ONLY.test(text)) return { kind: "despedida", fonte: "regras", motivo: "só agradecimento ou cumprimento" };

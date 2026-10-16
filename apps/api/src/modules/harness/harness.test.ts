@@ -13,6 +13,10 @@ import { createTriage, triageByRules } from "./core/triage.js";
 import type { Jogada } from "./core/types.js";
 import { renderReport, runScenario, runSuite } from "./simulador/simulador.js";
 import { atendimento } from "./agentes/atendimento/index.js";
+import { prospeccao } from "./agentes/prospeccao/index.js";
+import { cenarios as cenariosJoao } from "./agentes/prospeccao/cenarios.js";
+import { createFakeProspeccao } from "./agentes/prospeccao/modelos-falsos.js";
+import { nomeCurtoDaEmpresa } from "./agentes/prospeccao/regras.js";
 import { cenarios as cenariosAtendimento, cenariosAoVivo, contextoVillefer, conversa } from "./agentes/atendimento/cenarios.js";
 import { conferirProva } from "./agentes/atendimento/ferramentas.js";
 import { fichaInicial as fichaInicialAtendimento } from "./agentes/atendimento/ficha.js";
@@ -429,5 +433,34 @@ describe("atendimento ao vivo: consulta a base antes de passar para humano", () 
   it("every live scenario needs a model and starts without an opening", () => {
     expect(cenariosAoVivo.length).toBeGreaterThanOrEqual(7);
     expect(cenariosAoVivo.every((scenario) => scenario.exigeModelo && !scenario.historicoInicial)).toBe(true);
+  });
+});
+
+describe("João (prospecção) no harness", () => {
+  it("passes every scenario that needs no model, with the fake reader and writer", async () => {
+    const report = await runSuite({
+      agent: prospeccao,
+      deps: () => {
+        const fake = createFakeProspeccao();
+        return { model: fake.escritor, leitor: fake.leitor, triage: createTriage() };
+      },
+      scenarios: cenariosJoao.filter((scenario) => !scenario.exigeModelo),
+      k: 2
+    });
+    const falhas = report.cenarios.filter((scenario) => !scenario.passouTodas).map((scenario) => `${scenario.id}: ${JSON.stringify(scenario.falhas[0]?.checks.filter((check) => !check.ok))}\n${scenario.falhas[0]?.transcript}`);
+    expect(falhas).toEqual([]);
+    expect(report.cenarios.length).toBeGreaterThanOrEqual(6);
+  });
+
+  it("cuts the company name the way a person would say it", () => {
+    expect(nomeCurtoDaEmpresa("Trevo Metais | Aços | Metais | Corrimão")).toBe("Trevo Metais");
+    expect(nomeCurtoDaEmpresa("Casa Mil Ltda")).toBe("Casa Mil");
+  });
+
+  it("blocks the agent calling the person by the company name, or asking how it can help", async () => {
+    const base = { ficha: {}, pedido: { lead: { empresa: "Casa Mil Ltda" }, contextoDaOferta: "" }, historico: [], jogada: { tipo: "puxar_objetivo", instrucao: "" }, rules: prospeccao.regras as never, fichaTexto: "" };
+    expect(await reviewMessage({ ...base, texto: "Oi, Casa Mil! Tudo bem?" } as never)).toMatchObject({ ok: false, regra: "nao_chama_pela_empresa" });
+    expect(await reviewMessage({ ...base, texto: "Como posso te ajudar hoje?" } as never)).toMatchObject({ ok: false, regra: "sem_como_posso_ajudar" });
+    expect(await reviewMessage({ ...base, texto: "Faz sentido uma call de 15 minutos?" } as never)).toMatchObject({ ok: true });
   });
 });
