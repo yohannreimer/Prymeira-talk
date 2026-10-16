@@ -120,6 +120,11 @@ export type AgentDefinition<Ficha, Pedido> = {
    */
   motivosAoVivo?: string[];
   /**
+   * Sent on a live hand-over when no written message passed the review (blocked twice, judge down). Fixed text,
+   * so it promises nothing; without it the contact would get no answer at all.
+   */
+  avisoDeRepasse?: string;
+  /**
    * Checks the record after the reader and, when something is missing or doubtful, returns a note that
    * gives the reader extra rounds (once per turn). Models stop early or give up on a passage that does
    * answer; code can see that and ask them to look again.

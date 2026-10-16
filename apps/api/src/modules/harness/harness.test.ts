@@ -947,3 +947,16 @@ describe("sombra de 16/10, segunda rodada", () => {
     expect(regra.check({ ...base, pedido: contextoVillefer({ termosInternos: ["EA36"] }), texto: "O vendedor confirma o material com você." } as never)).toMatchObject({ ok: true });
   });
 });
+
+describe("sombra de 16/10, terceira rodada", () => {
+  it("a live reply blocked twice by the review still answers the contact with the fixed hand-over text", async () => {
+    const escritor = createScriptedModel("escritor", () => ({ content: null, toolCalls: [toolCall("responder", { texto: "Segue o catálogo em PDF." })] }));
+    const leitor = createScriptedModel("leitor", () => ({ content: null, toolCalls: [] }));
+    const result = await runTurn(atendimento, { leitor, model: escritor, triage: createTriage() }, {
+      ficha: fichaInicialAtendimento(), pedido: contextoVillefer(), historico: [{ autor: "contato", texto: "oi, bom dia", em: "2026-10-16T12:00:00.000Z" }],
+      evento: { tipo: "mensagem", texto: "oi, bom dia" }
+    });
+    expect(result.humano?.motivo).toMatch(/nao_promete_anexo/);
+    expect(result.enviar).toBe(atendimento.avisoDeRepasse);
+  });
+});

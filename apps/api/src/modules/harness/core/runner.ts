@@ -291,6 +291,8 @@ async function writeAndReview<Ficha, Pedido>(
     ? Object.fromEntries(Object.entries(agent.motivosParaHumano).filter(([key]) => agent.motivosAoVivo!.includes(key)))
     : agent.motivosParaHumano;
   const aoVivo = Boolean(input.aoVivo && motivos && Object.keys(motivos).length);
+  // A live hand-over never leaves the contact without an answer: the fixed text goes when nothing written passed.
+  const repasse = (humano: string) => (aoVivo && agent.avisoDeRepasse ? { humano, texto: agent.avisoDeRepasse } : { humano });
   const fichaTexto = agent.renderFicha(input.ficha, input.pedido);
   const skills = (input.jogada.skills ?? []).flatMap((name) => agent.skills[name] ? [`## ${name}\n${agent.skills[name]}`] : []);
   const messages: ChatMessage[] = [
@@ -349,7 +351,7 @@ async function writeAndReview<Ficha, Pedido>(
         trace.push({ fase: "revisao", detalhe: revisao });
         if (revisao.ok) return { humano: motivo, texto: aviso };
       }
-      return { humano: motivo };
+      return repasse(motivo);
     }
     const texto = call?.name === "responder" && typeof args?.texto === "string"
       ? args.texto.trim()
@@ -363,7 +365,7 @@ async function writeAndReview<Ficha, Pedido>(
 
     if (outcome.regra === "juiz_indisponivel" || attempt === 1) {
       trace.push({ fase: "humano", detalhe: { motivo: outcome.motivo } });
-      return { humano: `Mensagem bloqueada pelo revisor (${outcome.regra}): ${outcome.motivo}` };
+      return repasse(`Mensagem bloqueada pelo revisor (${outcome.regra}): ${outcome.motivo}`);
     }
     messages.push(
       ...(call
@@ -373,7 +375,7 @@ async function writeAndReview<Ficha, Pedido>(
       { role: "user", content: `Sua mensagem foi bloqueada pelo revisor e não foi enviada. Motivo: ${outcome.motivo} Reescreva cumprindo a jogada e chame responder de novo.` }
     );
   }
-  return { humano: "O agente não conseguiu escrever uma mensagem aprovada." };
+  return repasse("O agente não conseguiu escrever uma mensagem aprovada.");
 
   function revisar(texto: string) {
     return reviewMessage({

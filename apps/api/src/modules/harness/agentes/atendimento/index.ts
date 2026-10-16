@@ -40,7 +40,8 @@ export const atendimento: AgentDefinition<FichaDoAtendimento, ContextoDoAtendime
     reclamacao: "o cliente está reclamando ou irritado com a empresa",
     fechar_pedido: "o cliente quer fechar o pedido agora (faturar, pagar, emitir nota)"
   },
-  motivosAoVivo: ["reclamacao", "fechar_pedido"]
+  motivosAoVivo: ["reclamacao", "fechar_pedido"],
+  avisoDeRepasse: "Vou passar sua mensagem para um vendedor, que continua o atendimento com você por aqui."
 };
 
 export type { ContextoDoAtendimento, FichaDoAtendimento } from "./tipos.js";
