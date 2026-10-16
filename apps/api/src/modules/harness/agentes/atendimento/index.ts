@@ -35,7 +35,8 @@ export const atendimento: AgentDefinition<FichaDoAtendimento, ContextoDoAtendime
     sem_base_para_retomar: "num follow-up, a pendência depende de um fato (preço, prazo, estoque) que não está na conversa",
     reclamacao: "o cliente está reclamando ou irritado com a empresa",
     fechar_pedido: "o cliente quer fechar o pedido agora (faturar, pagar, emitir nota)"
-  }
+  },
+  motivosAoVivo: ["reclamacao", "fechar_pedido"]
 };
 
 export type { ContextoDoAtendimento, FichaDoAtendimento } from "./tipos.js";

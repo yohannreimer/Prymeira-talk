@@ -115,6 +115,11 @@ export type AgentDefinition<Ficha, Pedido> = {
    */
   motivosParaHumano?: Record<string, string>;
   /**
+   * Reasons the writer may use on a live message (the rest only on a silence). A hand-over on a live message
+   * also carries a short message to the contact, so the contact is never left without an answer.
+   */
+  motivosAoVivo?: string[];
+  /**
    * Checks the record after the reader and, when something is missing or doubtful, returns a note that
    * gives the reader extra rounds (once per turn). Models stop early or give up on a passage that does
    * answer; code can see that and ask them to look again.

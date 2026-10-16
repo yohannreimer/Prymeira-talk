@@ -53,4 +53,20 @@ const semPressao: Rule = {
     : { ok: true }
 };
 
-export const regras: Rule[] = [naoRepete, semValorNovo, semPressao];
+const sem = (text: string) => text.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+const RECUSA = /\bnao (fornece|fornecemos|fornecidas?|trabalhamos|atendemos|vendemos|fazemos)\b/;
+
+/**
+ * A question answered by "não fornece" must be answered with a "no". Seen in the shadow run of 16/10: the
+ * base said "NÃO FORNECE: … oxicorte ou material cortado" and the reply said "Trabalhamos com oxicorte".
+ */
+const naoInverteRecusa: Rule = {
+  id: "nao_inverte_recusa",
+  check: ({ texto, ficha }) => {
+    const recusadas = ficha.perguntas.filter((pergunta) => pergunta.status === "respondida" && pergunta.resposta && RECUSA.test(sem(pergunta.resposta.citacao)));
+    if (!recusadas.length || /\b(nao|nem)\b/.test(sem(texto))) return { ok: true };
+    return { ok: false, regra: "nao_inverte_recusa", motivo: `A base diz que a empresa não fornece o que foi pedido ("${recusadas[0].resposta!.citacao.slice(0, 100)}"), mas a mensagem não diz isso. Diga ao contato que não fornecem.` };
+  }
+};
+
+export const regras: Rule[] = [naoRepete, semValorNovo, semPressao, naoInverteRecusa];

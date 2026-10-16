@@ -829,3 +829,33 @@ describe("máscara da exportação", () => {
     expect(mascarar("sou o comprador, a empresa precisa de 10 barras")).toBe("sou o comprador, a empresa precisa de 10 barras");
   });
 });
+
+describe("ajustes da sombra de 16/10", () => {
+  it("a reply that turns the base's 'não fornece' into a yes is blocked", async () => {
+    const { regras } = await import("./agentes/atendimento/regras.js");
+    const regra = regras.find((item) => item.id === "nao_inverte_recusa")!;
+    const ficha = { ...fichaInicialAtendimento(), perguntas: [{ id: "q1", texto: "fornecem 1045 cortado?", status: "respondida" as const, resposta: { trechoId: "t9", citacao: "NÃO FORNECE: chapas expandidas; oxicorte ou material cortado" }, buscas: 1 }] };
+    const base = { ficha, pedido: contextoVillefer(), jogada: { tipo: "responder", instrucao: "" }, historico: [] };
+    expect(regra.check({ ...base, texto: "Trabalhamos com oxicorte ou material cortado. Pode me enviar o CNPJ?" } as never)).toMatchObject({ ok: false });
+    expect(regra.check({ ...base, texto: "Não fornecemos material cortado, só a barra inteira." } as never)).toMatchObject({ ok: true });
+  });
+
+  it("a hand-over on a live message still answers the contact, and a follow-up-only reason is refused there", async () => {
+    let chamada = 0;
+    const escritor = createScriptedModel("escritor", (request) => {
+      chamada += 1;
+      const pedir = request.tools?.find((tool) => tool.name === "pedir_humano");
+      expect(JSON.stringify(pedir?.parameters)).toMatch(/mensagemAoContato/);
+      expect(JSON.stringify(pedir?.parameters)).not.toMatch(/sem_base_para_retomar/);
+      return { content: null, toolCalls: [toolCall("pedir_humano", { motivo: "reclamacao", detalhe: "chapas com rachadura", mensagemAoContato: "Sinto muito pelas chapas com rachadura. Vou passar agora para o responsável, que continua com você por aqui." })] };
+    });
+    const leitor = createScriptedModel("leitor", () => ({ content: null, toolCalls: [] }));
+    const result = await runTurn(atendimento, { leitor, model: escritor, triage: createTriage() }, {
+      ficha: fichaInicialAtendimento(), pedido: contextoVillefer(), historico: [{ autor: "contato", texto: "as chapas vieram com rachadura e ninguém me explica", em: "2026-10-16T12:00:00.000Z" }],
+      evento: { tipo: "mensagem", texto: "as chapas vieram com rachadura e ninguém me explica" }
+    });
+    expect(chamada).toBe(1);
+    expect(result.enviar).toMatch(/rachadura/);
+    expect(result.humano?.motivo).toMatch(/^reclamacao/);
+  });
+});
