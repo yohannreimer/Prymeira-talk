@@ -291,15 +291,16 @@ const cliente = (...mensagens: string[]) => ({ tipo: "roteiro" as const, respond
 const GENERICA = /consultar (essas |as )?informa[cç][oõ]es|j[aá] te (dou um )?retorno/i;
 
 /** Checks for one live reply: handed over or not, what it says, and never the generic holding phrase. */
-function respostaAoVivo(input: { humano: boolean; fala?: RegExp; humanoFala?: RegExp }) {
+function respostaAoVivo(input: { humano?: boolean; fala?: RegExp; humanoFala?: RegExp; naoFala?: RegExp }) {
   return (run: Run): Check[] => {
     const resposta = run.turnos.find((turno) => turno.evento.startsWith("contato:"))?.resultado;
     const texto = resposta?.enviar ?? "";
     const checks: Check[] = [
-      { nome: input.humano ? "passou_o_que_faltava" : "respondeu_sem_passar", ok: Boolean(resposta?.humano) === input.humano, detalhe: resposta?.humano?.motivo ?? "sem humano" },
       { nome: "respondeu_algo", ok: texto.length > 0, detalhe: texto || "(nada enviado)" },
       { nome: "sem_frase_generica", ok: !GENERICA.test(texto), detalhe: texto }
     ];
+    if (input.humano !== undefined) checks.unshift({ nome: input.humano ? "passou_o_que_faltava" : "respondeu_sem_passar", ok: Boolean(resposta?.humano) === input.humano, detalhe: resposta?.humano?.motivo ?? "sem humano" });
+    if (input.naoFala) checks.push({ nome: "nao_disse_o_que_nao_devia", ok: !input.naoFala.test(texto), detalhe: texto });
     if (input.fala) checks.push({ nome: "resposta_certa", ok: input.fala.test(texto), detalhe: texto });
     if (input.humanoFala) checks.push({ nome: "passou_o_assunto_certo", ok: input.humanoFala.test(resposta?.humano?.motivo ?? ""), detalhe: resposta?.humano?.motivo });
     return checks;
@@ -413,14 +414,14 @@ export function cenariosDaBaseReal(base: BaseDeConhecimento): Cenario[] {
     empresa: { nome: "Villefer", oQueVende: "Distribuidora de aço para indústria e caldeiraria: chapas e laminados (barras, cantoneiras, vigas, perfis), tubos e inox ou alumínio sob encomenda." },
     base
   });
-  const caso = (id: string, titulo: string, mensagens: string[], fala?: RegExp): Cenario => ({
+  const caso = (id: string, titulo: string, mensagens: string[], fala?: RegExp, espera: Parameters<typeof respostaAoVivo>[0] = { humano: false, fala }): Cenario => ({
     id: `base_real_${id}`,
     titulo,
     pedido,
     persona: cliente(mensagens.join("\n")),
     maxTrocas: 1,
     exigeModelo: true,
-    verificar: respostaAoVivo({ humano: false, fala })
+    verificar: respostaAoVivo(espera)
   });
   return [
     caso("metalon", "Metalon em 4 barras: diz o mínimo de 1.000 kg, não passa", ["Boa tarde vcs vende Metalon qual o valor", "Eu queria 4 barra de 4 metro cada uma barra"], /1\.?000 ?kg|m[ií]nimo/i),
@@ -433,7 +434,13 @@ export function cenariosDaBaseReal(base: BaseDeConhecimento): Cenario[] {
     caso("vergalhao", "Barra de 10 mm para viga baldrame: vergalhão de construção civil", ["Quanto ta uma a barra de 10mm 12m", "Barra pra viga baldrame"], new RegExp(`constru[cç][aã]o civil|vergalh|${NEGA.source}`, "i")),
     caso("bucha", "Bucha de ferro fundido: não fornecem", ["Bucha de ferro fundido: Diâmetro externo 170mm x 120mm x 485mm"], NEGA),
     caso("telha", "Telha de alumínio: não fornecem telhas", ["Telha de alumínio"], NEGA),
-    caso("saudacao", "Só um bom dia: cumprimenta, não passa", ["Bom dia! Tudo bem?"])
+    caso("saudacao", "Só um bom dia: cumprimenta, não passa", ["Bom dia! Tudo bem?"]),
+    // These need the minimums and cities the company gave on 16/10 (HARNESS_BASE_PROPOSTA=1).
+    caso("inox_250", "250 kg de inox, perto do mínimo: não recusa, o vendedor decide", ["preciso de 250 kg de barra redonda inox 304, vcs fazem?"], undefined, { fala: /300|vendedor/i, naoFala: /n[aã]o (conseguimos|atendemos|fazemos)|pequeno demais/i }),
+    caso("regiao_joinville", "Entrega em Joinville: confirma, não passa", ["vcs entregam em joinville?"], /sim|entregamos|atendemos/i),
+    caso("regiao_pomerode", "Entrega em Pomerode: confirma, não passa", ["sou de pomerode, vcs atendem aqui?"], /sim|entregamos|atendemos/i),
+    caso("regiao_bahia", "Entrega na Bahia: diz que não atendem, não passa", ["vcs entregam em salvador bahia?"], NEGA),
+    caso("regiao_lages", "Cidade fora da lista: não promete nem recusa, o vendedor confirma", ["entregam em lages?"], undefined, { fala: /vendedor/i, naoFala: new RegExp(`^sim|${NEGA.source}`, "i") })
   ];
 }
 

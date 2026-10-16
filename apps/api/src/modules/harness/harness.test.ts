@@ -714,3 +714,15 @@ describe("base pequena lida inteira", () => {
     expect(await buscar.execute({ perguntaId: "q1", consulta: "telha" } as never, leitura([]) as never)).toMatch(/TODOS os documentos/);
   });
 });
+
+describe("proposta de mínimos e região da Villefer", () => {
+  it("rewrites the old minimums and adds the two new texts, reporting sentences it could not find", async () => {
+    const { aplicarPropostaVillefer } = await import("./agentes/atendimento/proposta-villefer.js");
+    const antiga = { title: "Estoque", content: "Inox, inclusive tubos e perfis de inox: mínimo de 300 kg. Tubos não inox e perfis sob encomenda: 1.000 kg. Resto." };
+    const { fontes, naoEncontradas } = aplicarPropostaVillefer([antiga]);
+    expect(fontes[0].content).toBe("Mínimos aproximados: ver \"Pedidos mínimos\". Resto.");
+    expect(fontes.map((fonte) => fonte.title)).toEqual(["Estoque", "Pedidos mínimos", "Região de entrega"]);
+    expect(fontes[2].content).toMatch(/Pomerode/);
+    expect(naoEncontradas).toHaveLength(3);
+  });
+});

@@ -6,6 +6,7 @@ import { resolveOpenAiCompatibleSettings } from "../src/modules/agents/ai-provid
 import { atendimento } from "../src/modules/harness/agentes/atendimento/index.js";
 import { cenarios as cenariosAtendimento, cenariosAoVivo, cenariosDaBaseReal, cenariosDeCasos } from "../src/modules/harness/agentes/atendimento/cenarios.js";
 import { baseCompleta, trechosDeFontes } from "../src/modules/harness/agentes/atendimento/ficha.js";
+import { aplicarPropostaVillefer } from "../src/modules/harness/agentes/atendimento/proposta-villefer.js";
 import { createJuizDeFollowup } from "../src/modules/harness/agentes/atendimento/juiz.js";
 import { cenarios } from "../src/modules/harness/agentes/comprador/cenarios.js";
 import { comprador } from "../src/modules/harness/agentes/comprador/index.js";
@@ -41,6 +42,7 @@ config({ path: resolve(import.meta.dirname, "../../../.env") });
 //   JEV_API_KEY: JEV does the triage and judges each message (fails closed when JEV is down)
 //   HARNESS_BASE_FONTES=conversas-base.jsonl (atendimento): adds the questions the old agent handed over although
 //     the real base answers them, run against that base. HARNESS_BASE_AGENTE=<agentId> picks one agent's sources.
+//     HARNESS_BASE_PROPOSTA=1 applies the new minimums and delivery cities (proposta-villefer.ts) on top.
 //   HARNESS_REASONING_ANALISTA (default high): reasoning of the analyst subagent (atendimento)
 
 async function main() {
@@ -173,10 +175,12 @@ async function carregarBaseReal(caminho: string) {
     .split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
   const agente = process.env.HARNESS_BASE_AGENTE ?? fontes[0]?.agentId;
   const doAgente = fontes.filter((fonte) => fonte.agentId === agente && (fonte.status ?? "ready") === "ready");
-  const trechos = trechosDeFontes(doAgente);
+  const proposta = process.env.HARNESS_BASE_PROPOSTA === "1" ? aplicarPropostaVillefer(doAgente) : null;
+  for (const frase of proposta?.naoEncontradas ?? []) console.error(`Aviso: a base exportada não tem mais a frase "${frase.slice(0, 60)}…"; a troca não foi feita.`);
+  const trechos = trechosDeFontes(proposta?.fontes ?? doAgente);
   const base = baseCompleta(trechos);
   const caracteres = trechos.reduce((soma, trecho) => soma + trecho.titulo.length + trecho.texto.length, 0);
-  console.error(`Base real: agente ${agente}, ${doAgente.length} fontes, ${trechos.length} trechos, ${caracteres} caracteres, ${base.todos ? "lida inteira" : "por busca"}.`);
+  console.error(`Base real: agente ${agente}, ${doAgente.length} fontes, ${trechos.length} trechos, ${caracteres} caracteres, ${base.todos ? "lida inteira" : "por busca"}${proposta ? ", com a proposta de mínimos e região" : ""}.`);
   return base;
 }
 
