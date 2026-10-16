@@ -29,12 +29,17 @@ const saida = process.env.SAIDA ?? "conversas";
 
 const hash = (value: string) => createHash("sha256").update(value).digest("hex").slice(0, 12);
 
+/** A self-introduction followed by capitalised words (with "da", "de", "e", "-" between them): the name. */
+const APRESENTACAO = /\b([Mm]e chamo|[Mm]eu nome [eé]|[Aa]qui [eé] (?:o|a)|[Ss]ou (?:o|a)|[Ff]alo da(?: empresa)?|[Dd]a empresa|[Ee]mpresa|[Cc]omprador(?:a)? d[aoe])\s+[A-ZÀ-Ý][\wÀ-ÿ.&-]*(?:(?:\s+(?:d[aeo]s?|e|-))?\s+[A-ZÀ-Ý][\wÀ-ÿ.&-]*)*/g;
+
 export function mascarar(texto: string, nomes: string[] = []) {
   let result = texto
     .replace(/[\w.+-]+@[\w-]+\.[\w.]+/g, "[email]")
     .replace(/\b\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2}\b/g, "[cnpj]")
     .replace(/\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b/g, "[cpf]")
-    .replace(/(?:\+?55\s?)?\(?\d{2}\)?\s?9?\d{4}[\s-]?\d{4}\b/g, "[telefone]");
+    .replace(/(?:\+?55\s?)?\(?\d{2}\)?\s?9?\d{4}[\s-]?\d{4}\b/g, "[telefone]")
+    // Names people give in the text itself ("me chamo Elcio", "falo da empresa Acme Ltda"), not only the contact's.
+    .replace(APRESENTACAO, (_, chave: string) => `${chave} [nome]`);
   for (const nome of nomes.filter((item) => item.trim().length >= 3)) {
     result = result.replace(new RegExp(`\\b${nome.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "gi"), "Cliente");
   }

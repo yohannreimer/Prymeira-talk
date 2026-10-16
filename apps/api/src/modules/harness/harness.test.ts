@@ -820,3 +820,12 @@ describe("modo sombra no histórico", () => {
     expect(itens[1].cenario.historicoInicial).toEqual([]);
   });
 });
+
+describe("máscara da exportação", () => {
+  it("hides names people introduce in the text, and leaves the request alone", async () => {
+    const { mascarar } = await import("../../../scripts/harness-exportar-conversas.js");
+    expect(mascarar("Meu nome é Elcio, falo da empresa Beta Engenharia Ambiental")).toBe("Meu nome é [nome], falo da empresa [nome]");
+    expect(mascarar("Me chamo Ana e preciso de chapa")).toBe("Me chamo [nome] e preciso de chapa");
+    expect(mascarar("sou o comprador, a empresa precisa de 10 barras")).toBe("sou o comprador, a empresa precisa de 10 barras");
+  });
+});
