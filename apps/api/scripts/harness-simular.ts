@@ -8,7 +8,8 @@ import { atendimento } from "../src/modules/harness/agentes/atendimento/index.js
 import { cenarios as cenariosAtendimento, cenariosAoVivo, cenariosDaBaseReal, cenariosDeCasos, contextoDaBaseReal } from "../src/modules/harness/agentes/atendimento/cenarios.js";
 import { baseCompleta, trechosDeFontes } from "../src/modules/harness/agentes/atendimento/ficha.js";
 import { catalogoEmMemoria, type LinhaDoCatalogo } from "../src/modules/harness/agentes/atendimento/catalogo.js";
-import { cenariosDaSombra, type DecisaoAntiga } from "../src/modules/harness/agentes/atendimento/sombra.js";
+import { cenariosDaSombra, chaveDaDecisao, type DecisaoAntiga } from "../src/modules/harness/agentes/atendimento/sombra.js";
+import type { AnexoAprovado } from "../src/modules/harness/agentes/atendimento/tipos.js";
 import { aplicarPropostaVillefer } from "../src/modules/harness/agentes/atendimento/proposta-villefer.js";
 import { createJuizDeFollowup } from "../src/modules/harness/agentes/atendimento/juiz.js";
 import { cenarios } from "../src/modules/harness/agentes/comprador/cenarios.js";
@@ -46,7 +47,8 @@ config({ path: resolve(import.meta.dirname, "../../../.env") });
 //   HARNESS_BASE_FONTES=conversas-base.jsonl (atendimento): adds the questions the old agent handed over although
 //     the real base answers them, run against that base. HARNESS_BASE_AGENTE=<agentId> picks one agent's sources.
 //     HARNESS_SOMBRA=conversas.jsonl.gz replays every reply of the old agent with the new one, side by side
-//     (HARNESS_SOMBRA_SAIDA=sombra.jsonl, HARNESS_SOMBRA_LIMITE=150).
+//     (HARNESS_SOMBRA_SAIDA=sombra.jsonl, HARNESS_SOMBRA_LIMITE=150). HARNESS_SOMBRA_CASOS=casos.jsonl reruns only
+//     the decisions listed there (lines of an earlier sombra.jsonl), next to the answer of that run.
 //     HARNESS_CATALOGO=villefer adds the product tables (sizes and kg/m) as a tool.
 //     HARNESS_BASE_PROPOSTA=1 applies the new minimums and delivery cities (proposta-villefer.ts) on top.
 //   HARNESS_REASONING_ANALISTA (default high): reasoning of the analyst subagent (atendimento)
@@ -111,7 +113,7 @@ async function runAtendimento() {
   const sombra = process.env.HARNESS_SOMBRA ? await carregarSombra(process.env.HARNESS_SOMBRA, baseReal, catalogo) : null;
   const scenarios = sombra
     ? sombra.map((item) => item.cenario)
-    : [...cenariosAoVivo, ...cenariosAtendimento, ...casos, ...(baseReal ? cenariosDaBaseReal(baseReal, catalogo) : [])].filter((scenario) => !wanted.length || wanted.includes(scenario.id));
+    : [...cenariosAoVivo, ...cenariosAtendimento, ...casos, ...(baseReal ? cenariosDaBaseReal(baseReal, catalogo, baseReal.anexos) : [])].filter((scenario) => !wanted.length || wanted.includes(scenario.id));
   if (process.env.HARNESS_OFFLINE === "1") throw new Error("Os cenários de atendimento precisam de modelo: use HARNESS_WORKSPACE_ID ou HARNESS_BASE_URL.");
   const endpoint = await resolveEndpoint();
   const mode = readMode();
@@ -141,7 +143,10 @@ async function runAtendimento() {
     onProgress: (line) => console.error(line),
     onRun: (input) => {
       linha.onRun(input);
-      if (sombra) comparacoes.push({ antiga: sombra.find((item) => item.cenario.id === input.scenario.id)!.antiga, checks: input.checks });
+      if (sombra) {
+        const item = sombra.find((candidato) => candidato.cenario.id === input.scenario.id)!;
+        comparacoes.push({ antiga: item.antiga, anterior: item.anterior, checks: input.checks });
+      }
     }
   });
   await linha.salvar(report.agente, report.modelo);
@@ -152,7 +157,7 @@ async function runAtendimento() {
   if (report.passK < 1) process.exitCode = 1;
 }
 
-const comparacoes: Array<{ antiga: DecisaoAntiga; checks: Check[] }> = [];
+const comparacoes: Array<{ antiga: DecisaoAntiga; anterior?: unknown; checks: Check[] }> = [];
 
 /**
  * HARNESS_SOMBRA=conversas.jsonl.gz (the export of harness-exportar-conversas.ts): every reply the old agent
@@ -163,7 +168,13 @@ async function carregarSombra(caminho: string, base: Awaited<ReturnType<typeof c
   const bruto = await readFile(resolve(caminho));
   const texto = caminho.endsWith(".gz") ? gunzipSync(bruto).toString("utf8") : bruto.toString("utf8");
   const sessoes = texto.split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
-  const itens = cenariosDaSombra(sessoes, contextoDaBaseReal(base, catalogo), Number(process.env.HARNESS_SOMBRA_LIMITE ?? 150));
+  // An earlier run's lines: rerun only those decisions, and keep that run's answer to compare.
+  const anteriores = process.env.HARNESS_SOMBRA_CASOS
+    ? new Map((await readFile(resolve(process.env.HARNESS_SOMBRA_CASOS), "utf8")).split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line)).map((linha) => [chaveDaDecisao(linha), linha.novo ?? undefined]))
+    : null;
+  const itens = cenariosDaSombra(sessoes, contextoDaBaseReal(base, catalogo, base.anexos), Number(process.env.HARNESS_SOMBRA_LIMITE ?? (anteriores ? anteriores.size : 150)), anteriores ? new Set(anteriores.keys()) : undefined)
+    .map((item) => ({ ...item, anterior: anteriores?.get(chaveDaDecisao(item.antiga)) }));
+  if (anteriores && itens.length < anteriores.size) console.error(`Aviso: ${anteriores.size - itens.length} dos casos pedidos não estão nas conversas exportadas.`);
   console.error(`Sombra: ${sessoes.length} conversas, ${itens.length} respostas do agente antigo para refazer (${itens.filter((item) => item.antiga.passou).length} delas ele passou para humano).`);
   return itens;
 }
@@ -171,7 +182,7 @@ async function carregarSombra(caminho: string, base: Awaited<ReturnType<typeof c
 /** Side by side, as JSONL (HARNESS_SOMBRA_SAIDA) and a short summary of hand-overs, old against new. */
 async function salvarSombra(itens: typeof comparacoes) {
   const detalhe = (checks: Check[], nome: string) => checks.find((check) => check.nome === nome);
-  const linhas = itens.map(({ antiga, checks }) => ({
+  const linhas = itens.map(({ antiga, anterior, checks }) => ({
     conversa: antiga.conversa,
     em: antiga.em,
     cliente: antiga.cliente,
@@ -180,8 +191,10 @@ async function salvarSombra(itens: typeof comparacoes) {
       passou: !detalhe(checks, "novo_nao_passou")!.ok,
       motivo: detalhe(checks, "novo_nao_passou")!.ok ? null : detalhe(checks, "novo_nao_passou")!.detalhe,
       resposta: detalhe(checks, "novo_respondeu")!.ok ? detalhe(checks, "novo_respondeu")!.detalhe : null,
-      fraseGenerica: !detalhe(checks, "novo_sem_frase_generica")!.ok
-    }
+      fraseGenerica: !detalhe(checks, "novo_sem_frase_generica")!.ok,
+      anexos: detalhe(checks, "novo_anexou")?.ok ? detalhe(checks, "novo_anexou")!.detalhe : null
+    },
+    ...(anterior !== undefined ? { anterior } : {})
   }));
   if (process.env.HARNESS_SOMBRA_SAIDA) await writeFile(resolve(process.env.HARNESS_SOMBRA_SAIDA), linhas.map((linha) => JSON.stringify(linha)).join("\n") + "\n");
   const conta = (filtro: (linha: (typeof linhas)[number]) => boolean) => linhas.filter(filtro).length;
@@ -230,16 +243,26 @@ async function runProspeccao() {
  * for the real-base scenarios. Several agents share the export: HARNESS_BASE_AGENTE picks one, else the first.
  */
 async function carregarBaseReal(caminho: string) {
-  const fontes: Array<{ agentId: string; title: string; content: string | null; status?: string }> = (await readFile(resolve(caminho), "utf8"))
+  const fontes: Array<{ agentId: string; type?: string; title: string; content: string | null; fileName?: string | null; fileUrl?: string | null; status?: string }> = (await readFile(resolve(caminho), "utf8"))
     .split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
   const agente = process.env.HARNESS_BASE_AGENTE ?? fontes[0]?.agentId;
   const doAgente = fontes.filter((fonte) => fonte.agentId === agente && (fonte.status ?? "ready") === "ready");
   const proposta = process.env.HARNESS_BASE_PROPOSTA === "1" ? aplicarPropostaVillefer(doAgente) : null;
   for (const frase of proposta?.naoEncontradas ?? []) console.error(`Aviso: a base exportada não tem mais a frase "${frase.slice(0, 60)}…"; a troca não foi feita.`);
   const trechos = trechosDeFontes(proposta?.fontes ?? doAgente);
-  const base = baseCompleta(trechos);
+  // Approved PDFs (the catalogue) the agent may attach. The export has no URL, so the simulator makes one up.
+  const anexos: AnexoAprovado[] = doAgente
+    .filter((fonte) => fonte.type === "file" && /\.pdf$/i.test(fonte.fileName ?? ""))
+    .map((fonte, indice) => ({
+      id: /cat[aá]logo/i.test(fonte.title) ? "catalogo" : `anexo${indice + 1}`,
+      titulo: fonte.title,
+      url: fonte.fileUrl ?? `https://simulador.invalid/${encodeURIComponent(fonte.fileName!)}`,
+      nomeArquivo: fonte.fileName ?? null,
+      mimeType: "application/pdf"
+    }));
+  const base = Object.assign(baseCompleta(trechos), { anexos });
   const caracteres = trechos.reduce((soma, trecho) => soma + trecho.titulo.length + trecho.texto.length, 0);
-  console.error(`Base real: agente ${agente}, ${doAgente.length} fontes, ${trechos.length} trechos, ${caracteres} caracteres, ${base.todos ? "lida inteira" : "por busca"}${proposta ? ", com a proposta de mínimos e região" : ""}.`);
+  console.error(`Base real: agente ${agente}, ${doAgente.length} fontes, ${trechos.length} trechos, ${caracteres} caracteres, ${base.todos ? "lida inteira" : "por busca"}${proposta ? ", com a proposta de mínimos e região" : ""}${anexos.length ? `, ${anexos.length} anexo(s) aprovado(s)` : ""}.`);
   return base;
 }
 

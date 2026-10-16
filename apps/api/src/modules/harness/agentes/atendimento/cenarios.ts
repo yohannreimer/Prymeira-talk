@@ -3,7 +3,7 @@ import type { Check, Scenario, ScenarioRun } from "../../simulador/simulador.js"
 import { semelhanca } from "./regras.js";
 import { baseEmMemoria } from "./ficha.js";
 import type { Catalogo } from "./catalogo.js";
-import type { BaseDeConhecimento, ContextoDoAtendimento, FichaDoAtendimento, TrechoDaBase } from "./tipos.js";
+import type { AnexoAprovado, BaseDeConhecimento, ContextoDoAtendimento, FichaDoAtendimento, TrechoDaBase } from "./tipos.js";
 
 type Cenario = Scenario<FichaDoAtendimento, ContextoDoAtendimento>;
 type Run = ScenarioRun<FichaDoAtendimento, ContextoDoAtendimento>;
@@ -292,7 +292,7 @@ const cliente = (...mensagens: string[]) => ({ tipo: "roteiro" as const, respond
 const GENERICA = /consultar (essas |as )?informa[cç][oõ]es|j[aá] te (dou um )?retorno/i;
 
 /** Checks for one live reply: handed over or not, what it says, and never the generic holding phrase. */
-function respostaAoVivo(input: { humano?: boolean; fala?: RegExp; humanoFala?: RegExp; naoFala?: RegExp }) {
+function respostaAoVivo(input: { humano?: boolean; fala?: RegExp; humanoFala?: RegExp; naoFala?: RegExp; anexo?: boolean }) {
   return (run: Run): Check[] => {
     const resposta = run.turnos.find((turno) => turno.evento.startsWith("contato:"))?.resultado;
     const texto = resposta?.enviar ?? "";
@@ -304,6 +304,7 @@ function respostaAoVivo(input: { humano?: boolean; fala?: RegExp; humanoFala?: R
     if (input.naoFala) checks.push({ nome: "nao_disse_o_que_nao_devia", ok: !input.naoFala.test(texto), detalhe: texto });
     if (input.fala) checks.push({ nome: "resposta_certa", ok: input.fala.test(texto), detalhe: texto });
     if (input.humanoFala) checks.push({ nome: "passou_o_assunto_certo", ok: input.humanoFala.test(resposta?.humano?.motivo ?? ""), detalhe: resposta?.humano?.motivo });
+    if (input.anexo !== undefined) checks.push({ nome: input.anexo ? "anexou_o_catalogo" : "nao_anexou", ok: Boolean(resposta?.anexos?.length) === input.anexo, detalhe: resposta?.anexos?.map((anexo) => anexo.nomeArquivo).join(", ") || "sem anexo" });
     return checks;
   };
 }
@@ -410,14 +411,15 @@ const NEGA = /n[aã]o (fornece\w*|trabalha\w*|vende\w*|faz\w*|atende\w*|consegui
  * base answers them (minimum order, what it does not supply). Run with the base exported from production
  * (HARNESS_BASE_FONTES): a hand-over here is the failure we are measuring.
  */
-export const contextoDaBaseReal = (base: BaseDeConhecimento, catalogo?: Catalogo) => contextoVillefer({
+export const contextoDaBaseReal = (base: BaseDeConhecimento, catalogo?: Catalogo, anexos?: AnexoAprovado[]) => contextoVillefer({
   empresa: { nome: "Villefer", oQueVende: "Distribuidora de aço para indústria e caldeiraria: chapas e laminados (barras, cantoneiras, vigas, perfis), tubos e inox ou alumínio sob encomenda." },
   base,
-  catalogo
+  catalogo,
+  anexos
 });
 
-export function cenariosDaBaseReal(base: BaseDeConhecimento, catalogo?: Catalogo): Cenario[] {
-  const pedido = contextoDaBaseReal(base, catalogo);
+export function cenariosDaBaseReal(base: BaseDeConhecimento, catalogo?: Catalogo, anexos?: AnexoAprovado[]): Cenario[] {
+  const pedido = contextoDaBaseReal(base, catalogo, anexos);
   const caso = (id: string, titulo: string, mensagens: string[], fala?: RegExp, espera: Parameters<typeof respostaAoVivo>[0] = { humano: false, fala }): Cenario => ({
     id: `base_real_${id}`,
     titulo,
@@ -446,7 +448,16 @@ export function cenariosDaBaseReal(base: BaseDeConhecimento, catalogo?: Catalogo
     caso("regiao_bahia", "Entrega na Bahia: diz que não atendem, não passa", ["vcs entregam em salvador bahia?"], NEGA),
     // This one needs the catalogue (HARNESS_CATALOGO): 10 × 6 m × 1,82 kg/m is about 109 kg, far from 1.000 kg.
     caso("metalon_peso", "10 barras de metalon 40x40: calcula uns 109 kg e diz o mínimo de 1.000 kg", ["quero 10 barras de metalon 40x40 parede 1,5 de 6 metros, da pra fazer?"], undefined, { humano: false, fala: /1[01]\d(,\d+)? ?(kg|quilos)[\s\S]*1\.?000|1\.?000[\s\S]*1[01]\d(,\d+)? ?(kg|quilos)/i }),
-    caso("regiao_lages", "Cidade fora da lista: não promete nem recusa, o vendedor confirma", ["entregam em lages?"], undefined, { fala: /vendedor/i, naoFala: new RegExp(`^sim|${NEGA.source}`, "i") })
+    caso("regiao_lages", "Cidade fora da lista: não promete nem recusa, o vendedor confirma", ["entregam em lages?"], undefined, { fala: /vendedor/i, naoFala: new RegExp(`^sim|${NEGA.source}`, "i") }),
+    // From the shadow run of 16/10.
+    caso("barra_chata", "Barra chata 50x4: está na faixa da base, pergunta o aço sem passar", ["Pode cotar a barra chata de 6m de 50mm de largura por 4mm de espessura?"], /19[,.]05|100 ?mm|a[cç]o|material/i),
+    caso("retalho", "Chapa em retalho: é material cortado, não fornecem", ["Voces vende chapa em retalho tambem", "Ou so chapas grandes"], new RegExp(`cort|${NEGA.source}`, "i")),
+    caso("galvanizado", "Aço galvanizado sem produto: pergunta qual produto, não passa", ["Bom dia, vocês trabalham com aço galvanizado?"], /qual|produto|medida/i),
+    caso("cidade_endereco", "Endereço em Curitiba no meio do pedido: não confirma a entrega, o vendedor confirma", ["Para entrega", "Rua Exemplo, 100 - Boqueirão", "Curitiba - PR"], undefined, { fala: /vendedor|confirm/i, naoFala: /^(perfeito|[oó]timo)[,!.]? entrega/i }),
+    ...(anexos?.length ? [
+      caso("catalogo", "Pede o catálogo: manda o PDF aprovado junto", ["me manda o catálogo inicialmente"], undefined, { humano: false, anexo: true }),
+      caso("catalogo_e_vendedor", "Catálogo e vendedor: manda o PDF e passa", ["Me manda o catálogo e me passa pro vendedor"], undefined, { humano: true, anexo: true })
+    ] : [])
   ];
 }
 

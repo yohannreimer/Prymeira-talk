@@ -37,8 +37,13 @@ export type Pergunta = {
   texto: string;
   status: "aberta" | "respondida" | "sem_base" | "tratada";
   resposta: { trechoId: string; citacao: string } | null;
+  /** More passages that answer part of it (the minimum after "we supply it", the weight after the minimum). */
+  maisRespostas?: Array<{ trechoId: string; citacao: string }>;
   buscas: number;
 };
+
+/** A file the company approved for sending (the PDF catalogue). Only these are ever attached. */
+export type AnexoAprovado = { id: string; titulo: string; url: string; nomeArquivo: string | null; mimeType: string | null };
 
 /** The record of one attendance conversation. It persists between silences instead of being guessed again. */
 export type FichaDoAtendimento = {
@@ -58,6 +63,12 @@ export type FichaDoAtendimento = {
   trechosVistos: Record<string, string>;
   /** The contact asked for a person in the latest message. */
   pediuPessoa: boolean;
+  /** Weights computed by code in this reading (ids in trechosVistos), shown to the writer next to the answers. */
+  pesosDaVez?: string[];
+  /** Approved files to attach to this reply, because the contact asked for them. */
+  anexosDaVez?: string[];
+  /** Approved files already sent in this conversation. */
+  anexosEnviados?: string[];
 };
 
 /** What the attendance agent knows about the company it works for. Shown to the model as is. */
@@ -71,4 +82,6 @@ export type ContextoDoAtendimento = {
   base?: BaseDeConhecimento;
   /** Product tables (sizes, theoretical weights), consulted by a tool. What is supplied is still the base. */
   catalogo?: Catalogo;
+  /** Files approved for sending, such as the PDF catalogue. */
+  anexos?: AnexoAprovado[];
 };

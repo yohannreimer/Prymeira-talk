@@ -125,6 +125,11 @@ export type AgentDefinition<Ficha, Pedido> = {
    * answer; code can see that and ask them to look again.
    */
   conferirLeitura?: (input: { ficha: Ficha; mensagem: string; pedido?: Pedido }) => string | null;
+  /**
+   * Approved files that go with this turn's message (the PDF catalogue the contact asked for). The agent
+   * picks them by id with a tool; the URL always comes from the company's approved list, never the model.
+   */
+  anexosDaVez?: (ficha: Ficha, pedido: Pedido) => Anexo[];
   /** Extra sources the writer could use and the judge must see too (e.g. knowledge-base passages already read). */
   fontesDoRevisor?: (ficha: Ficha, pedido: Pedido) => string;
   /**
@@ -151,9 +156,14 @@ export type TraceStep = {
   ms?: number;
 };
 
+/** A file sent with the message, as the send_attachment action of the live engine takes it. */
+export type Anexo = { url: string; legenda: string | null; nomeArquivo: string | null; mimeType: string | null };
+
 export type TurnResult<Ficha> = {
   /** Message to send to the contact, already reviewed. Null when nothing is sent. */
   enviar: string | null;
+  /** Files sent with the message; only when there is a message. */
+  anexos?: Anexo[];
   /** Set when a person must take over, with the reason and a short summary for them. */
   humano: { motivo: string; resumo: string } | null;
   ficha: Ficha;

@@ -121,18 +121,27 @@ export async function runTurn<Ficha, Pedido>(
   }
 
   const written = await writeAndReview(agent, deps, { ficha, pedido, historico, jogada, aoVivo: evento.tipo === "mensagem" }, trace);
+  // Read before aposEnvio, which marks them as sent.
+  const anexos = agent.anexosDaVez?.(ficha, pedido) ?? [];
+  const comAnexos = (texto: string | null) => {
+    if (!texto || !anexos.length) return {};
+    trace.push({ fase: "envio", detalhe: { anexos: anexos.map((anexo) => anexo.nomeArquivo ?? anexo.url) } });
+    return { anexos };
+  };
   if (written.humano) {
     if (written.texto) trace.push({ fase: "envio", detalhe: written.texto });
-    return { enviar: written.texto ?? null, humano: { motivo: written.humano, resumo: agent.renderFicha(ficha, pedido) }, ficha, jogada, trace };
+    const extra = comAnexos(written.texto ?? null);
+    return { enviar: written.texto ?? null, ...extra, humano: { motivo: written.humano, resumo: agent.renderFicha(ficha, pedido) }, ficha, jogada, trace };
   }
   const texto = written.texto!;
   if (agent.aposEnvio) ficha = agent.aposEnvio({ ficha, jogada, texto });
   trace.push({ fase: "envio", detalhe: texto });
+  const extra = comAnexos(texto);
   if (jogada.avisarHumano) {
     trace.push({ fase: "humano", detalhe: { motivo: jogada.avisarHumano } });
-    return { enviar: texto, humano: { motivo: jogada.avisarHumano, resumo: agent.renderFicha(ficha, pedido) }, ficha, jogada, trace };
+    return { enviar: texto, ...extra, humano: { motivo: jogada.avisarHumano, resumo: agent.renderFicha(ficha, pedido) }, ficha, jogada, trace };
   }
-  return { enviar: texto, humano: null, ficha, jogada, trace };
+  return { enviar: texto, ...extra, humano: null, ficha, jogada, trace };
 }
 
 async function readIntoRecord<Ficha, Pedido>(

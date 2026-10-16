@@ -10,7 +10,7 @@ import { createOpenAiCompatibleModel, createScriptedModel, parseJsonModeResponse
 import { reviewMessage } from "./core/review.js";
 import { runTurn } from "./core/runner.js";
 import { createTriage, triageByRules } from "./core/triage.js";
-import type { Jogada } from "./core/types.js";
+import type { HarnessTool, Jogada } from "./core/types.js";
 import { renderReport, runScenario, runSuite } from "./simulador/simulador.js";
 import { atendimento } from "./agentes/atendimento/index.js";
 import { prospeccao } from "./agentes/prospeccao/index.js";
@@ -21,7 +21,7 @@ import { cenarios as cenariosAtendimento, cenariosAoVivo, contextoVillefer, conv
 import { conferirProva } from "./agentes/atendimento/ferramentas.js";
 import { fichaInicial as fichaInicialAtendimento } from "./agentes/atendimento/ficha.js";
 import { decidirJogada as decidirJogadaAtendimento } from "./agentes/atendimento/jogadas.js";
-import type { FichaDoAtendimento } from "./agentes/atendimento/tipos.js";
+import type { ContextoDoAtendimento, FichaDoAtendimento } from "./agentes/atendimento/tipos.js";
 
 const pedido = pedidoBase();
 
@@ -705,8 +705,8 @@ describe("base pequena lida inteira", () => {
     const { trechosDeFontes, baseCompleta } = await import("./agentes/atendimento/ficha.js");
     const buscar = ferramentasDeLeitura.find((tool) => tool.name === "buscar_na_base")!;
     const base = baseCompleta(trechosDeFontes([{ title: "O que não fornecemos", content: "Não fornecemos telhas nem metalon cortado." }]));
-    let ficha = { ...fichaInicialAtendimento(), perguntas: [{ id: "q1", texto: "tem metalon?", status: "aberta" as const, resposta: null, buscas: 0 }] };
-    const leitura = (historico: unknown[]) => ({ ficha, pedido: contextoVillefer({ base }), setFicha: (next: typeof ficha) => { ficha = next; }, mensagemAtual: "", historico });
+    let ficha: FichaDoAtendimento = { ...fichaInicialAtendimento(), perguntas: [{ id: "q1", texto: "tem metalon?", status: "aberta" as const, resposta: null, buscas: 0 }] };
+    const leitura = (historico: unknown[]) => ({ ficha, pedido: contextoVillefer({ base }), setFicha: (next: FichaDoAtendimento) => { ficha = next; }, mensagemAtual: "", historico });
     const historico: unknown[] = [];
     expect(await buscar.execute({ perguntaId: "q1", consulta: "tubo" } as never, leitura(historico) as never)).toMatch(/TODOS os documentos[\s\S]*metalon/);
     expect(await buscar.execute({ perguntaId: "q1", consulta: "metalon" } as never, leitura(historico) as never)).toMatch(/Releia/);
@@ -759,7 +759,7 @@ describe("catálogo de medidas e pesos", () => {
     const consultar = ferramentasDeLeitura.find((tool) => tool.name === "consultar_catalogo")!;
     const calcular = ferramentasDeLeitura.find((tool) => tool.name === "calcular_peso")!;
     let ficha = fichaInicialAtendimento();
-    const context = () => ({ ficha, pedido: contextoVillefer({ catalogo: catalogoEmMemoria(linhas) }), setFicha: (next: typeof ficha) => { ficha = next; }, mensagemAtual: "", historico: [] });
+    const context = () => ({ ficha, pedido: contextoVillefer({ catalogo: catalogoEmMemoria(linhas) }), setFicha: (next: FichaDoAtendimento) => { ficha = next; }, mensagemAtual: "", historico: [] });
     expect(await consultar.execute({ consulta: "metalon 40x40 1,5" } as never, context() as never)).toMatch(/\[tubo-1\].*1,82 kg\/m/);
     expect(await calcular.execute({ linhaId: "tubo-1", pecas: 4, comprimentoM: 4, larguraM: null } as never, context() as never)).toMatch(/\[peso1\].*aproximadamente 29,1 kg/);
     expect(ficha.trechosVistos.peso1).toMatch(/4 × 4 m × 1,82 kg\/m/);
@@ -787,7 +787,7 @@ describe("peso pelo catálogo antes do mínimo", () => {
     const mensagem = "quero 10 barras de metalon 40x40 parede 1,5 de 6 metros";
     expect(conferirLeitura({ ficha: respondida, mensagem, pedido: contextoVillefer({ catalogo: catalogoEmMemoria([]) }) })).toMatch(/calcular_peso/);
     expect(conferirLeitura({ ficha: respondida, mensagem, pedido: contextoVillefer() })).toBeNull();
-    expect(conferirLeitura({ ficha: { ...respondida, trechosVistos: { peso1: "109 kg" } }, mensagem, pedido: contextoVillefer({ catalogo: catalogoEmMemoria([]) }) })).toBeNull();
+    expect(conferirLeitura({ ficha: { ...respondida, trechosVistos: { peso1: "109 kg" }, pesosDaVez: ["peso1"] }, mensagem, pedido: contextoVillefer({ catalogo: catalogoEmMemoria([]) }) })).toBeNull();
     const buscar = ferramentasDeLeitura.find((tool) => tool.name === "buscar_na_base")!;
     expect(buscar.schema.parse({ perguntaId: "pergunta-1", consulta: "metalon" })).toMatchObject({ perguntaId: "q1" });
   });
@@ -818,6 +818,9 @@ describe("modo sombra no histórico", () => {
     expect(itens[0].antiga).toMatchObject({ passou: true, motivo: "commercial_policy_risk", cliente: "vcs vende metalon?\n[áudio sem transcrição]" });
     expect(itens[0].cenario.historicoInicial?.map((mensagem) => mensagem.autor)).toEqual(["contato", "agente"]);
     expect(itens[1].cenario.historicoInicial).toEqual([]);
+    const { chaveDaDecisao } = await import("./agentes/atendimento/sombra.js");
+    const so = cenariosDaSombra([sessao], contextoVillefer(), 150, new Set([chaveDaDecisao(itens[1].antiga)]));
+    expect(so.map((item) => item.cenario.id)).toEqual(["sombra_c1_1"]);
   });
 });
 
@@ -857,5 +860,72 @@ describe("ajustes da sombra de 16/10", () => {
     expect(chamada).toBe(1);
     expect(result.enviar).toMatch(/rachadura/);
     expect(result.humano?.motivo).toMatch(/^reclamacao/);
+  });
+});
+
+describe("ajustes da sombra de 16/10, segunda leva", () => {
+  const catalogoPdf = { id: "catalogo", titulo: "Catálogo Villefer em PDF", url: "https://arquivos.exemplo/catalogo-villefer.pdf", nomeArquivo: "catalogo-villefer.pdf", mimeType: "application/pdf" };
+
+  it("cuts long passages at sentence ends only, so '6.000 mm' and the line before it stay", async () => {
+    const { trechosDeFontes } = await import("./agentes/atendimento/ficha.js");
+    const longo = `Barras chatas: largura de 19,05 a 100 mm; espessura de 3,00 a 12,70 mm; comprimento de 6.000 mm. ${"Material a confirmar com o vendedor. ".repeat(20)}`;
+    const trechos = trechosDeFontes([{ title: "Catálogo", content: longo }]);
+    expect(trechos.length).toBeGreaterThan(1);
+    expect(trechos[0].texto).toMatch(/^Barras chatas: largura de 19,05 a 100 mm; .*comprimento de 6\.000 mm\./);
+    expect(trechos.map((trecho) => trecho.texto).join(" ").replace(/\s+/g, " ")).toBe(longo.trim().replace(/\s+/g, " "));
+  });
+
+  it("a second passage adds to the answer, and the computed weight reaches the writer apart from the minimum", async () => {
+    const { ferramentasDeLeitura } = await import("./agentes/atendimento/ferramentas.js");
+    const { decidirJogada } = await import("./agentes/atendimento/jogadas.js");
+    const responder = ferramentasDeLeitura.find((tool) => tool.name === "responder_pergunta")! as HarnessTool<FichaDoAtendimento, ContextoDoAtendimento, unknown>;
+    let ficha: FichaDoAtendimento = {
+      ...fichaInicialAtendimento(),
+      perguntas: [{ id: "q1", texto: "fornecem 20 chapas de alumínio 1000x3000?", status: "aberta" as const, resposta: null, buscas: 1 }],
+      trechosVistos: { t1: "Chapa de piso de alumínio: sob encomenda.", t47: "Alumínio: aproximadamente 300 kg.", peso1: "Peso teórico: 20 × 3 m × 1 m × 8,4 kg/m² = aproximadamente 504 kg." },
+      pesosDaVez: ["peso1"]
+    };
+    const context = () => ({ ficha, pedido: contextoVillefer(), setFicha: (next: FichaDoAtendimento) => { ficha = next; }, mensagemAtual: "", historico: [] });
+    await responder.execute(responder.schema.parse({ perguntaId: "q1", trechoId: "t1", citacao: "sob encomenda" }), context());
+    await responder.execute(responder.schema.parse({ perguntaId: "q1", trechoId: "t47", citacao: "Alumínio: aproximadamente 300 kg" }), context());
+    expect(ficha.perguntas[0].resposta?.trechoId).toBe("t1");
+    expect(ficha.perguntas[0].maisRespostas).toEqual([{ trechoId: "t47", citacao: "Alumínio: aproximadamente 300 kg" }]);
+    const jogada = decidirJogada({ ficha, pedido: contextoVillefer(), triagem: null, evento: { tipo: "mensagem", texto: "" } });
+    expect(jogada.instrucao).toMatch(/"sob encomenda" e "Alumínio: aproximadamente 300 kg"/);
+    expect(jogada.instrucao).toMatch(/calculado pelo sistema: .*504 kg/);
+  });
+
+  it("asks the reader for the catalogue and the delivery city, together in one note", async () => {
+    const { conferirLeitura } = await import("./agentes/atendimento/ferramentas.js");
+    const nota = conferirLeitura({ ficha: fichaInicialAtendimento(), mensagem: "Me manda o catálogo. Entrega em Curitiba - PR", pedido: contextoVillefer({ anexos: [catalogoPdf] }) });
+    expect(nota).toMatch(/enviar_anexo/);
+    expect(nota).toMatch(/entregam em <cidade>/);
+    expect(conferirLeitura({ ficha: fichaInicialAtendimento(), mensagem: "não precisa de catálogo, obrigado", pedido: contextoVillefer({ anexos: [catalogoPdf] }) })).toBeNull();
+    expect(conferirLeitura({ ficha: fichaInicialAtendimento(), mensagem: "teria a pronta entrega?", pedido: contextoVillefer() }) ?? "").not.toMatch(/cidade/);
+  });
+
+  it("sends the approved PDF with the reply, and never says 'segue o catálogo' without it", async () => {
+    const { regras } = await import("./agentes/atendimento/regras.js");
+    const regra = regras.find((item) => item.id === "nao_promete_anexo")!;
+    const base = { pedido: contextoVillefer(), jogada: { tipo: "conversar", instrucao: "" }, historico: [] };
+    expect(regra.check({ ...base, ficha: fichaInicialAtendimento(), texto: "Claro! Segue o catálogo oficial da Villefer em PDF." } as never)).toMatchObject({ ok: false });
+    expect(regra.check({ ...base, ficha: { ...fichaInicialAtendimento(), anexosDaVez: ["catalogo"] }, texto: "Claro! Segue o catálogo oficial da Villefer em PDF." } as never)).toMatchObject({ ok: true });
+
+    const leitor = createScriptedModel("leitor", (request) => request.messages.some((message) => message.role === "tool")
+      ? { content: null, toolCalls: [] }
+      : { content: null, toolCalls: [toolCall("enviar_anexo", { anexoId: "catalogo" })] });
+    const escritor = createScriptedModel("escritor", (request) => {
+      expect(JSON.stringify(request.messages)).toMatch(/Vai anexado nesta mensagem: Catálogo Villefer em PDF/);
+      return { content: null, toolCalls: [toolCall("responder", { texto: "Claro! Segue o catálogo da Villefer em PDF. Qual produto você procura?" })] };
+    });
+    const pedido = contextoVillefer({ anexos: [catalogoPdf] });
+    const result = await runTurn(atendimento, { leitor, model: escritor, triage: createTriage() }, {
+      ficha: fichaInicialAtendimento(), pedido, historico: [{ autor: "contato", texto: "me manda o catálogo", em: "2026-10-16T12:00:00.000Z" }],
+      evento: { tipo: "mensagem", texto: "me manda o catálogo" }
+    });
+    expect(result.enviar).toMatch(/catálogo/);
+    expect(result.anexos).toEqual([{ url: catalogoPdf.url, legenda: catalogoPdf.titulo, nomeArquivo: catalogoPdf.nomeArquivo, mimeType: catalogoPdf.mimeType }]);
+    expect(result.ficha.anexosEnviados).toEqual(["catalogo"]);
+    expect(result.ficha.anexosDaVez).toEqual([]);
   });
 });

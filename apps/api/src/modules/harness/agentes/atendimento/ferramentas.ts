@@ -231,11 +231,16 @@ const responderPergunta: Tool<z.infer<typeof respostaArgs>> = {
     const texto = context.ficha.trechosVistos[args.trechoId];
     if (!texto) throw new Error(`o trecho ${args.trechoId} não apareceu em nenhuma busca.`);
     if (!normalize(texto).includes(normalize(args.citacao))) throw new Error(`a citação não está no trecho ${args.trechoId}. Copie as palavras exatas.`);
+    const nova = { trechoId: args.trechoId, citacao: args.citacao };
+    // A second passage adds to the answer ("we supply it" and then the minimum, the weight) instead of replacing it.
     const ficha = {
       ...context.ficha,
-      perguntas: context.ficha.perguntas.map((item) => item.id === args.perguntaId
-        ? { ...item, status: "respondida" as const, resposta: { trechoId: args.trechoId, citacao: args.citacao } }
-        : item)
+      perguntas: context.ficha.perguntas.map((item) => {
+        if (item.id !== args.perguntaId) return item;
+        if (item.status !== "respondida" || !item.resposta) return { ...item, status: "respondida" as const, resposta: nova };
+        if ([item.resposta, ...(item.maisRespostas ?? [])].some((outra) => outra.trechoId === nova.trechoId && outra.citacao === nova.citacao)) return item;
+        return { ...item, maisRespostas: [...(item.maisRespostas ?? []), nova] };
+      })
     };
     context.setFicha(ficha);
     return ok(ficha);
@@ -269,7 +274,28 @@ const pediuPessoa: Tool<Record<string, never>> = {
   }
 };
 
-export const ferramentasDeLeitura = [registrarPergunta, buscarNaBase, ...ferramentasDoCatalogo, responderPergunta, marcarSemBase, pediuPessoa];
+const anexoArgs = z.object({ anexoId: z.string().trim().min(1) });
+const enviarAnexo: Tool<z.infer<typeof anexoArgs>> = {
+  name: "enviar_anexo",
+  description: "Anexa à resposta um arquivo aprovado pela empresa (o catálogo em PDF), quando o contato pede para ver ou receber o catálogo. Só arquivos da lista; nunca sem o contato pedir.",
+  parameters: {
+    type: "object",
+    properties: { anexoId: { type: "string", description: "Id do arquivo na lista de anexos aprovados." } },
+    required: ["anexoId"],
+    additionalProperties: false
+  },
+  schema: anexoArgs,
+  execute(args, context) {
+    const anexos = context.pedido.anexos ?? [];
+    const anexo = anexos.find((item) => item.id === args.anexoId);
+    if (!anexo) throw new Error(anexos.length ? `não existe o anexo ${args.anexoId}. Aprovados: ${anexos.map((item) => `${item.id} (${item.titulo})`).join(", ")}.` : "esta empresa não tem arquivo aprovado para envio. Não diga que vai mandar.");
+    if ((context.ficha.anexosDaVez ?? []).includes(anexo.id)) return `${anexo.titulo} já vai anexado nesta resposta.`;
+    context.setFicha({ ...context.ficha, anexosDaVez: [...(context.ficha.anexosDaVez ?? []), anexo.id] });
+    return `${anexo.titulo} vai anexado nesta resposta.`;
+  }
+};
+
+export const ferramentasDeLeitura = [registrarPergunta, buscarNaBase, ...ferramentasDoCatalogo, responderPergunta, marcarSemBase, pediuPessoa, enviarAnexo];
 
 const PALAVRAS_VAZIAS = new Set(["voces", "vcs", "tem", "qual", "quais", "para", "pra", "com", "que", "uma", "um", "dos", "das", "aceita", "aceitam", "fazem", "faz"]);
 const palavras = (text: string) => new Set((normalize(text).match(/[a-z0-9,]{3,}/g) ?? []).filter((word) => !PALAVRAS_VAZIAS.has(word)));
@@ -288,7 +314,31 @@ const PECAS = /\b\d+\s*(barras?|pecas?|tubos?|chapas?|unidades?|varas?)\b/;
 const PEDIDO_DE_ITEM = /\b(orcamento|cotacao|cotar|preciso|precisava|queria|quero|gostaria|vende|vendem|trabalha|trabalham)\b/;
 const NEGA_LINHA = /\bn[aã]o (fornece|fornecemos|trabalhamos|temos|vendemos|fazemos|fabricamos|atendemos|entregamos|aceitamos|oferecemos)\b/;
 
-export function conferirLeitura({ ficha, mensagem, pedido }: { ficha: FichaDoAtendimento; mensagem: string; pedido?: ContextoDoAtendimento }): string | null {
+const PEDE_CATALOGO = /\bcatalogo\b/;
+const NAO_QUER_CATALOGO = /\b(nao|nem|sem|dispenso)\b.{0,30}\bcatalogo\b/;
+/** A delivery place in the message ("Para entrega / Rua … Curitiba - PR", "entrega em Itajaí?"). */
+const ENTREGA = /\b(entrega\w*|entregar|frete|cep|rua|avenida|bairro)\b|\s-\s?(ac|al|ap|am|ba|ce|df|es|go|ma|mt|ms|mg|pa|pb|pr|pe|pi|rj|rn|rs|ro|rr|sc|sp|se|to)\b/;
+
+/** The reader gets one more look per turn, so every note found goes in it together. */
+export function conferirLeitura(input: { ficha: FichaDoAtendimento; mensagem: string; pedido?: ContextoDoAtendimento }): string | null {
+  const { ficha, mensagem, pedido } = input;
+  const textoNormal = normalize(mensagem);
+  const notas: string[] = [];
+  // "Me manda o catálogo": the file goes with the reply, or the reply says "segue o catálogo" with nothing attached.
+  if (pedido?.anexos?.length && PEDE_CATALOGO.test(textoNormal) && !NAO_QUER_CATALOGO.test(textoNormal) && !(ficha.anexosDaVez ?? []).length) {
+    notas.push(`o contato fala do catálogo. Se ele pediu para ver ou receber, anexe com enviar_anexo (${pedido.anexos.map((item) => `${item.id}: ${item.titulo}`).join("; ")}). Se não pediu, não chame nada para isso.`);
+  }
+  // A city or address for delivery is a question even when written as information: does the company deliver there?
+  const atuais = ficha.perguntas.filter((item) => item.status !== "tratada");
+  if (ENTREGA.test(textoNormal.replace(/pronta entrega/g, " ")) && !atuais.some((item) => /entreg|frete|cidade|regiao|atend/.test(normalize(item.texto)))) {
+    notas.push("a mensagem fala de entrega ou traz um endereço ou cidade. Registre \"vocês entregam em <cidade>?\" com registrar_pergunta e procure na base (região de entrega). Se não há cidade, não chame nada para isso.");
+  }
+  const perguntas = conferirPerguntas(input);
+  if (perguntas) notas.push(perguntas);
+  return notas.length ? notas.join(" Também: ") : null;
+}
+
+function conferirPerguntas({ ficha, mensagem, pedido }: { ficha: FichaDoAtendimento; mensagem: string; pedido?: ContextoDoAtendimento }): string | null {
   const atuais = ficha.perguntas.filter((item) => item.status !== "tratada");
   if (atuais.length === 0) {
     const texto = normalize(mensagem);
@@ -314,7 +364,7 @@ export function conferirLeitura({ ficha, mensagem, pedido }: { ficha: FichaDoAte
     }
   }
   // "10 barras de metalon": with a catalogue, the weight decides the minimum, and only the code may compute it.
-  if (pedido?.catalogo && PECAS.test(normalize(mensagem)) && !Object.keys(ficha.trechosVistos).some((id) => id.startsWith("peso"))) {
+  if (pedido?.catalogo && PECAS.test(normalize(mensagem)) && !(ficha.pesosDaVez ?? []).length) {
     return "o contato pediu uma quantidade em peças ou barras. Ache a medida com consultar_catalogo e calcule o peso com calcular_peso, para comparar com o pedido mínimo; responda com o peso calculado. Se faltar a medida ou o comprimento, não calcule: não chame nada.";
   }
   return null;

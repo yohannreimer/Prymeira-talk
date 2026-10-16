@@ -28,10 +28,12 @@ export function renderFicha(ficha: FichaDoAtendimento): string {
   if (ficha.emAndamento) lines.push(`Em andamento: ${ficha.emAndamento.motivo}${prova(ficha.emAndamento.prova)}`);
   if (ficha.indicado) lines.push(`Contato indicado: ${ficha.indicado.nome}${ficha.indicado.telefone ? ` ${ficha.indicado.telefone}` : ""}${prova(ficha.indicado.prova)}`);
   for (const pergunta of ficha.perguntas.filter((item) => item.status !== "tratada")) {
-    const resposta = pergunta.resposta ? ` · base ${pergunta.resposta.trechoId}: "${pergunta.resposta.citacao}"` : "";
+    const resposta = [pergunta.resposta, ...(pergunta.maisRespostas ?? [])].filter((item) => item !== null).map((item) => ` · base ${item.trechoId}: "${item.citacao}"`).join("");
     lines.push(`Pergunta ${pergunta.id} [${pergunta.status}]: ${pergunta.texto}${resposta}`);
   }
   if (ficha.pediuPessoa) lines.push("O contato pediu para falar com uma pessoa.");
+  if (ficha.anexosDaVez?.length) lines.push(`Vai anexado nesta resposta: ${ficha.anexosDaVez.join(", ")}`);
+  if (ficha.anexosEnviados?.length) lines.push(`Já enviado antes: ${ficha.anexosEnviados.join(", ")}`);
   if (ficha.followups.length) lines.push(`Follow-ups já enviados: ${ficha.followups.map((item) => `"${item.texto}" (${item.pendenciaId})`).join(" | ")}`);
   return lines.join("\n");
 }
@@ -39,7 +41,8 @@ export function renderFicha(ficha: FichaDoAtendimento): string {
 export function renderContexto(contexto: ContextoDoAtendimento): string {
   return [
     `Empresa: ${contexto.empresa.nome}. ${contexto.empresa.oQueVende}`,
-    ...(contexto.regrasDaEmpresa ? [`Regras da empresa: ${contexto.regrasDaEmpresa}`] : [])
+    ...(contexto.regrasDaEmpresa ? [`Regras da empresa: ${contexto.regrasDaEmpresa}`] : []),
+    ...(contexto.anexos?.length ? [`Arquivos aprovados para envio (só com enviar_anexo): ${contexto.anexos.map((anexo) => `${anexo.id} (${anexo.titulo})`).join(", ")}`] : [])
   ].join("\n");
 }
 
@@ -97,7 +100,8 @@ export function trechosDeFontes(fontes: Array<{ title: string; content: string |
 /** Long text into pieces of whole sentences. */
 function cortar(texto: string, tamanho: number): string[] {
   if (texto.length <= tamanho) return [texto];
-  const frases = texto.match(/[^.!?]+[.!?]+(\s|$)|[^.!?]+$/g) ?? [texto];
+  // A sentence ends at punctuation followed by a space: "6.000 mm" and "1,5" stay whole.
+  const frases = texto.match(/[\s\S]+?(?:[.!?]+(?=\s|$)\s*|$)/g) ?? [texto];
   const pedacos: string[] = [];
   let atual = "";
   for (const frase of frases) {

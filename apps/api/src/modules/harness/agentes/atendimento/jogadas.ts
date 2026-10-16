@@ -17,7 +17,7 @@ export function decidirJogada(input: {
 }): Jogada {
   const { ficha, pedido, evento } = input;
   if (evento.tipo === "abertura") return { tipo: "sem_abertura", silencio: true, instrucao: "O atendimento responde; não abre conversa." };
-  if (evento.tipo === "mensagem") return jogadaDaMensagem(ficha, input.triagem);
+  if (evento.tipo === "mensagem") return jogadaDaMensagem(ficha, input.triagem, pedido);
   if (NAO_CLIENTE.has(ficha.contato.tipo)) {
     return { tipo: "contato_nao_cliente", silencio: true, instrucao: `Contato ${ficha.contato.tipo}: sem follow-up.` };
   }
@@ -79,17 +79,41 @@ export function decidirJogada(input: {
  * A live reply. The order is the point: the reader registered each question and searched the base;
  * code answers with what has a quoted passage and hands over only what the base does not cover.
  */
-function jogadaDaMensagem(ficha: FichaDoAtendimento, triagem: TriageResult | null): Jogada {
+function jogadaDaMensagem(ficha: FichaDoAtendimento, triagem: TriageResult | null, pedido: ContextoDoAtendimento): Jogada {
   if (triagem?.kind === "robo") return { tipo: "aguardar_pessoa", silencio: true, instrucao: "Atendimento automático do outro lado." };
   if (triagem?.kind === "recusa" || triagem?.kind === "despedida") {
     return { tipo: "encerrar", instrucao: "O contato encerrou ou recusou. Agradeça em uma frase, sem insistir e sem perguntar nada." };
   }
+  const jogada = jogadaDasPerguntas(ficha);
+  // Weights computed by code go to the writer even when the reader did not cite them, apart from the minimum.
+  const pesos = (ficha.pesosDaVez ?? []).map((id) => ficha.trechosVistos[id]).filter(Boolean);
+  const anexos = (ficha.anexosDaVez ?? []).map((id) => pedido.anexos?.find((anexo) => anexo.id === id)).filter((anexo) => anexo !== undefined);
+  const extras = [
+    ...(pesos.length ? [`Peso do pedido, calculado pelo sistema: ${pesos.join(" ")} Use esse número como o peso; o pedido mínimo é outra coisa, compare os dois.`] : []),
+    ...(anexos.length
+      ? [`Vai anexado nesta mensagem: ${anexos.map((anexo) => anexo.titulo).join(", ")}. Diga em poucas palavras que está enviando.`]
+      : pedido.anexos?.length ? ["Nenhum arquivo vai anexado nesta mensagem: não diga que está enviando catálogo ou arquivo."] : [])
+  ];
+  // The company asked for this choice the first time a made-to-order item comes up.
+  const encomenda = !anexos.length && !(ficha.anexosEnviados ?? []).length && pedido.anexos?.some((anexo) => /catalogo/i.test(semAcento(anexo.titulo))) &&
+    ficha.perguntas.some((item) => item.status === "respondida" && citacoes(item).some((citacao) => /encomenda/i.test(citacao)));
+  if (encomenda && (jogada.tipo === "responder" || jogada.tipo === "conversar")) {
+    extras.push("É um item sob encomenda: termine perguntando se ele prefere ver o catálogo em PDF ou falar com um vendedor, no lugar de outra pergunta.");
+  }
+  return extras.length && !jogada.silencio ? { ...jogada, instrucao: `${jogada.instrucao} ${extras.join(" ")}` } : jogada;
+}
+
+const semAcento = (texto: string) => texto.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+/** Every passage that answers the question, in the order the reader cited them. */
+export const citacoes = (pergunta: FichaDoAtendimento["perguntas"][number]) => [pergunta.resposta, ...(pergunta.maisRespostas ?? [])].filter((item) => item !== null).map((item) => item.citacao);
+
+function jogadaDasPerguntas(ficha: FichaDoAtendimento): Jogada {
   const atuais = ficha.perguntas.filter((item) => item.status !== "tratada");
   const respondidas = atuais.filter((item) => item.status === "respondida");
   // Unanswered after a search, or never searched: a person answers it. Nothing is promised in general.
   const semBase = atuais.filter((item) => item.status === "sem_base" || (item.status === "aberta" && item.buscas > 0));
   const naoBuscadas = atuais.filter((item) => item.status === "aberta" && item.buscas === 0);
-  const respostas = respondidas.map((item) => `"${item.texto}": a base diz "${item.resposta!.citacao}"`);
+  const respostas = respondidas.map((item) => `"${item.texto}": a base diz ${citacoes(item).map((citacao) => `"${citacao}"`).join(" e ")}`);
 
   if (ficha.pediuPessoa) {
     return {
@@ -129,8 +153,16 @@ function jogadaDaMensagem(ficha: FichaDoAtendimento, triagem: TriageResult | nul
 
 export function aposEnvio(input: { ficha: FichaDoAtendimento; jogada: Jogada; texto: string }): FichaDoAtendimento {
   if (input.jogada.tipo !== "cobrar_pendencia") {
-    // Everything asked so far was handled by this reply (answered here or passed to a person).
-    return { ...input.ficha, pediuPessoa: false, perguntas: input.ficha.perguntas.map((item) => ({ ...item, status: "tratada" as const })) };
+    // Everything asked so far was handled by this reply (answered here or passed to a person), files included.
+    const { ficha } = input;
+    return {
+      ...ficha,
+      pediuPessoa: false,
+      perguntas: ficha.perguntas.map((item) => ({ ...item, status: "tratada" as const })),
+      pesosDaVez: [],
+      anexosDaVez: [],
+      anexosEnviados: [...new Set([...(ficha.anexosEnviados ?? []), ...(ficha.anexosDaVez ?? [])])]
+    };
   }
   const pendenciaId = input.jogada.dados?.pendenciaId;
   if (typeof pendenciaId !== "string") return input.ficha;

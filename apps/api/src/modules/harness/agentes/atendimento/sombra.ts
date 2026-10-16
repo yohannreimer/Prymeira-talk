@@ -24,11 +24,15 @@ const AUTOR: Record<string, HarnessMessage["autor"]> = { contato: "contato", age
 
 const texto = (mensagem: SessaoExportada["mensagens"][number]) => mensagem.texto?.trim() || SEM_TEXTO[mensagem.tipo] || `[${mensagem.tipo}]`;
 
+/** The same old decision in two runs: its conversation and time. */
+export const chaveDaDecisao = (decisao: { conversa: string; em: string }) => `${decisao.conversa}|${decisao.em}`;
+
 /**
  * One scenario per old decision that answered customer messages, before any seller joined. Hand-overs
- * come first, since they are what we are trying to reduce; `limite` caps the total.
+ * come first, since they are what we are trying to reduce; `limite` caps the total. `apenas` keeps only
+ * the decisions picked from an earlier run (chaveDaDecisao), so a rerun covers the cases that matter.
  */
-export function cenariosDaSombra(sessoes: SessaoExportada[], pedido: ContextoDoAtendimento, limite = 150): Array<{ cenario: Cenario; antiga: DecisaoAntiga }> {
+export function cenariosDaSombra(sessoes: SessaoExportada[], pedido: ContextoDoAtendimento, limite = 150, apenas?: Set<string>): Array<{ cenario: Cenario; antiga: DecisaoAntiga }> {
   const todos: Array<{ cenario: Cenario; antiga: DecisaoAntiga }> = [];
   for (const sessao of sessoes) {
     const mensagens = [...sessao.mensagens].sort((a, b) => a.em.localeCompare(b.em));
@@ -43,6 +47,7 @@ export function cenariosDaSombra(sessoes: SessaoExportada[], pedido: ContextoDoA
       const bloco = antes.slice(inicio);
       if (!bloco.length) continue;
       const cliente = bloco.map(texto).join("\n");
+      if (apenas && !apenas.has(chaveDaDecisao({ conversa: sessao.conversa, em: decisao.em }))) continue;
       const antiga: DecisaoAntiga = {
         conversa: sessao.conversa,
         em: decisao.em,
@@ -79,6 +84,7 @@ function conferirSombra(run: Run, antiga: DecisaoAntiga): Check[] {
     { nome: "novo_nao_passou", ok: !resposta?.humano, detalhe: resposta?.humano?.motivo ?? "sem humano" },
     { nome: "novo_respondeu", ok: novo.length > 0, detalhe: novo || "(nada enviado)" },
     { nome: "novo_sem_frase_generica", ok: !GENERICA.test(novo), detalhe: novo },
+    { nome: "novo_anexou", ok: Boolean(resposta?.anexos?.length), detalhe: resposta?.anexos?.map((anexo) => anexo.nomeArquivo ?? anexo.url).join(", ") ?? "" },
     { nome: "antigo", ok: !antiga.passou, detalhe: `${antiga.passou ? `passou (${antiga.motivo ?? "sem motivo"})` : "respondeu"}: ${antiga.resposta ?? "(nada)"}` }
   ];
 }

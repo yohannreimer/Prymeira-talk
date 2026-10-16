@@ -31,6 +31,10 @@ export const atendimento: AgentDefinition<FichaDoAtendimento, ContextoDoAtendime
   // The passages the reader already pulled from the base are true facts the judge must also see.
   fontesDoRevisor: (ficha) => Object.entries(ficha.trechosVistos).map(([id, texto]) => `[${id}] ${texto}`).join("\n"),
   janelaDeMensagens: 20,
+  anexosDaVez: (ficha, pedido) => (ficha.anexosDaVez ?? [])
+    .map((id) => pedido.anexos?.find((anexo) => anexo.id === id))
+    .filter((anexo) => anexo !== undefined)
+    .map((anexo) => ({ url: anexo.url, legenda: anexo.titulo, nomeArquivo: anexo.nomeArquivo, mimeType: anexo.mimeType })),
   motivosParaHumano: {
     sem_base_para_retomar: "num follow-up, a pendência depende de um fato (preço, prazo, estoque) que não está na conversa",
     reclamacao: "o cliente está reclamando ou irritado com a empresa",

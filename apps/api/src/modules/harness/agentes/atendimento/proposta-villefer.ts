@@ -12,7 +12,7 @@ Os mínimos são aproximados: o vendedor pode aceitar um pedido um pouco menor, 
 - Alumínio: aproximadamente 300 kg. Sob encomenda, prazo de 5 a 10 dias úteis.
 - Chapas: aproximadamente 350 kg.
 - Vigas I, vigas U, perfil W e cantoneiras: sem mínimo informado.
-Como falar do mínimo: diga o valor aproximado ("trabalhamos a partir de uns 1.000 kg de tubo") e pergunte a quantidade, se ainda não sabe. Não diga que o pedido é pequeno demais e não recuse o cliente. Se o pedido está perto do mínimo, ou o cliente quer seguir abaixo dele, passe ao vendedor, que decide; não prometa que será aceito. Não calcule o peso a partir de barras ou peças.`;
+Como falar do mínimo: diga o valor aproximado ("trabalhamos a partir de uns 1.000 kg de tubo") e pergunte a quantidade, se ainda não sabe. Não diga que o pedido é pequeno demais e não recuse o cliente. Se o pedido está perto do mínimo, ou o cliente quer seguir abaixo dele, passe ao vendedor, que decide; não prometa que será aceito. O peso de barras ou peças só vale calculado pelo sistema a partir do catálogo, nunca de cabeça.`;
 
 export const REGIAO_DE_ENTREGA = `REGIÃO DE ENTREGA (informado pela empresa em 16/10/2026; lista parcial).
 Entregamos em: Joinville, Araquari, Garuva, Jaraguá do Sul, Guaramirim, Schroeder, Corupá, Massaranduba, Itajaí, Blumenau, Indaial, Pomerode, Timbó e Balneário Camboriú.

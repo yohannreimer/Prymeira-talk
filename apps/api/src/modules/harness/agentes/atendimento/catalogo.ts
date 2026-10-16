@@ -177,7 +177,7 @@ const calcularPeso: Tool<z.infer<typeof pesoArgs>> = {
     }
     const id = `peso${Object.keys(context.ficha.trechosVistos).filter((chave) => chave.startsWith("peso")).length + 1}`;
     const texto = `Peso teórico de ${linha.descricao}: ${conta} = aproximadamente ${kg(total)} kg (catálogo, linha ${linha.id}).`;
-    context.setFicha({ ...context.ficha, trechosVistos: { ...context.ficha.trechosVistos, [id]: texto } });
+    context.setFicha({ ...context.ficha, trechosVistos: { ...context.ficha.trechosVistos, [id]: texto }, pesosDaVez: [...(context.ficha.pesosDaVez ?? []), id] });
     return `[${id}] ${texto}\nPara usar na resposta, responder_pergunta com trechoId ${id}.`;
   }
 };
