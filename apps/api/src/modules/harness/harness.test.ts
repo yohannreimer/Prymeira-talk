@@ -334,6 +334,16 @@ describe("atendimento: follow-up no harness", () => {
     expect(lembrete.jogada).toMatchObject({ tipo: "lembrete_vendedor", humano: expect.stringMatching(/o cliente pediu na mensagem \[0\]: "qual o valor da chapa 3 mm"/) });
   });
 
+  it("a question the company asked to go on with the quote, left unanswered, is a follow-up", async () => {
+    const semComprimento = conversa("C: vocês trabalham com tubo quadrado 50x50? cota 20 barras pra mim", "E: Trabalhamos sim! Me manda o comprimento de cada barra?");
+    const result = await runTurn(atendimento, {
+      model: escritor("Oi! Pra seguir com a cotação dos 20 tubos 50x50, qual o comprimento de cada barra?"),
+      analista: analistaQueRegistra(toolCall("abrir_pendencia", { dono: "cliente", descricao: "mandar o comprimento dos tubos 50x50", mensagem: 1, trecho: "Me manda o comprimento", contatoMensagem: 0, contatoTrecho: "cota 20 barras pra mim" }))
+    }, { ficha: fichaInicialAtendimento(), pedido: contexto, historico: semComprimento, evento: silencio });
+    expect(result.jogada?.tipo).toBe("cobrar_pendencia");
+    expect(result.enviar).toMatch(/comprimento/);
+  });
+
   it("code decides the move from the record", () => {
     const decide = (ficha: FichaDoAtendimento, pedido = contexto) => decidirJogadaAtendimento({ ficha, pedido, triagem: null, evento: silencio });
     expect(decide(fichaAtd({ contato: { tipo: "colega", prova: { mensagem: 0, trecho: "x" } }, pendencias: [pendencia("cliente", 2)] })).tipo).toBe("contato_nao_cliente");

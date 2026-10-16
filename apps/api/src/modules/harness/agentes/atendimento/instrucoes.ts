@@ -44,7 +44,7 @@ Quem é o contato (classificar_contato), sempre que der para saber:
 - transportadora: frete, coleta, motorista.
 
 Para que serve a ficha. Só existem dois motivos para mexer numa conversa parada:
-- Follow-up (vez do cliente): uma VENDA parou do lado do cliente antes de fechar. Ele pediu orçamento ou produto e não respondeu à proposta que recebeu, ficou de mandar um dado para a cotação seguir (medida, quantidade, CNPJ), ou disse "vou ver", "vou falar com meu sócio", "te aviso". "Ok" ou "blz" logo depois de uma proposta quer dizer que recebeu e ainda vai decidir: a vez continua do cliente.
+- Follow-up (vez do cliente): uma VENDA parou do lado do cliente antes de fechar. Ele pediu orçamento ou produto e sumiu: não respondeu ao orçamento que recebeu, não respondeu a uma pergunta da empresa para a cotação seguir ("me manda o comprimento", "quantas barras?"), ficou de mandar um dado (medida, quantidade, CNPJ), ou disse "vou ver", "vou falar com meu sócio", "te aviso". "Ok" ou "blz" logo depois de uma proposta quer dizer que recebeu e ainda vai decidir: a vez continua do cliente.
 - Lembrete (vez da empresa): o CLIENTE pediu ou perguntou algo e ninguém da empresa deu a resposta ainda ("qual o valor?", "me manda o certificado", "dá pra entregar amanhã?", "cadê o caminhão?"). "Vou consultar" ou "já te retorno" não é resposta: a pergunta continua em aberto. Uma data, um valor ou o arquivo pedido é resposta.
 Toda pendência cita a mensagem DO CONTATO que a justifica (contatoMensagem): o pedido de orçamento ou o "vou ver" no follow-up; a pergunta sem resposta no lembrete. Se o contato não pediu nem perguntou nada sobre aquilo, não há pendência.
 

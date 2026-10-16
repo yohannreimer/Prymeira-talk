@@ -65,7 +65,7 @@ const abrirPendencia: Tool<z.infer<typeof abrirArgs>> = {
   name: "abrir_pendencia",
   description: [
     "Registra algo que ficou em aberto e de quem é a vez.",
-    "dono=cliente (vira follow-up): uma venda parou do lado do cliente ANTES de fechar. Ele pediu um orçamento ou produto e não respondeu à proposta, ficou de mandar um dado para a cotação seguir, ou disse 'vou ver', 'vou falar com meu sócio'.",
+    "dono=cliente (vira follow-up): uma venda parou do lado do cliente ANTES de fechar. Ele pediu um orçamento ou produto e sumiu: não respondeu ao orçamento, não respondeu a uma pergunta da empresa para a cotação seguir ('me manda o comprimento'), ficou de mandar um dado, ou disse 'vou ver', 'vou falar com meu sócio'.",
     "dono=empresa (vira lembrete para o vendedor): o cliente pediu ou perguntou algo e a empresa ainda não deu a resposta ('qual o valor?', 'me manda o certificado', 'dá pra entregar amanhã?', 'cadê o caminhão?'). 'Vou consultar' não é resposta; uma data ou um valor é.",
     "A descrição é uma frase curta e concreta, com o item ou o assunto. mensagem/trecho: a mensagem que prova a pendência.",
     "contatoMensagem/contatoTrecho: a mensagem DO CONTATO que mostra o interesse (dono=cliente: o pedido de orçamento ou produto, ou o 'vou ver') ou a pergunta sem resposta (dono=empresa). Se mensagem/trecho já é do contato, pode repetir."
