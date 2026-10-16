@@ -119,7 +119,7 @@ export type AgentDefinition<Ficha, Pedido> = {
    * gives the reader extra rounds (once per turn). Models stop early or give up on a passage that does
    * answer; code can see that and ask them to look again.
    */
-  conferirLeitura?: (input: { ficha: Ficha; mensagem: string }) => string | null;
+  conferirLeitura?: (input: { ficha: Ficha; mensagem: string; pedido?: Pedido }) => string | null;
   /** Extra sources the writer could use and the judge must see too (e.g. knowledge-base passages already read). */
   fontesDoRevisor?: (ficha: Ficha, pedido: Pedido) => string;
   /**

@@ -162,7 +162,7 @@ async function readIntoRecord<Ficha, Pedido>(
   for (let round = 0; round < rounds; round += 1) {
     const response = await model.complete({ messages, tools: agent.ferramentasDeLeitura.map(toSpec), toolChoice: "auto" });
     if (response.toolCalls.length === 0) {
-      const nota = conferiu ? null : agent.conferirLeitura?.({ ficha, mensagem: input.mensagem });
+      const nota = conferiu ? null : agent.conferirLeitura?.({ ficha, mensagem: input.mensagem, pedido: input.pedido });
       conferiu = true;
       if (!nota) break;
       calls.push({ ferramenta: "conferencia_do_codigo", argumentos: {}, resultado: `Erro: ${nota}` });

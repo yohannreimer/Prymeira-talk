@@ -1,12 +1,14 @@
 import { PrismaClient } from "@prisma/client";
 import { config } from "dotenv";
 import { readFile, writeFile } from "node:fs/promises";
+import { gunzipSync } from "node:zlib";
 import { resolve } from "node:path";
 import { resolveOpenAiCompatibleSettings } from "../src/modules/agents/ai-provider-settings.js";
 import { atendimento } from "../src/modules/harness/agentes/atendimento/index.js";
-import { cenarios as cenariosAtendimento, cenariosAoVivo, cenariosDaBaseReal, cenariosDeCasos } from "../src/modules/harness/agentes/atendimento/cenarios.js";
+import { cenarios as cenariosAtendimento, cenariosAoVivo, cenariosDaBaseReal, cenariosDeCasos, contextoDaBaseReal } from "../src/modules/harness/agentes/atendimento/cenarios.js";
 import { baseCompleta, trechosDeFontes } from "../src/modules/harness/agentes/atendimento/ficha.js";
 import { catalogoEmMemoria, type LinhaDoCatalogo } from "../src/modules/harness/agentes/atendimento/catalogo.js";
+import { cenariosDaSombra, type DecisaoAntiga } from "../src/modules/harness/agentes/atendimento/sombra.js";
 import { aplicarPropostaVillefer } from "../src/modules/harness/agentes/atendimento/proposta-villefer.js";
 import { createJuizDeFollowup } from "../src/modules/harness/agentes/atendimento/juiz.js";
 import { cenarios } from "../src/modules/harness/agentes/comprador/cenarios.js";
@@ -43,6 +45,8 @@ config({ path: resolve(import.meta.dirname, "../../../.env") });
 //   JEV_API_KEY: JEV does the triage and judges each message (fails closed when JEV is down)
 //   HARNESS_BASE_FONTES=conversas-base.jsonl (atendimento): adds the questions the old agent handed over although
 //     the real base answers them, run against that base. HARNESS_BASE_AGENTE=<agentId> picks one agent's sources.
+//     HARNESS_SOMBRA=conversas.jsonl.gz replays every reply of the old agent with the new one, side by side
+//     (HARNESS_SOMBRA_SAIDA=sombra.jsonl, HARNESS_SOMBRA_LIMITE=150).
 //     HARNESS_CATALOGO=villefer adds the product tables (sizes and kg/m) as a tool.
 //     HARNESS_BASE_PROPOSTA=1 applies the new minimums and delivery cities (proposta-villefer.ts) on top.
 //   HARNESS_REASONING_ANALISTA (default high): reasoning of the analyst subagent (atendimento)
@@ -97,13 +101,17 @@ async function main() {
 }
 
 async function runAtendimento() {
-  const k = Number(process.env.HARNESS_K ?? 4);
+  const k = Number(process.env.HARNESS_K ?? (process.env.HARNESS_SOMBRA ? 1 : 4));
   const wanted = (process.env.HARNESS_CENARIOS ?? "").split(",").map((id) => id.trim()).filter(Boolean);
   const casos = process.env.HARNESS_CASOS
     ? cenariosDeCasos((await readFile(resolve(process.env.HARNESS_CASOS), "utf8")).split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line)))
     : [];
   const baseReal = process.env.HARNESS_BASE_FONTES ? await carregarBaseReal(process.env.HARNESS_BASE_FONTES) : null;
-  const scenarios = [...cenariosAoVivo, ...cenariosAtendimento, ...casos, ...(baseReal ? cenariosDaBaseReal(baseReal, await carregarCatalogo()) : [])].filter((scenario) => !wanted.length || wanted.includes(scenario.id));
+  const catalogo = baseReal ? await carregarCatalogo() : undefined;
+  const sombra = process.env.HARNESS_SOMBRA ? await carregarSombra(process.env.HARNESS_SOMBRA, baseReal, catalogo) : null;
+  const scenarios = sombra
+    ? sombra.map((item) => item.cenario)
+    : [...cenariosAoVivo, ...cenariosAtendimento, ...casos, ...(baseReal ? cenariosDaBaseReal(baseReal, catalogo) : [])].filter((scenario) => !wanted.length || wanted.includes(scenario.id));
   if (process.env.HARNESS_OFFLINE === "1") throw new Error("Os cenários de atendimento precisam de modelo: use HARNESS_WORKSPACE_ID ou HARNESS_BASE_URL.");
   const endpoint = await resolveEndpoint();
   const mode = readMode();
@@ -131,13 +139,62 @@ async function runAtendimento() {
     scenarios,
     k,
     onProgress: (line) => console.error(line),
-    onRun: linha.onRun
+    onRun: (input) => {
+      linha.onRun(input);
+      if (sombra) comparacoes.push({ antiga: sombra.find((item) => item.cenario.id === input.scenario.id)!.antiga, checks: input.checks });
+    }
   });
   await linha.salvar(report.agente, report.modelo);
+  if (sombra) return salvarSombra(comparacoes);
   const markdown = renderReport(report);
   if (process.env.HARNESS_RELATORIO) await writeFile(resolve(process.env.HARNESS_RELATORIO), markdown);
   console.log(markdown);
   if (report.passK < 1) process.exitCode = 1;
+}
+
+const comparacoes: Array<{ antiga: DecisaoAntiga; checks: Check[] }> = [];
+
+/**
+ * HARNESS_SOMBRA=conversas.jsonl.gz (the export of harness-exportar-conversas.ts): every reply the old agent
+ * gave becomes a scenario with the same history, run once (HARNESS_SOMBRA_LIMITE, default 150, hand-overs first).
+ */
+async function carregarSombra(caminho: string, base: Awaited<ReturnType<typeof carregarBaseReal>> | null, catalogo: Awaited<ReturnType<typeof carregarCatalogo>>) {
+  if (!base) throw new Error("O modo sombra precisa da base real: defina HARNESS_BASE_FONTES.");
+  const bruto = await readFile(resolve(caminho));
+  const texto = caminho.endsWith(".gz") ? gunzipSync(bruto).toString("utf8") : bruto.toString("utf8");
+  const sessoes = texto.split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
+  const itens = cenariosDaSombra(sessoes, contextoDaBaseReal(base, catalogo), Number(process.env.HARNESS_SOMBRA_LIMITE ?? 150));
+  console.error(`Sombra: ${sessoes.length} conversas, ${itens.length} respostas do agente antigo para refazer (${itens.filter((item) => item.antiga.passou).length} delas ele passou para humano).`);
+  return itens;
+}
+
+/** Side by side, as JSONL (HARNESS_SOMBRA_SAIDA) and a short summary of hand-overs, old against new. */
+async function salvarSombra(itens: typeof comparacoes) {
+  const detalhe = (checks: Check[], nome: string) => checks.find((check) => check.nome === nome);
+  const linhas = itens.map(({ antiga, checks }) => ({
+    conversa: antiga.conversa,
+    em: antiga.em,
+    cliente: antiga.cliente,
+    antigo: { passou: antiga.passou, motivo: antiga.motivo, resposta: antiga.resposta },
+    novo: {
+      passou: !detalhe(checks, "novo_nao_passou")!.ok,
+      motivo: detalhe(checks, "novo_nao_passou")!.ok ? null : detalhe(checks, "novo_nao_passou")!.detalhe,
+      resposta: detalhe(checks, "novo_respondeu")!.ok ? detalhe(checks, "novo_respondeu")!.detalhe : null,
+      fraseGenerica: !detalhe(checks, "novo_sem_frase_generica")!.ok
+    }
+  }));
+  if (process.env.HARNESS_SOMBRA_SAIDA) await writeFile(resolve(process.env.HARNESS_SOMBRA_SAIDA), linhas.map((linha) => JSON.stringify(linha)).join("\n") + "\n");
+  const conta = (filtro: (linha: (typeof linhas)[number]) => boolean) => linhas.filter(filtro).length;
+  const antigoPassou = conta((linha) => linha.antigo.passou);
+  console.log([
+    `# Sombra: agente novo nas conversas reais`,
+    ``,
+    `Respostas refeitas: ${linhas.length}`,
+    `Antigo passou para humano: ${antigoPassou} · novo passou: ${conta((linha) => linha.novo.passou)}`,
+    `Das ${antigoPassou} que o antigo passou, o novo respondeu sem passar: ${conta((linha) => linha.antigo.passou && !linha.novo.passou)}`,
+    `Das ${linhas.length - antigoPassou} que o antigo respondeu, o novo passou: ${conta((linha) => !linha.antigo.passou && linha.novo.passou)}`,
+    `Novo usou a frase genérica: ${conta((linha) => linha.novo.fraseGenerica)} · novo não mandou nada: ${conta((linha) => !linha.novo.resposta)}`
+  ].join("\n"));
 }
 
 async function runProspeccao() {

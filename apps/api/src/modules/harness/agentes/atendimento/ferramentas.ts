@@ -178,8 +178,8 @@ const registrarPergunta: Tool<z.infer<typeof perguntaArgs>> = {
   }
 };
 
-/** The model sometimes writes "1" for "q1"; both mean the same registered question. */
-const idDaPergunta = z.string().trim().min(1).transform((id) => (/^\d+$/.test(id) ? `q${id}` : id));
+/** The model sometimes writes "1", "pergunta-1" or "p1" for "q1"; all mean the same registered question. */
+const idDaPergunta = z.string().trim().min(1).transform((id) => (/^(\d+|pergunta[-_ ]?\d+|p\d+)$/i.test(id) ? `q${id.match(/\d+/)![0]}` : id));
 
 const basesMostradas = new WeakSet<object>();
 const buscaArgs = z.object({ perguntaId: idDaPergunta, consulta: z.string().trim().min(2).max(200) });
@@ -284,10 +284,11 @@ const ASSUNTO_DO_NEGOCIO = /\b(preco|precos|valor|quanto|custa|estoque|tem|temos
  * After the reader: a question left unregistered, open, or called unanswerable while a passage it saw
  * shares its key words gets one more look. Seen in the 16/10 runs (boleto 28 dias, prazo para Jaraguá).
  */
+const PECAS = /\b\d+\s*(barras?|pecas?|tubos?|chapas?|unidades?|varas?)\b/;
 const PEDIDO_DE_ITEM = /\b(orcamento|cotacao|cotar|preciso|precisava|queria|quero|gostaria|vende|vendem|trabalha|trabalham)\b/;
 const NEGA_LINHA = /\bn[aã]o (fornece|fornecemos|trabalhamos|temos|vendemos|fazemos|fabricamos|atendemos|entregamos|aceitamos|oferecemos)\b/;
 
-export function conferirLeitura({ ficha, mensagem }: { ficha: FichaDoAtendimento; mensagem: string }): string | null {
+export function conferirLeitura({ ficha, mensagem, pedido }: { ficha: FichaDoAtendimento; mensagem: string; pedido?: ContextoDoAtendimento }): string | null {
   const atuais = ficha.perguntas.filter((item) => item.status !== "tratada");
   if (atuais.length === 0) {
     const texto = normalize(mensagem);
@@ -311,6 +312,10 @@ export function conferirLeitura({ ficha, mensagem }: { ficha: FichaDoAtendimento
     if (parecidos.length) {
       return `você marcou ${pergunta.id} sem base, mas o trecho ${parecidos.join(", ")} fala do mesmo assunto. Releia: se ele responde (inclusive por faixa, lista ou regra geral), use responder_pergunta com as palavras exatas. Se não responde mesmo, não chame nada.`;
     }
+  }
+  // "10 barras de metalon": with a catalogue, the weight decides the minimum, and only the code may compute it.
+  if (pedido?.catalogo && PECAS.test(normalize(mensagem)) && !Object.keys(ficha.trechosVistos).some((id) => id.startsWith("peso"))) {
+    return "o contato pediu uma quantidade em peças ou barras. Ache a medida com consultar_catalogo e calcule o peso com calcular_peso, para comparar com o pedido mínimo; responda com o peso calculado. Se faltar a medida ou o comprimento, não calcule: não chame nada.";
   }
   return null;
 }

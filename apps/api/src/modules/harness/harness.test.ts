@@ -778,3 +778,45 @@ describe("pedido de item sem interrogação", () => {
     expect(conferirLeitura({ ficha: vazia, mensagem: "ok obrigado" })).toBeNull();
   });
 });
+
+describe("peso pelo catálogo antes do mínimo", () => {
+  it("nudges a quantity in bars to the catalogue once there is one, and accepts 'pergunta-1' as q1", async () => {
+    const { conferirLeitura, ferramentasDeLeitura } = await import("./agentes/atendimento/ferramentas.js");
+    const { catalogoEmMemoria } = await import("./agentes/atendimento/catalogo.js");
+    const respondida = { ...fichaInicialAtendimento(), perguntas: [{ id: "q1", texto: "fornecem metalon?", status: "respondida" as const, resposta: { trechoId: "t1", citacao: "1.000 kg" }, buscas: 1 }] };
+    const mensagem = "quero 10 barras de metalon 40x40 parede 1,5 de 6 metros";
+    expect(conferirLeitura({ ficha: respondida, mensagem, pedido: contextoVillefer({ catalogo: catalogoEmMemoria([]) }) })).toMatch(/calcular_peso/);
+    expect(conferirLeitura({ ficha: respondida, mensagem, pedido: contextoVillefer() })).toBeNull();
+    expect(conferirLeitura({ ficha: { ...respondida, trechosVistos: { peso1: "109 kg" } }, mensagem, pedido: contextoVillefer({ catalogo: catalogoEmMemoria([]) }) })).toBeNull();
+    const buscar = ferramentasDeLeitura.find((tool) => tool.name === "buscar_na_base")!;
+    expect(buscar.schema.parse({ perguntaId: "pergunta-1", consulta: "metalon" })).toMatchObject({ perguntaId: "q1" });
+  });
+});
+
+describe("modo sombra no histórico", () => {
+  it("replays each old reply with the history before it, hand-overs first, and stops once a seller joins", async () => {
+    const { cenariosDaSombra } = await import("./agentes/atendimento/sombra.js");
+    const sessao = {
+      conversa: "c1",
+      mensagens: [
+        { autor: "contato", tipo: "text", texto: "bom dia", em: "2026-10-15T10:00:00.000Z" },
+        { autor: "agente", tipo: "text", texto: "Bom dia! Como posso ajudar?", em: "2026-10-15T10:00:30.000Z" },
+        { autor: "contato", tipo: "text", texto: "vcs vende metalon?", em: "2026-10-15T10:05:00.000Z" },
+        { autor: "contato", tipo: "audio", texto: null, em: "2026-10-15T10:05:10.000Z" },
+        { autor: "agente", tipo: "text", texto: "Vou consultar essas informações e já te dou um retorno.", em: "2026-10-15T10:05:40.000Z" },
+        { autor: "vendedor", tipo: "text", texto: "oi, aqui é o Junior", em: "2026-10-15T10:10:00.000Z" },
+        { autor: "contato", tipo: "text", texto: "ok", em: "2026-10-15T10:11:00.000Z" }
+      ],
+      decisoes: [
+        { em: "2026-10-15T10:00:31.000Z", status: "completed", resposta: "Bom dia! Como posso ajudar?", humano: { reason: null, required: false } },
+        { em: "2026-10-15T10:05:41.000Z", status: "handoff_requested", resposta: "Vou consultar essas informações e já te dou um retorno.", humano: { reason: "commercial_policy_risk", required: true } },
+        { em: "2026-10-15T10:11:30.000Z", status: "completed", resposta: "ok", humano: null }
+      ]
+    };
+    const itens = cenariosDaSombra([sessao], contextoVillefer());
+    expect(itens.map((item) => item.cenario.id)).toEqual(["sombra_c1_2", "sombra_c1_1"]);
+    expect(itens[0].antiga).toMatchObject({ passou: true, motivo: "commercial_policy_risk", cliente: "vcs vende metalon?\n[áudio sem transcrição]" });
+    expect(itens[0].cenario.historicoInicial?.map((mensagem) => mensagem.autor)).toEqual(["contato", "agente"]);
+    expect(itens[1].cenario.historicoInicial).toEqual([]);
+  });
+});
