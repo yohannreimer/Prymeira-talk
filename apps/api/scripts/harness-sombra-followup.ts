@@ -124,7 +124,9 @@ async function main() {
 export function resumir(linhas: Array<{ antigo: { acao: string }; novo: Record<string, unknown> }>) {
   const antigas = ["enviou", "vendedor_enviou", "rascunho", "lembrete", "nada"];
   const novas = ["mensagem", "lembrete", "nada", "erro"];
-  const conta = (antiga: string, nova: string) => linhas.filter((linha) => linha.antigo.acao === antiga && linha.novo.acao === nova).length;
+  // seguirComHarness calls the reminder "lembrete_vendedor"; the table uses the old engine's short word.
+  const acaoNova = (linha: { novo: Record<string, unknown> }) => linha.novo.acao === "lembrete_vendedor" ? "lembrete" : String(linha.novo.acao);
+  const conta = (antiga: string, nova: string) => linhas.filter((linha) => linha.antigo.acao === antiga && acaoNova(linha) === nova).length;
   const escreveu = (acao: string) => ["enviou", "vendedor_enviou", "rascunho"].includes(acao);
   return [
     "# Sombra do follow-up: agente novo contra o motor atual",
@@ -135,7 +137,8 @@ export function resumir(linhas: Array<{ antigo: { acao: string }; novo: Record<s
     `|---|${novas.map(() => "---").join("|")}|`,
     ...antigas.map((antiga) => `| ${antiga} | ${novas.map((nova) => conta(antiga, nova)).join(" | ")} |`),
     "",
-    `O atual escreveu ao cliente e o novo ficou quieto ou lembrou o vendedor: ${linhas.filter((linha) => escreveu(linha.antigo.acao) && ["nada", "lembrete"].includes(String(linha.novo.acao))).length}`,
+    `O atual escreveu ao cliente e o novo ficou quieto ou lembrou o vendedor: ${linhas.filter((linha) => escreveu(linha.antigo.acao) && ["nada", "lembrete"].includes(acaoNova(linha))).length}`,
+    `O atual não fez nada e o novo lembrou o vendedor: ${linhas.filter((linha) => linha.antigo.acao === "nada" && acaoNova(linha) === "lembrete").length}`,
     `O atual não escreveu e o novo escreveu: ${linhas.filter((linha) => !escreveu(linha.antigo.acao) && linha.novo.acao === "mensagem").length}`,
     `Mensagens do novo barradas pelo revisor pelo menos uma vez: ${linhas.filter((linha) => Array.isArray(linha.novo.bloqueios) && linha.novo.bloqueios.length > 0).length}`
   ].join("\n");

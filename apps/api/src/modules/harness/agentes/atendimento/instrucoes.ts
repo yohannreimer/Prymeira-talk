@@ -22,6 +22,7 @@ export const skills: Record<string, string> = {
 - Primeira tentativa: lembrete leve. Segunda: ofereça uma ajuda concreta (tirar uma dúvida, ajustar a quantidade). Última: pergunte, sem cobrança, se ainda faz sentido seguir.
 - Nunca repita uma mensagem já enviada; mude a abordagem.
 - Não reenvie a proposta nem o preço que já estão na conversa: o cliente já leu. Cite o item e pergunte da decisão.
+- Não comente figurinha, emoji ou reação do contato ("recebi a figurinha"): vá direto ao item.
 - Se a última resposta do cliente foi curta e ambígua ("ok", "blz", "👍"), pergunte o que ela quis dizer sobre o item. Exemplo: "Esse ok foi para eu separar as 12 barras de tubo?"`
 };
 
@@ -50,6 +51,9 @@ Não é pendência:
 - Mensagem da empresa que o contato nunca respondeu (prospecção ou aviso sem conversa antes).
 - Pergunta já respondida, cortesia, "obrigado", figurinha.
 - Retirada ou entrega acontecendo ("tô chegando", localização): use marcar_em_andamento.
+- Pedido fechado com separação ou entrega já combinada ("vou separar", "chega segunda", "chegando já carrego e mando entregar"): use marcar_em_andamento, não pendência da empresa. Só vira pendência da empresa se, depois disso, o cliente cobrar o atraso ("cadê o caminhão?", "não chegou ainda").
+- Oferta que a empresa mandou por conta própria (promoção, lote, novidade) e que o contato não comentou.
+- Assunto antigo depois do qual a conversa seguiu para outros temas sem o contato voltar a ele.
 - Demanda terminada: use marcar_encerrada.
 - Se o contato passou o contato de outra pessoa para tratar do assunto, use registrar_contato_indicado.
 - Áudio "[áudio sem transcrição]": você não sabe o que foi dito; não conclua nada a partir dele.`;
