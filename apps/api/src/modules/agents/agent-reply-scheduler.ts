@@ -1,3 +1,4 @@
+import { observeOperationalOperation, reportOperationalException } from '../../observability/operation-observer.js';
 import { enterCanonicalWorkspaceTransaction } from "../messaging/canonical-boundary.js";
 import { replayProspectingFollowupObservations } from "../prospecting/prospecting-followup-observation.js";
 import type { ConversationFollowupsObserver } from "../followups/conversation-followups.service.js";
@@ -261,12 +262,12 @@ export function createAgentReplyScheduler(input: {
         }, AGENT_REPLY_LEASE_MS / 3);
         heartbeat.unref?.();
         try {
-          const run = await input.agentRuntime.runForMessage({ workspaceId: pendingReply.workspaceId,
+          const run = await observeOperationalOperation('agent_scheduler', () => input.agentRuntime.runForMessage({ workspaceId: pendingReply.workspaceId,
             agentId: pendingReply.agentId, conversationId: pendingReply.conversationId,
             sessionId: pendingReply.sessionId,
             messageId: pendingReply.lastMessageId, trigger: "automation", replyClaim: { id: pendingReply.id, token },
             ...(pendingReply.prospectingGeneration ? { prospectingGeneration: pendingReply.prospectingGeneration } : {}),
-            instruction: pendingReply.instruction ?? null });
+            instruction: pendingReply.instruction ?? null }));
           const retry = run.status === 'failed' && run.retryable === true && pendingReply.attempts + 1 < maxGenerationAttempts;
           const status = retry ? 'pending' : run.status === "failed" || run.status === "skipped" ? run.status : "completed";
           if (run.status === 'failed' && !retry) await handoff(pendingReply, token, run.message ?? 'AI reply failed; human review required.');
@@ -278,6 +279,7 @@ export function createAgentReplyScheduler(input: {
           if (scheduledAt) scheduleWake(scheduledAt, now);
           results.push({ id: pendingReply.id, status: run.status, runId: run.runId });
         } catch (error) {
+          reportOperationalException('agent_scheduler', error);
           // A thrown runtime error has no pre-dispatch certificate. It must not
           // enter automatic retry even when it looks like a network timeout.
           await handoff(pendingReply, token, error instanceof Error ? error.message : 'AI reply processing failed.');
@@ -288,6 +290,9 @@ export function createAgentReplyScheduler(input: {
       }
 
       return results;
+    } catch (error) {
+      reportOperationalException('agent_scheduler', error);
+      throw error;
     } finally {
       isProcessing = false;
     }
@@ -305,7 +310,7 @@ export function createAgentReplyScheduler(input: {
     }
 
     timer = setInterval(() => {
-      void processDueReplies();
+      void processDueReplies().catch(() => undefined);
     }, pollIntervalMs);
     timer.unref?.();
   }
@@ -331,7 +336,7 @@ export function createAgentReplyScheduler(input: {
     const delayMs = Math.max(0, scheduledAt.getTime() - now.getTime() + 100);
     const wakeTimer = setTimeout(() => {
       wakeTimers.delete(wakeTimer);
-      void processDueReplies();
+      void processDueReplies().catch(() => undefined);
     }, delayMs);
     wakeTimers.add(wakeTimer);
     wakeTimer.unref?.();

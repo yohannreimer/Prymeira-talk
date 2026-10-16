@@ -6,6 +6,7 @@ import type {
   AgentToolExecutorTransactionLike
 } from "./agent-tool-executor.js";
 import type { AgentProvider } from "./provider-gateway.js";
+import * as monitoring from '../../observability/glitchtip.js';
 
 const now = new Date("2026-06-23T18:00:00.000Z");
 
@@ -3270,5 +3271,22 @@ it("continues after a material answer without requiring a document for its own p
     expect(aiAgentFindFirst).toHaveBeenCalledTimes(2);
     expect(provider.generate).not.toHaveBeenCalled();
     expect(prisma.aiAgentRun.create).not.toHaveBeenCalled();
+  });
+
+  it('reports a caught generation failure while preserving the current human handoff', async () => {
+    const report = vi.spyOn(monitoring, 'reportFailure').mockReturnValue(true);
+    try {
+      const error = new TypeError("ownKeys trap did not include '$on' PRIVATE_FIXTURE");
+      const prisma = buildPrisma();
+      const runtime = createAgentRuntime({ prisma, provider: { generate: vi.fn().mockRejectedValue(error) } });
+      const result = await runtime.runForMessage({ workspaceId: ids.workspace, agentId: ids.agent,
+        conversationId: ids.conversation, messageId: ids.message, trigger: 'automation' });
+      expect(result.status).toBe('handoff_requested');
+      expect(prisma.message.create).not.toHaveBeenCalled();
+      expect(report).toHaveBeenCalledOnce();
+      expect(report.mock.calls[0]?.[2]?.diagnostic).toMatchObject({ type: 'TypeError', code: 'PRISMA_PROXY_OWN_KEYS',
+        component: 'agents', operation: 'run_for_message', impact: 'operation_failed', recovery: 'unknown' });
+      expect(JSON.stringify(report.mock.calls)).not.toMatch(/PRIVATE_FIXTURE|workspace_a|5511999999999/);
+    } finally { report.mockRestore(); }
   });
 });

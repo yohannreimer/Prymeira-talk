@@ -1,3 +1,4 @@
+import { observeOperationalOperation, rememberOperationalError } from '../../observability/operation-observer.js';
 import { enterCanonicalWorkspaceTransaction } from "../messaging/canonical-boundary.js";
 import { lockProspectingConversation } from '../prospecting/prospecting-lock.js';
 import { markProspectingFollowupObserved } from "../prospecting/prospecting-followup-observation.js";
@@ -520,6 +521,7 @@ export function createAgentRuntime(input: {
     } catch (error) {
       const audioAnchor = await prisma.message.findFirst({ where: { id: message.id, workspaceId: message.workspaceId, hiddenByReset: false } });
       if (!audioAnchor || audioAnchor.hiddenByReset) return { status: "skipped" as const };
+      rememberOperationalError(error);
       const errorCode = readStableMediaErrorCode(error);
       const failedAudioMessage = await prisma.message.update({
         where: { id: message.id },
@@ -552,6 +554,7 @@ export function createAgentRuntime(input: {
     },
     handoffForReplyFailure,
     async prepareAudioMessage(prepareInput: { workspaceId: string; messageId: string }) {
+      return observeOperationalOperation('agent_media', async () => {
       const message = await prisma.message.findFirst({
         where: {
           workspaceId: prepareInput.workspaceId,
@@ -564,6 +567,7 @@ export function createAgentRuntime(input: {
       return message
         ? prepareAudioMessageRecord(message)
         : { status: "skipped" as const };
+      });
     },
 
     async activateForMessage(runInput: {
@@ -573,6 +577,7 @@ export function createAgentRuntime(input: {
       messageId: string;
       instruction?: string | null;
     }): Promise<AgentRuntimeResult> {
+      return observeOperationalOperation<AgentRuntimeResult>('agent_activation', async () => {
       const [activeAgent, conversation, message] = await Promise.all([
         prisma.aiAgent.findFirst({
           where: {
@@ -725,6 +730,7 @@ export function createAgentRuntime(input: {
         sessionId: session.id,
         message: "Agent session activated."
       };
+      });
     },
 
     async runForMessage(runInput: {
@@ -738,6 +744,7 @@ export function createAgentRuntime(input: {
       replyClaim?: AgentReplyClaim;
       sessionId?: string | null;
     }): Promise<AgentRuntimeResult> {
+      return observeOperationalOperation<AgentRuntimeResult>('agent_runtime', async () => {
       if (!await ownsAgentReplyClaim(prisma, runInput.workspaceId, runInput.replyClaim)) return { status: "skipped", message: "Agent reply queue ownership changed." };
       const [activeAgent, conversation, message] = await Promise.all([
         prisma.aiAgent.findFirst({
@@ -1821,6 +1828,7 @@ export function createAgentRuntime(input: {
         return { status, runId: run.id };
       } catch (error) {
         if (error instanceof ConversationResetError || !await stillCurrent()) return { status: "skipped", message: "Conversation history was reset." };
+        rememberOperationalError(error instanceof AgentGenerationFailure ? error.cause : error);
         const errorMessage = getErrorMessage(error);
         if (deferredProspectingHandoff) await stopProspectingConversation(prisma, runInput.workspaceId, conversation.id, deferredProspectingHandoff);
         const run = await createRun({
@@ -1849,6 +1857,7 @@ export function createAgentRuntime(input: {
         }
         return { status: "failed", runId: run.id, message: errorMessage, ...(retryable ? { retryable: true } : {}) };
       }
+      });
     }
   };
 

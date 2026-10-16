@@ -16,3 +16,5 @@ validation-artifacts/
 # Generated TypeScript and local test upload artifacts
 *.tsbuildinfo
 /apps/api/tmp/
+
+.validation/
