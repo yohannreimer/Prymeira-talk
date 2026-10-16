@@ -2,7 +2,7 @@ import type { HarnessMessage } from "../../core/types.js";
 import type { Check, Scenario, ScenarioRun } from "../../simulador/simulador.js";
 import { semelhanca } from "./regras.js";
 import { baseEmMemoria } from "./ficha.js";
-import type { ContextoDoAtendimento, FichaDoAtendimento, TrechoDaBase } from "./tipos.js";
+import type { BaseDeConhecimento, ContextoDoAtendimento, FichaDoAtendimento, TrechoDaBase } from "./tipos.js";
 
 type Cenario = Scenario<FichaDoAtendimento, ContextoDoAtendimento>;
 type Run = ScenarioRun<FichaDoAtendimento, ContextoDoAtendimento>;
@@ -400,6 +400,42 @@ export const cenariosAoVivo: Cenario[] = [
     verificar: respostaAoVivo({ humano: true, fala: /vendedor/i })
   }
 ];
+
+const NEGA = /n[aã]o (fornecemos|trabalhamos|vendemos|fazemos|atendemos|temos)/i;
+
+/**
+ * Questions real customers sent the old agent, which handed them to a seller although the company's own
+ * base answers them (minimum order, what it does not supply). Run with the base exported from production
+ * (HARNESS_BASE_FONTES): a hand-over here is the failure we are measuring.
+ */
+export function cenariosDaBaseReal(base: BaseDeConhecimento): Cenario[] {
+  const pedido = contextoVillefer({
+    empresa: { nome: "Villefer", oQueVende: "Distribuidora de aço para indústria e caldeiraria: chapas e laminados (barras, cantoneiras, vigas, perfis), tubos e inox ou alumínio sob encomenda." },
+    base
+  });
+  const caso = (id: string, titulo: string, mensagens: string[], fala?: RegExp): Cenario => ({
+    id: `base_real_${id}`,
+    titulo,
+    pedido,
+    persona: cliente(mensagens.join("\n")),
+    maxTrocas: 1,
+    exigeModelo: true,
+    verificar: respostaAoVivo({ humano: false, fala })
+  });
+  return [
+    caso("metalon", "Metalon em 4 barras: diz o mínimo de 1.000 kg, não passa", ["Boa tarde vcs vende Metalon qual o valor", "Eu queria 4 barra de 4 metro cada uma barra"], /1\.?000 ?kg|m[ií]nimo/i),
+    caso("inox_barra", "Barra redonda de inox: encomenda com mínimo de 300 kg", ["Você trabalha com inox?", "seria uma barra redonda"], /300 ?kg|encomenda/i),
+    caso("aco_1045_peca", "Uma peça de 1045 cortada no tamanho: material cortado não fornecem", ["Preciso de uma cotação de aço 1045 trifilado", "Diâmetro 31x295mm 01 peça"], new RegExp(`cort|${NEGA.source}`, "i")),
+    caso("tarugo_inox", "Tarugo de inox 316L em pedaço: material cortado não fornecem", ["Bom dia, orçamento para uma tarugo em inox 316L", "D155x80 mm"], new RegExp(`cort|${NEGA.source}`, "i")),
+    caso("haste_cromada", "Haste cromada sob medida: peça fabricada não é com eles", ["Haste inox cromada D90 x 536mm"], new RegExp(`fabricad|cort|${NEGA.source}`, "i")),
+    caso("corte_chapa", "Peças de chapa cortadas: não fazem corte", ["vcs cortam chapa? preciso de 10 peças 300x500 de 6mm"], new RegExp(`cort|${NEGA.source}`, "i")),
+    caso("tela_soldada", "Tela soldada: linha de construção civil", ["1) 400 unidades - Tela Soldada Nervurada Q196 10x10 5.0mm 2.45x6.0m - NBR 7481"], new RegExp(`constru[cç][aã]o civil|${NEGA.source}`, "i")),
+    caso("vergalhao", "Barra de 10 mm para viga baldrame: vergalhão de construção civil", ["Quanto ta uma a barra de 10mm 12m", "Barra pra viga baldrame"], new RegExp(`constru[cç][aã]o civil|vergalh|${NEGA.source}`, "i")),
+    caso("bucha", "Bucha de ferro fundido: não fornecem", ["Bucha de ferro fundido: Diâmetro externo 170mm x 120mm x 485mm"], NEGA),
+    caso("telha", "Telha de alumínio: não fornecem telhas", ["Telha de alumínio"], NEGA),
+    caso("saudacao", "Só um bom dia: cumprimenta, não passa", ["Bom dia! Tudo bem?"])
+  ];
+}
 
 /**
  * Labeled cases in the format of scripts/evaluate-followup-brain.ts (one JSON per line: caseId, expected,

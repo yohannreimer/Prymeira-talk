@@ -4,7 +4,8 @@ import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { resolveOpenAiCompatibleSettings } from "../src/modules/agents/ai-provider-settings.js";
 import { atendimento } from "../src/modules/harness/agentes/atendimento/index.js";
-import { cenarios as cenariosAtendimento, cenariosAoVivo, cenariosDeCasos } from "../src/modules/harness/agentes/atendimento/cenarios.js";
+import { cenarios as cenariosAtendimento, cenariosAoVivo, cenariosDaBaseReal, cenariosDeCasos } from "../src/modules/harness/agentes/atendimento/cenarios.js";
+import { baseCompleta, trechosDeFontes } from "../src/modules/harness/agentes/atendimento/ficha.js";
 import { createJuizDeFollowup } from "../src/modules/harness/agentes/atendimento/juiz.js";
 import { cenarios } from "../src/modules/harness/agentes/comprador/cenarios.js";
 import { comprador } from "../src/modules/harness/agentes/comprador/index.js";
@@ -38,6 +39,8 @@ config({ path: resolve(import.meta.dirname, "../../../.env") });
 //   HARNESS_LINHA_DO_TEMPO=path.html: a page with every conversation and, between the messages, what the agent
 //   did (triage, tools and results, the move and why, the text, the review). Open it in a browser.
 //   JEV_API_KEY: JEV does the triage and judges each message (fails closed when JEV is down)
+//   HARNESS_BASE_FONTES=conversas-base.jsonl (atendimento): adds the questions the old agent handed over although
+//     the real base answers them, run against that base. HARNESS_BASE_AGENTE=<agentId> picks one agent's sources.
 //   HARNESS_REASONING_ANALISTA (default high): reasoning of the analyst subagent (atendimento)
 
 async function main() {
@@ -95,7 +98,8 @@ async function runAtendimento() {
   const casos = process.env.HARNESS_CASOS
     ? cenariosDeCasos((await readFile(resolve(process.env.HARNESS_CASOS), "utf8")).split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line)))
     : [];
-  const scenarios = [...cenariosAoVivo, ...cenariosAtendimento, ...casos].filter((scenario) => !wanted.length || wanted.includes(scenario.id));
+  const baseReal = process.env.HARNESS_BASE_FONTES ? await carregarBaseReal(process.env.HARNESS_BASE_FONTES) : null;
+  const scenarios = [...cenariosAoVivo, ...cenariosAtendimento, ...casos, ...(baseReal ? cenariosDaBaseReal(baseReal) : [])].filter((scenario) => !wanted.length || wanted.includes(scenario.id));
   if (process.env.HARNESS_OFFLINE === "1") throw new Error("Os cenários de atendimento precisam de modelo: use HARNESS_WORKSPACE_ID ou HARNESS_BASE_URL.");
   const endpoint = await resolveEndpoint();
   const mode = readMode();
@@ -158,6 +162,22 @@ async function runProspeccao() {
   if (process.env.HARNESS_RELATORIO) await writeFile(resolve(process.env.HARNESS_RELATORIO), markdown);
   console.log(markdown);
   if (report.passK < 1) process.exitCode = 1;
+}
+
+/**
+ * The knowledge sources exported from production (conversas-base.jsonl of harness-exportar-conversas.ts),
+ * for the real-base scenarios. Several agents share the export: HARNESS_BASE_AGENTE picks one, else the first.
+ */
+async function carregarBaseReal(caminho: string) {
+  const fontes: Array<{ agentId: string; title: string; content: string | null; status?: string }> = (await readFile(resolve(caminho), "utf8"))
+    .split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
+  const agente = process.env.HARNESS_BASE_AGENTE ?? fontes[0]?.agentId;
+  const doAgente = fontes.filter((fonte) => fonte.agentId === agente && (fonte.status ?? "ready") === "ready");
+  const trechos = trechosDeFontes(doAgente);
+  const base = baseCompleta(trechos);
+  const caracteres = trechos.reduce((soma, trecho) => soma + trecho.titulo.length + trecho.texto.length, 0);
+  console.error(`Base real: agente ${agente}, ${doAgente.length} fontes, ${trechos.length} trechos, ${caracteres} caracteres, ${base.todos ? "lida inteira" : "por busca"}.`);
+  return base;
 }
 
 /** Collects every run for HARNESS_LINHA_DO_TEMPO and writes the page at the end. */

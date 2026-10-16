@@ -20,7 +20,11 @@ export type TipoDeContato = "cliente" | "colega" | "pessoal" | "fornecedor" | "t
 export type TrechoDaBase = { id: string; titulo: string; texto: string };
 
 /** Where the agent looks answers up. In the simulator it is in memory; in production, the knowledge retrieval. */
-export type BaseDeConhecimento = { buscar(consulta: string): TrechoDaBase[] | Promise<TrechoDaBase[]> };
+export type BaseDeConhecimento = {
+  buscar(consulta: string): TrechoDaBase[] | Promise<TrechoDaBase[]>;
+  /** Every passage, when the base is small enough to read whole: search misses synonyms ("metalon" is a tube). */
+  todos?(): TrechoDaBase[];
+};
 
 /**
  * A question the contact asked. It is answered only with a passage of the base that says so; it is

@@ -688,3 +688,29 @@ describe("modelo na Responses API", () => {
     expect(model.id).toBe("gpt-6-luna (responses)");
   });
 });
+
+describe("base pequena lida inteira", () => {
+  it("cuts sources into titled passages, keeps the section heading and reads a small base whole", async () => {
+    const { trechosDeFontes, baseCompleta } = await import("./agentes/atendimento/ficha.js");
+    const fonte = { title: "Catálogo", content: "Intro do catálogo.\n\nNÃO FORNECE\n- telhas e buchas de ferro fundido\n- vergalhões da construção civil" };
+    const trechos = trechosDeFontes([fonte, fonte]);
+    expect(trechos.map((trecho) => trecho.titulo)).toEqual(["Catálogo", "Catálogo · NÃO FORNECE", "Catálogo · NÃO FORNECE"]);
+    expect(trechos[1].texto).toBe("telhas e buchas de ferro fundido");
+    expect(baseCompleta(trechos).todos?.()).toHaveLength(3);
+    expect(baseCompleta(trechos, 10).todos).toBeUndefined();
+  });
+
+  it("buscar_na_base shows every passage once per reading, then asks to reread; a new message reads it again", async () => {
+    const { ferramentasDeLeitura } = await import("./agentes/atendimento/ferramentas.js");
+    const { trechosDeFontes, baseCompleta } = await import("./agentes/atendimento/ficha.js");
+    const buscar = ferramentasDeLeitura.find((tool) => tool.name === "buscar_na_base")!;
+    const base = baseCompleta(trechosDeFontes([{ title: "O que não fornecemos", content: "Não fornecemos telhas nem metalon cortado." }]));
+    let ficha = { ...fichaInicialAtendimento(), perguntas: [{ id: "q1", texto: "tem metalon?", status: "aberta" as const, resposta: null, buscas: 0 }] };
+    const leitura = (historico: unknown[]) => ({ ficha, pedido: contextoVillefer({ base }), setFicha: (next: typeof ficha) => { ficha = next; }, mensagemAtual: "", historico });
+    const historico: unknown[] = [];
+    expect(await buscar.execute({ perguntaId: "q1", consulta: "tubo" } as never, leitura(historico) as never)).toMatch(/TODOS os documentos[\s\S]*metalon/);
+    expect(await buscar.execute({ perguntaId: "q1", consulta: "metalon" } as never, leitura(historico) as never)).toMatch(/Releia/);
+    expect(ficha.trechosVistos.t1).toMatch(/telhas/);
+    expect(await buscar.execute({ perguntaId: "q1", consulta: "telha" } as never, leitura([]) as never)).toMatch(/TODOS os documentos/);
+  });
+});

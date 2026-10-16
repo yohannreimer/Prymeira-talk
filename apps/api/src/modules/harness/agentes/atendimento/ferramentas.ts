@@ -180,6 +180,7 @@ const registrarPergunta: Tool<z.infer<typeof perguntaArgs>> = {
 /** The model sometimes writes "1" for "q1"; both mean the same registered question. */
 const idDaPergunta = z.string().trim().min(1).transform((id) => (/^\d+$/.test(id) ? `q${id}` : id));
 
+const basesMostradas = new WeakSet<object>();
 const buscaArgs = z.object({ perguntaId: idDaPergunta, consulta: z.string().trim().min(2).max(200) });
 const buscarNaBase: Tool<z.infer<typeof buscaArgs>> = {
   name: "buscar_na_base",
@@ -194,15 +195,23 @@ const buscarNaBase: Tool<z.infer<typeof buscaArgs>> = {
   async execute(args, context) {
     const pergunta = context.ficha.perguntas.find((item) => item.id === args.perguntaId);
     if (!pergunta) throw new Error(`pergunta ${args.perguntaId} não existe; registre com registrar_pergunta.`);
-    const trechos = context.pedido.base ? await context.pedido.base.buscar(args.consulta) : [];
+    const todos = context.pedido.base?.todos?.();
+    // The whole base goes once per reading (the same history array); a later message reads it again.
+    if (todos && basesMostradas.has(context.historico)) {
+      context.setFicha({ ...context.ficha, perguntas: context.ficha.perguntas.map((item) => item.id === pergunta.id ? { ...item, buscas: item.buscas + 1 } : item) });
+      return "Os documentos inteiros da empresa já estão acima, nos resultados de buscar_na_base. Releia: use responder_pergunta com o trecho que responde (inclusive os que dizem o que a empresa não fornece ou o pedido mínimo), ou marcar_sem_base se nenhum responde.";
+    }
+    const trechos = todos ?? (context.pedido.base ? await context.pedido.base.buscar(args.consulta) : []);
     const ficha = {
       ...context.ficha,
       perguntas: context.ficha.perguntas.map((item) => item.id === pergunta.id ? { ...item, buscas: item.buscas + 1 } : item),
       trechosVistos: { ...context.ficha.trechosVistos, ...Object.fromEntries(trechos.map((trecho) => [trecho.id, trecho.texto])) }
     };
     context.setFicha(ficha);
+    if (todos) basesMostradas.add(context.historico);
     if (!trechos.length) return "Nada encontrado. Tente outras palavras; se ainda assim não houver, use marcar_sem_base.";
-    return trechos.map((trecho) => `[${trecho.id}] ${trecho.titulo}: ${trecho.texto}`).join("\n");
+    const lista = trechos.map((trecho) => `[${trecho.id}] ${trecho.titulo}: ${trecho.texto}`).join("\n");
+    return todos ? `A base é pequena: estes são TODOS os documentos da empresa. Procure aqui a resposta, inclusive o que ela não fornece e os pedidos mínimos.\n${lista}` : lista;
   }
 };
 

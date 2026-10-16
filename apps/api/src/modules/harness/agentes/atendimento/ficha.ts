@@ -60,3 +60,63 @@ export function baseEmMemoria(trechos: TrechoDaBase[], limite = 3): BaseDeConhec
     }
   };
 }
+
+/**
+ * The company's knowledge sources (long texts as they wrote them) cut into small titled passages, so a
+ * search returns the paragraph or catalogue line that answers, not a 5,000-character document.
+ * Bullet lines keep the section heading above them ("LINHA DE ESTOQUE…") in their title.
+ */
+export function trechosDeFontes(fontes: Array<{ title: string; content: string | null }>, tamanho = 600): TrechoDaBase[] {
+  const vistos = new Set<string>();
+  const trechos: TrechoDaBase[] = [];
+  for (const fonte of fontes) {
+    const conteudo = (fonte.content ?? "").trim();
+    if (!conteudo || vistos.has(`${fonte.title}\n${conteudo}`)) continue;
+    vistos.add(`${fonte.title}\n${conteudo}`);
+    let secao = "";
+    const partes: Array<{ titulo: string; texto: string }> = [];
+    for (const paragrafo of conteudo.split(/\n\s*\n/)) {
+      for (const linha of paragrafo.split(/\n(?=- )/)) {
+        const texto = linha.trim();
+        if (!texto) continue;
+        // A short all-caps line is a heading for what follows.
+        if (texto.length < 80 && texto === texto.toUpperCase() && /[A-ZÀ-Ú]{4}/.test(texto) && !texto.includes(":")) {
+          secao = texto.replace(/[.:]+$/, "");
+          continue;
+        }
+        partes.push({ titulo: secao ? `${fonte.title} · ${secao}` : fonte.title, texto: texto.replace(/^- /, "") });
+      }
+    }
+    for (const parte of partes) {
+      for (const pedaco of cortar(parte.texto, tamanho)) trechos.push({ id: `t${trechos.length + 1}`, titulo: parte.titulo, texto: pedaco });
+    }
+  }
+  return trechos;
+}
+
+/** Long text into pieces of whole sentences. */
+function cortar(texto: string, tamanho: number): string[] {
+  if (texto.length <= tamanho) return [texto];
+  const frases = texto.match(/[^.!?]+[.!?]+(\s|$)|[^.!?]+$/g) ?? [texto];
+  const pedacos: string[] = [];
+  let atual = "";
+  for (const frase of frases) {
+    if (atual && (atual + frase).length > tamanho) {
+      pedacos.push(atual.trim());
+      atual = "";
+    }
+    atual += frase;
+  }
+  if (atual.trim()) pedacos.push(atual.trim());
+  return pedacos;
+}
+
+/**
+ * A small base is read whole instead of searched: with a few dozen passages, keyword search loses more
+ * (synonyms, plurals, a title that matches everything) than reading costs. Above the limit, it searches.
+ */
+export function baseCompleta(trechos: TrechoDaBase[], limiteDeCaracteres = 24_000): BaseDeConhecimento {
+  const busca = baseEmMemoria(trechos, 4);
+  const total = trechos.reduce((soma, trecho) => soma + trecho.titulo.length + trecho.texto.length, 0);
+  return total <= limiteDeCaracteres ? { buscar: busca.buscar, todos: () => trechos } : busca;
+}
