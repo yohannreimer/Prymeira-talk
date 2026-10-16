@@ -255,6 +255,8 @@ async def diagnostic_projection_gate():
     assert clean["release"] == latest["release"]
     assert "PRIVATE_DISPOSABLE" not in json.dumps(attachments)
     assert clean["context_source"] == "latest_issue_event"
+    # Later fixture ingest also runs the embedded worker; leave no test recipient.
+    await alert.adelete()
 
 
 async def native_oauth_flow(client, challenge):
