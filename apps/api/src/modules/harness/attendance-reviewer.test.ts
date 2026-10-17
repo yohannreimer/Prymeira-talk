@@ -28,6 +28,9 @@ describe('attendance reviewer requirements',()=>{
   it('identifies an unsupported price, independently of a generic hallucination score',async()=>{
     expect(await createJuizDeAtendimento(jev({afirmacao_sem_base:'preco'}))(input())).toMatchObject({ok:false,regra:'juiz_requisito',motivo:expect.stringContaining('preço')});
   });
+  it('still blocks an incompatible material instead of treating every name as a synonym',async()=>{
+    expect(await createJuizDeAtendimento(jev({resposta_1:'produto_diferente'}))(input('Trabalhamos com chapa de aço inox.'))).toMatchObject({ok:false,regra:'juiz_requisito',motivo:expect.stringContaining('produto/material')});
+  });
   it('identifies which question remained unanswered',async()=>{
     const i=input(); const f=i.ficha as ReturnType<typeof fichaInicial>;
     f.perguntas.push({...f.perguntas[0],id:'q2',texto:'Qual o prazo?'});
