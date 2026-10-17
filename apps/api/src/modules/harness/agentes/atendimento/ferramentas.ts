@@ -375,6 +375,8 @@ const ASSUNTO_DO_NEGOCIO = /\b(preco|precos|valor|quanto|custa|estoque|tem|temos
  * After the reader: a question left unregistered, open, or called unanswerable while a passage it saw
  * shares its key words gets one more look. Seen in the 16/10 runs (boleto 28 dias, prazo para Jaraguá).
  */
+/** A size or thickness: "1,2mm", "3 m", "1200x3000", "50 x 50". */
+const MEDIDA = /\d+(?:[.,]\d+)?\s*(?:mm|m)\b|\d\s*x\s*\d/;
 const PECAS = /\b\d+\s*(barras?|pecas?|tubos?|chapas?|unidades?|varas?)\b/;
 const PEDIDO_DE_ITEM = /\b(orcamento|cotacao|cotar|preciso|precisava|queria|quero|gostaria|vende|vendem|trabalha|trabalham)\b/;
 const NEGA_LINHA = /\bn[aã]o (fornece|fornecemos|trabalhamos|temos|vendemos|fazemos|fabricamos|atendemos|entregamos|aceitamos|oferecemos)\b/;
@@ -431,6 +433,13 @@ function conferirPerguntas({ ficha, mensagem, pedido }: { ficha: FichaDoAtendime
   // "10 barras de metalon": with a catalogue, the weight decides the minimum, and only the code may compute it.
   if (pedido?.catalogo && PECAS.test(normalize(mensagem)) && !(ficha.pesosDaVez ?? []).length) {
     return "o contato pediu uma quantidade em peças ou barras. Ache a medida com consultar_catalogo e calcule o peso com calcular_peso, para comparar com o pedido mínimo; responda com o peso calculado. Se faltar a medida ou o comprimento, não calcule: não chame nada.";
+  }
+  // "1,25m x 3m de 1,2mm? Tem dessa medida": the base said "sob encomenda", the catalogue has the 1,20 mm row,
+  // and nobody looked. Seen in the test of 17/10, where the judge then blocked the answer as invented.
+  const catalogo = pedido?.catalogo;
+  const citouCatalogo = atuais.some((item) => [item.resposta, ...(item.maisRespostas ?? [])].some((resposta) => resposta && catalogo?.linha(resposta.trechoId)));
+  if (catalogo && MEDIDA.test(normalize(mensagem)) && !citouCatalogo && !(ficha.pesosDaVez ?? []).length) {
+    return "o contato cita uma medida ou espessura. Confira com consultar_catalogo se ela existe e, se existir, cite a linha com responder_pergunta na mesma pergunta. Se não achar, não chame nada.";
   }
   return null;
 }

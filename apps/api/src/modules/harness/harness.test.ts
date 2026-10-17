@@ -947,6 +947,17 @@ describe("ajustes da sombra de 16/10, segunda leva", () => {
     expect(await reviewMessage({ ...base, texto: "Você prefere ver o catálogo em PDF ou falar com um vendedor?" })).toMatchObject({ ok: false, regra: "nao_repete_frase" });
     expect(await reviewMessage({ ...base, texto: "Essa medida é a padrão, temos sim. A espessura de 1,2 mm o vendedor confirma com você. Quantas chapas você precisa?" })).toMatchObject({ ok: true });
 
+    // The 1,20 mm row is in the catalogue: the reader is sent to look before calling the thickness unknown.
+    const { conferirLeitura } = await import("./agentes/atendimento/ferramentas.js");
+    const { catalogoEmMemoria } = await import("./agentes/atendimento/catalogo.js");
+    const { default: linhas } = await import("./agentes/atendimento/dados/catalogo-villefer.json", { with: { type: "json" } });
+    const catalogo = catalogoEmMemoria(linhas as never);
+    expect(catalogo.buscar("chapa alumínio xadrez 1,25m x 3m de 1,2mm")[0]?.id).toBe("chapa-piso-006");
+    const lida = { ...fichaInicialAtendimento(), perguntas: [{ id: "q1", texto: "tem chapa de alumínio xadrez 1,25m x 3m de 1,2mm?", status: "respondida" as const, buscas: 1, resposta: { trechoId: "t1", citacao: "Chapa de piso de alumínio: sob encomenda." } }] };
+    expect(conferirLeitura({ ficha: lida, mensagem: "1,25m x 3m de 1,2mm ? Tem dessa medida", pedido: contextoVillefer({ catalogo }) })).toMatch(/consultar_catalogo/);
+    const comLinha = { ...lida, perguntas: [{ ...lida.perguntas[0], maisRespostas: [{ trechoId: "chapa-piso-006", citacao: "chapa piso xadrez (1,20 mm) · alumínio" }] }] };
+    expect(conferirLeitura({ ficha: comLinha, mensagem: "1,25m x 3m de 1,2mm ? Tem dessa medida", pedido: contextoVillefer({ catalogo }) })).toBeNull();
+
     // The catalogue-or-seller choice is offered once per conversation.
     const pergunta = { id: "q1", texto: "fornecem chapa de alumínio xadrez?", status: "respondida" as const, buscas: 1, resposta: { trechoId: "t1", citacao: "Chapa de piso de alumínio: sob encomenda." } };
     const pedido = contextoVillefer({ anexos: [catalogoPdf] });
