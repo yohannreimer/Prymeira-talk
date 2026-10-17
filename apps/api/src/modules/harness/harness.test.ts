@@ -2,15 +2,15 @@ import { describe, expect, it } from "vitest";
 import { comprador } from "./agentes/comprador/index.js";
 import { cenarios, MELHOR_CONCORRENTE, pedidoBase, roteiro } from "./agentes/comprador/cenarios.js";
 import { fichaInicial, totalDaProposta } from "./agentes/comprador/ficha.js";
-import { decidirJogada } from "./agentes/comprador/jogadas.js";
+import { aposEnvio, aposTriagem, decidirJogada } from "./agentes/comprador/jogadas.js";
 import { createFakeComprador } from "./agentes/comprador/modelos-falsos.js";
 import type { FichaDoFornecedor } from "./agentes/comprador/tipos.js";
 import { findMoneyAmounts, formatBRL, parseBRNumber } from "./core/dinheiro.js";
-import { createScriptedModel, parseJsonModeResponse, toolCall } from "./core/model.js";
+import { createOpenAiCompatibleModel, createScriptedModel, parseJsonModeResponse, toolCall } from "./core/model.js";
 import { reviewMessage } from "./core/review.js";
 import { runTurn } from "./core/runner.js";
 import { createTriage, triageByRules } from "./core/triage.js";
-import type { Jogada } from "./core/types.js";
+import type { HarnessTool, Jogada } from "./core/types.js";
 import { renderReport, runScenario, runSuite } from "./simulador/simulador.js";
 import { atendimento } from "./agentes/atendimento/index.js";
 import { prospeccao } from "./agentes/prospeccao/index.js";
@@ -21,7 +21,7 @@ import { cenarios as cenariosAtendimento, cenariosAoVivo, contextoVillefer, conv
 import { conferirProva } from "./agentes/atendimento/ferramentas.js";
 import { fichaInicial as fichaInicialAtendimento } from "./agentes/atendimento/ficha.js";
 import { decidirJogada as decidirJogadaAtendimento } from "./agentes/atendimento/jogadas.js";
-import type { FichaDoAtendimento } from "./agentes/atendimento/tipos.js";
+import type { ContextoDoAtendimento, FichaDoAtendimento } from "./agentes/atendimento/tipos.js";
 
 const pedido = pedidoBase();
 
@@ -74,6 +74,30 @@ describe("triagem por regras", () => {
 });
 
 describe("jogadas do comprador", () => {
+  it("keeps earlier proposal fields when the model sends null for what the message did not say", async () => {
+    const { ferramentasDeLeitura } = await import("./agentes/comprador/ferramentas.js");
+    const registrar = ferramentasDeLeitura.find((tool) => tool.name === "registrar_proposta")!;
+    let ficha = fichaCom({ propostas: [propostaCompleta] });
+    const context = { ficha, pedido, setFicha: (next: FichaDoFornecedor) => { ficha = next; }, mensagemAtual: "consigo 850 a cadeira", historico: [] };
+    registrar.execute(registrar.schema.parse({ itens: [{ itemId: pedido.itens[0].id, precoUnitario: 850 }], frete: null, prazoEntrega: null, pagamento: null, validade: null, observacao: null }) as never, context as never);
+    const atual = ficha.propostas.at(-1)!;
+    expect(atual.itens.find((line) => line.itemId === pedido.itens[0].id)?.precoUnitario).toBe(850);
+    expect(atual).toMatchObject({ frete: propostaCompleta.frete, prazoEntrega: propostaCompleta.prazoEntrega, pagamento: propostaCompleta.pagamento });
+  });
+  it("treats a 'no' to the discount ask as no discount: the proposal still goes to the company", () => {
+    const recusa = { kind: "recusa" as const, fonte: "jev" as const, motivo: "não consigo baixar" };
+    const antes = fichaCom({ propostas: [propostaCompleta], etapa: "choradinha", versoesNaTriagem: 1, choradinhas: { usadas: 1, totalAntes: null } });
+    const ficha = aposTriagem({ ficha: antes, triagem: recusa });
+    expect(ficha.etapa).toBe("choradinha");
+    expect(ficha.semDesconto).toBe(true);
+    const jogada = decidirJogada({ ficha, pedido, triagem: recusa, evento: { tipo: "mensagem", texto: "não consigo baixar mais não" } });
+    expect(jogada.tipo).toBe("fechar_rodada");
+    expect(aposEnvio({ ficha, jogada, texto: "ok" }).etapa).toBe("aguardando_empresa");
+  });
+  it("still treats a refusal before any proposal as declining to quote", () => {
+    const ficha = aposTriagem({ ficha: fichaCom({ etapa: "conversando" }), triagem: { kind: "recusa", fonte: "jev", motivo: "não trabalhamos" } });
+    expect(ficha.etapa).toBe("declinou");
+  });
   it("asks for what is missing in one move", () => {
     const ficha = fichaCom({ propostas: [{ ...propostaCompleta, frete: null, pagamento: null }] });
     const jogada = decidirJogada({ ficha, pedido, triagem: { kind: "humano", fonte: "regras", motivo: "" }, evento: { tipo: "mensagem", texto: "x" } });
@@ -287,6 +311,37 @@ describe("atendimento: follow-up no harness", () => {
       analista: analistaQueRegistra(toolCall("abrir_pendencia", { dono: "cliente", descricao: "responder sobre a tabela", mensagem: 0, trecho: "Posso te mandar" }))
     }, { ficha: fichaInicialAtendimento(), pedido: contexto, historico: soEmpresa, evento: silencio });
     expect(result.jogada?.tipo).toBe("nada_aberto");
+  });
+
+  it("a pending item needs the contact's own message: a company task or an offer nobody asked for is not one", async () => {
+    const posVenda = conversa(
+      "C: blz fechado, pode faturar as 30 telhas",
+      "E: Fechado! Vou separar e entrego amanhã",
+      "C: 👍"
+    );
+    const tarefa = await runTurn(atendimento, {
+      model: escritor("não deveria sair"),
+      analista: analistaQueRegistra(toolCall("abrir_pendencia", { dono: "empresa", descricao: "entregar as 30 telhas", mensagem: 1, trecho: "entrego amanhã", contatoMensagem: 1, contatoTrecho: "entrego amanhã" }))
+    }, { ficha: fichaInicialAtendimento(), pedido: contexto, historico: posVenda, evento: silencio });
+    expect(tarefa.ficha.pendencias).toHaveLength(0);
+    expect(tarefa.jogada?.tipo).toBe("nada_aberto");
+
+    const pergunta = conversa("C: qual o valor da chapa 3 mm?", "E: Vou consultar e já te retorno", "C: ok");
+    const lembrete = await runTurn(atendimento, {
+      model: escritor("não deveria sair"),
+      analista: analistaQueRegistra(toolCall("abrir_pendencia", { dono: "empresa", descricao: "responder o valor da chapa 3 mm", mensagem: 1, trecho: "Vou consultar", contatoMensagem: 0, contatoTrecho: "qual o valor da chapa 3 mm" }))
+    }, { ficha: fichaInicialAtendimento(), pedido: contexto, historico: pergunta, evento: silencio });
+    expect(lembrete.jogada).toMatchObject({ tipo: "lembrete_vendedor", humano: expect.stringMatching(/o cliente pediu na mensagem \[0\]: "qual o valor da chapa 3 mm"/) });
+  });
+
+  it("a question the company asked to go on with the quote, left unanswered, is a follow-up", async () => {
+    const semComprimento = conversa("C: vocês trabalham com tubo quadrado 50x50? cota 20 barras pra mim", "E: Trabalhamos sim! Me manda o comprimento de cada barra?");
+    const result = await runTurn(atendimento, {
+      model: escritor("Oi! Pra seguir com a cotação dos 20 tubos 50x50, qual o comprimento de cada barra?"),
+      analista: analistaQueRegistra(toolCall("abrir_pendencia", { dono: "cliente", descricao: "mandar o comprimento dos tubos 50x50", mensagem: 1, trecho: "Me manda o comprimento", contatoMensagem: 0, contatoTrecho: "cota 20 barras pra mim" }))
+    }, { ficha: fichaInicialAtendimento(), pedido: contexto, historico: semComprimento, evento: silencio });
+    expect(result.jogada?.tipo).toBe("cobrar_pendencia");
+    expect(result.enviar).toMatch(/comprimento/);
   });
 
   it("code decides the move from the record", () => {
@@ -540,6 +595,12 @@ describe("ajustes da rodada de 16/10 com Luna e JEV", () => {
     expect(conferirLeitura({ ficha, mensagem: "aceita boleto 28 dias?" })).toMatch(/pagamento/);
     expect(conferirLeitura({ ficha: fichaInicialAtendimento(), mensagem: "vcs entregam em jaraguá?" })).toMatch(/registrar_pergunta/);
     expect(conferirLeitura({ ficha: fichaInicialAtendimento(), mensagem: "beleza, obrigado" })).toBeNull();
+    const inox: FichaDoAtendimento = {
+      ...fichaInicialAtendimento(),
+      perguntas: [{ id: "q1", texto: "tem barra redonda de inox 316 de 2 polegadas?", status: "sem_base", resposta: null, buscas: 1 }],
+      trechosVistos: { chapas: "Chapas de aço carbono laminadas a frio e a quente.", linha: "Não trabalhamos com aço inox nem com alumínio." }
+    };
+    expect(conferirLeitura({ ficha: inox, mensagem: "tem barra redonda de inox 316 de 2 polegadas?" })).toMatch(/linha/);
 
     let rodada = 0;
     const leitor = createScriptedModel("leitor", () => {
@@ -567,5 +628,436 @@ describe("ajustes da rodada de 16/10 com Luna e JEV", () => {
     });
     expect(outcome).toMatchObject({ ok: true, notas: { inventa: 0.1 } });
     expect(visto.outrasFontes).toMatch(/Procedimento/);
+  });
+});
+
+describe("procedimentos e regras não se contradizem", () => {
+  it("every example message the procedures ask for passes the agent's own hard rules", async () => {
+    const { exemplos: doComprador } = await import("./agentes/comprador/instrucoes.js");
+    const { exemplos: doAtendimento } = await import("./agentes/atendimento/instrucoes.js");
+    const { exemplos: doJoao } = await import("./agentes/prospeccao/instrucoes.js");
+    const { campanhaBase } = await import("./agentes/prospeccao/cenarios.js");
+    const { fichaInicial: fichaDoLead } = await import("./agentes/prospeccao/ficha.js");
+    const casos = [
+      { agente: comprador, exemplos: doComprador, ficha: fichaCom({ propostas: [{ ...propostaCompleta, versao: 1, em: "2026-10-16T12:00:00.000Z" } as never] }), pedido, historico: [] },
+      { agente: atendimento, exemplos: doAtendimento, ficha: { ...fichaInicialAtendimento(), trechosVistos: { entrega: "Jaraguá do Sul e Blumenau em até 48 horas úteis após o faturamento" } }, pedido: contextoVillefer(),
+        historico: conversa("C: quanto fica 30 telhas?", "E: As 30 telhas ficam R$ 8.940.", "C: vou ver com meu sócio, somos 3 pessoas") },
+      { agente: prospeccao, exemplos: doJoao, ficha: fichaDoLead(), pedido: campanhaBase("Casa Mil"),
+        historico: conversa("E: Oi! Aqui é o João, da Prymeira.", "C: Oi, aqui é a Débora. Somos 3 pessoas atendendo loja e WhatsApp ao mesmo tempo") }
+    ];
+    const falhas: string[] = [];
+    for (const caso of casos) {
+      for (const exemplo of caso.exemplos) {
+        const outcome = await reviewMessage({
+          texto: exemplo.texto, ficha: caso.ficha as never, pedido: caso.pedido as never, historico: caso.historico,
+          jogada: { ...exemplo.jogada, instrucao: "" }, rules: caso.agente.regras as never, fichaTexto: ""
+        });
+        if (!outcome.ok) falhas.push(`${caso.agente.id}/${exemplo.jogada.tipo}: ${outcome.regra} — "${exemplo.texto}"`);
+      }
+    }
+    expect(falhas).toEqual([]);
+  });
+});
+
+describe("papo social não vai para a base", () => {
+  it("the self-check never pushes small talk into the base, but still catches a business question", async () => {
+    const { conferirLeitura } = await import("./agentes/atendimento/ferramentas.js");
+    const vazia = fichaInicialAtendimento();
+    expect(conferirLeitura({ ficha: vazia, mensagem: "opa, dia quente aqui hoje hein, como tá aí?" })).toBeNull();
+    expect(conferirLeitura({ ficha: vazia, mensagem: "tudo bem? e a família?" })).toBeNull();
+    expect(conferirLeitura({ ficha: vazia, mensagem: "calor demais kkk. vcs entregam em blumenau?" })).toMatch(/registrar_pergunta/);
+    const { ferramentasDeLeitura } = await import("./agentes/atendimento/ferramentas.js");
+    const registrar = ferramentasDeLeitura.find((tool) => tool.name === "registrar_pergunta")!;
+    const context = { ficha: vazia, pedido: {}, setFicha: () => {}, mensagemAtual: "", historico: [] };
+    expect(() => registrar.execute({ texto: "como tá aí?" } as never, context as never)).toThrow(/conversa social/);
+    expect(() => registrar.execute({ texto: "dia quente aqui hoje hein" } as never, context as never)).toThrow(/conversa social/);
+    expect(() => registrar.execute({ texto: "quanto tempo leva a entrega pra Blumenau?" } as never, context as never)).not.toThrow();
+  });
+
+  it("small talk with no question recorded becomes a plain conversation, never a hand-over", () => {
+    const jogada = decidirJogadaAtendimento({ ficha: fichaInicialAtendimento(), pedido: contextoVillefer(), triagem: { kind: "humano", fonte: "regras", motivo: "" }, evento: { tipo: "mensagem", texto: "dia quente aqui, como tá aí?" } });
+    expect(jogada.tipo).toBe("conversar");
+    expect(jogada.humano ?? jogada.avisarHumano).toBeUndefined();
+  });
+});
+
+describe("modelo na Responses API", () => {
+  it("sends tools with a reasoning effort to /responses and reads calls and text back", async () => {
+    let url = "";
+    let body: any = null;
+    const fetchImpl = (async (input: string, init: RequestInit) => {
+      url = input;
+      body = JSON.parse(String(init.body));
+      return new Response(JSON.stringify({
+        output: [
+          { type: "reasoning", summary: [] },
+          { type: "function_call", call_id: "call_1", name: "registrar_pergunta", arguments: "{\"texto\":\"aceitam boleto?\"}" },
+          { type: "message", content: [{ type: "output_text", text: "ok" }] }
+        ]
+      }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const model = createOpenAiCompatibleModel({ baseUrl: "https://ai.example/v1/", apiKey: "k", model: "gpt-6-luna", mode: "responses", reasoningEffort: "low", fetchImpl });
+    const resposta = await model.complete({
+      messages: [
+        { role: "system", content: "leia" },
+        { role: "user", content: "aceitam boleto?" },
+        { role: "assistant", content: null, toolCalls: [{ id: "call_0", name: "buscar_na_base", arguments: "{}" }] },
+        { role: "tool", toolCallId: "call_0", name: "buscar_na_base", content: "[pagamento] Boleto 28 dias" }
+      ],
+      tools: [{ name: "registrar_pergunta", description: "d", parameters: { type: "object", properties: {} } }]
+    });
+    expect(url).toBe("https://ai.example/v1/responses");
+    expect(body).toMatchObject({ model: "gpt-6-luna", store: false, reasoning: { effort: "low" }, tool_choice: "auto", tools: [{ type: "function", name: "registrar_pergunta" }] });
+    expect(body.temperature).toBeUndefined();
+    expect(body.input).toEqual([
+      { role: "system", content: "leia" },
+      { role: "user", content: "aceitam boleto?" },
+      { type: "function_call", call_id: "call_0", name: "buscar_na_base", arguments: "{}" },
+      { type: "function_call_output", call_id: "call_0", output: "[pagamento] Boleto 28 dias" }
+    ]);
+    expect(resposta).toEqual({ content: "ok", toolCalls: [{ id: "call_1", name: "registrar_pergunta", arguments: "{\"texto\":\"aceitam boleto?\"}" }] });
+    expect(model.id).toBe("gpt-6-luna (responses)");
+  });
+});
+
+describe("base pequena lida inteira", () => {
+  it("cuts sources into titled passages, keeps the section heading and reads a small base whole", async () => {
+    const { trechosDeFontes, baseCompleta } = await import("./agentes/atendimento/ficha.js");
+    const fonte = { title: "Catálogo", content: "Intro do catálogo.\n\nNÃO FORNECE\n- telhas e buchas de ferro fundido\n- vergalhões da construção civil" };
+    const trechos = trechosDeFontes([fonte, fonte]);
+    expect(trechos.map((trecho) => trecho.titulo)).toEqual(["Catálogo", "Catálogo · NÃO FORNECE", "Catálogo · NÃO FORNECE"]);
+    expect(trechos[1].texto).toBe("telhas e buchas de ferro fundido");
+    expect(baseCompleta(trechos).todos?.()).toHaveLength(3);
+    expect(baseCompleta(trechos, 10).todos).toBeUndefined();
+  });
+
+  it("buscar_na_base shows every passage once per reading, then asks to reread; a new message reads it again", async () => {
+    const { ferramentasDeLeitura } = await import("./agentes/atendimento/ferramentas.js");
+    const { trechosDeFontes, baseCompleta } = await import("./agentes/atendimento/ficha.js");
+    const buscar = ferramentasDeLeitura.find((tool) => tool.name === "buscar_na_base")!;
+    const base = baseCompleta(trechosDeFontes([{ title: "O que não fornecemos", content: "Não fornecemos telhas nem metalon cortado." }]));
+    let ficha: FichaDoAtendimento = { ...fichaInicialAtendimento(), perguntas: [{ id: "q1", texto: "tem metalon?", status: "aberta" as const, resposta: null, buscas: 0 }] };
+    const leitura = (historico: unknown[]) => ({ ficha, pedido: contextoVillefer({ base }), setFicha: (next: FichaDoAtendimento) => { ficha = next; }, mensagemAtual: "", historico });
+    const historico: unknown[] = [];
+    expect(await buscar.execute({ perguntaId: "q1", consulta: "tubo" } as never, leitura(historico) as never)).toMatch(/TODOS os documentos[\s\S]*metalon/);
+    expect(await buscar.execute({ perguntaId: "q1", consulta: "metalon" } as never, leitura(historico) as never)).toMatch(/Releia/);
+    expect(ficha.trechosVistos.t1).toMatch(/telhas/);
+    expect(await buscar.execute({ perguntaId: "q1", consulta: "telha" } as never, leitura([]) as never)).toMatch(/TODOS os documentos/);
+  });
+});
+
+describe("proposta de mínimos e região da Villefer", () => {
+  it("rewrites the old minimums and adds the two new texts, reporting sentences it could not find", async () => {
+    const { aplicarPropostaVillefer } = await import("./agentes/atendimento/proposta-villefer.js");
+    const antiga = { title: "Estoque", content: "Inox, inclusive tubos e perfis de inox: mínimo de 300 kg. Tubos não inox e perfis sob encomenda: 1.000 kg. Resto." };
+    const { fontes, naoEncontradas } = aplicarPropostaVillefer([antiga]);
+    expect(fontes[0].content).toBe("Mínimos aproximados: ver \"Pedidos mínimos\". Resto.");
+    expect(fontes.map((fonte) => fonte.title)).toEqual(["Estoque", "Pedidos mínimos", "Região de entrega"]);
+    expect(fontes[2].content).toMatch(/Pomerode/);
+    expect(naoEncontradas).toHaveLength(3);
+  });
+});
+
+describe("catálogo de medidas e pesos", () => {
+  const linhas = [
+    { id: "tubo-1", familia: "tubo industrial", material: ["aço carbono"], descricao: "tubo redondo 2\" (50,8 mm) · quadrado 40x40 · retangular 50x30 · parede 1,50 mm (FF)", kgPorMetro: 1.82, kgPorMetroQuadrado: null },
+    { id: "tubo-2", familia: "tubo industrial", material: ["aço carbono"], descricao: "tubo redondo 2\" (50,8 mm) · quadrado 40x40 · retangular 50x30 · parede 2,00 mm (FQ)", kgPorMetro: 2.41, kgPorMetroQuadrado: null },
+    { id: "chapa-1", familia: "chapa", material: ["aço carbono"], descricao: "chapa bitola MSG 14 · 1,90 mm", kgPorMetro: null, kgPorMetroQuadrado: 15.2 }
+  ];
+
+  it("finds the size a customer writes, with synonyms, sizes weighing more than words", async () => {
+    const { catalogoEmMemoria } = await import("./agentes/atendimento/catalogo.js");
+    const catalogo = catalogoEmMemoria(linhas);
+    expect(catalogo.buscar("metalon 40x40 parede 1,5")[0].id).toBe("tubo-1");
+    expect(catalogo.buscar("metalon 40 x 40 #2.00")[0].id).toBe("tubo-2");
+    expect(catalogo.buscar("viga 300")).toEqual([]);
+    expect(catalogo.buscar("tubo de 2 polegadas")[0].id).toMatch(/^tubo-/);
+  });
+
+  it("reads the real Villefer tables: metalon, gauges, inches and a sheet in mm", async () => {
+    const { catalogoEmMemoria } = await import("./agentes/atendimento/catalogo.js");
+    const { readFileSync } = await import("node:fs");
+    const catalogo = catalogoEmMemoria(JSON.parse(readFileSync(new URL("./agentes/atendimento/dados/catalogo-villefer.json", import.meta.url), "utf8")));
+    expect(catalogo.buscar("metalon 40x40 parede 1,5")[0]).toMatchObject({ descricao: expect.stringMatching(/40x40.*parede 1,5 mm/), kgPorMetro: 1.82 });
+    expect(catalogo.buscar("metalon 40x40 chapa 18")[0].descricao).toMatch(/40x40.*parede 1,2 mm/);
+    expect(catalogo.buscar("cantoneira 2 x 1/4")[0].descricao).toMatch(/cantoneira abas iguais 2" x 1\/4"/);
+    expect(catalogo.buscar("chapa 6,35 mm")[0].familia).toBe("chapa");
+  });
+
+  it("computes the weight in code and keeps it as a citable source", async () => {
+    const { catalogoEmMemoria } = await import("./agentes/atendimento/catalogo.js");
+    const { ferramentasDeLeitura } = await import("./agentes/atendimento/ferramentas.js");
+    const consultar = ferramentasDeLeitura.find((tool) => tool.name === "consultar_catalogo")!;
+    const calcular = ferramentasDeLeitura.find((tool) => tool.name === "calcular_peso")!;
+    let ficha = fichaInicialAtendimento();
+    const context = () => ({ ficha, pedido: contextoVillefer({ catalogo: catalogoEmMemoria(linhas) }), setFicha: (next: FichaDoAtendimento) => { ficha = next; }, mensagemAtual: "", historico: [] });
+    expect(await consultar.execute({ consulta: "metalon 40x40 1,5" } as never, context() as never)).toMatch(/\[tubo-1\].*1,82 kg\/m/);
+    expect(await calcular.execute({ linhaId: "tubo-1", pecas: 4, comprimentoM: 4, larguraM: null } as never, context() as never)).toMatch(/\[peso1\].*aproximadamente 29,1 kg/);
+    expect(ficha.trechosVistos.peso1).toMatch(/4 × 4 m × 1,82 kg\/m/);
+    expect(() => calcular.execute({ linhaId: "chapa-1", pecas: 2, comprimentoM: 3, larguraM: null } as never, context() as never)).toThrow(/larguraM/);
+    expect(await calcular.execute({ linhaId: "chapa-1", pecas: 2, comprimentoM: 3, larguraM: 1.2 } as never, context() as never)).toMatch(/aproximadamente 109,4 kg/);
+  });
+});
+
+describe("pedido de item sem interrogação", () => {
+  it("a product request with sizes or 'orçamento para' is a question, small talk with a number is not", async () => {
+    const { conferirLeitura } = await import("./agentes/atendimento/ferramentas.js");
+    const vazia = fichaInicialAtendimento();
+    expect(conferirLeitura({ ficha: vazia, mensagem: "Bucha de ferro fundido: Diâmetro externo 170mm x 120mm x 485mm" })).toMatch(/registrar_pergunta/);
+    expect(conferirLeitura({ ficha: vazia, mensagem: "Telha de alumínio, queria orçamento" })).toMatch(/registrar_pergunta/);
+    expect(conferirLeitura({ ficha: vazia, mensagem: "bom dia, tudo bem? 2 dias de chuva aqui" })).toBeNull();
+    expect(conferirLeitura({ ficha: vazia, mensagem: "ok obrigado" })).toBeNull();
+  });
+});
+
+describe("peso pelo catálogo antes do mínimo", () => {
+  it("nudges a quantity in bars to the catalogue once there is one, and accepts 'pergunta-1' as q1", async () => {
+    const { conferirLeitura, ferramentasDeLeitura } = await import("./agentes/atendimento/ferramentas.js");
+    const { catalogoEmMemoria } = await import("./agentes/atendimento/catalogo.js");
+    const respondida = { ...fichaInicialAtendimento(), perguntas: [{ id: "q1", texto: "fornecem metalon?", status: "respondida" as const, resposta: { trechoId: "t1", citacao: "1.000 kg" }, buscas: 1 }] };
+    const mensagem = "quero 10 barras de metalon 40x40 parede 1,5 de 6 metros";
+    expect(conferirLeitura({ ficha: respondida, mensagem, pedido: contextoVillefer({ catalogo: catalogoEmMemoria([]) }) })).toMatch(/calcular_peso/);
+    expect(conferirLeitura({ ficha: respondida, mensagem, pedido: contextoVillefer() })).toBeNull();
+    expect(conferirLeitura({ ficha: { ...respondida, trechosVistos: { peso1: "109 kg" }, pesosDaVez: ["peso1"] }, mensagem, pedido: contextoVillefer({ catalogo: catalogoEmMemoria([]) }) })).toBeNull();
+    const buscar = ferramentasDeLeitura.find((tool) => tool.name === "buscar_na_base")!;
+    expect(buscar.schema.parse({ perguntaId: "pergunta-1", consulta: "metalon" })).toMatchObject({ perguntaId: "q1" });
+  });
+});
+
+describe("modo sombra no histórico", () => {
+  it("replays each old reply with the history before it, hand-overs first, and stops once a seller joins", async () => {
+    const { cenariosDaSombra } = await import("./agentes/atendimento/sombra.js");
+    const sessao = {
+      conversa: "c1",
+      mensagens: [
+        { autor: "contato", tipo: "text", texto: "bom dia", em: "2026-10-15T10:00:00.000Z" },
+        { autor: "agente", tipo: "text", texto: "Bom dia! Como posso ajudar?", em: "2026-10-15T10:00:30.000Z" },
+        { autor: "contato", tipo: "text", texto: "vcs vende metalon?", em: "2026-10-15T10:05:00.000Z" },
+        { autor: "contato", tipo: "audio", texto: null, em: "2026-10-15T10:05:10.000Z" },
+        { autor: "agente", tipo: "text", texto: "Vou consultar essas informações e já te dou um retorno.", em: "2026-10-15T10:05:40.000Z" },
+        { autor: "vendedor", tipo: "text", texto: "oi, aqui é o Junior", em: "2026-10-15T10:10:00.000Z" },
+        { autor: "contato", tipo: "text", texto: "ok", em: "2026-10-15T10:11:00.000Z" }
+      ],
+      decisoes: [
+        { em: "2026-10-15T10:00:31.000Z", status: "completed", resposta: "Bom dia! Como posso ajudar?", humano: { reason: null, required: false } },
+        { em: "2026-10-15T10:05:41.000Z", status: "handoff_requested", resposta: "Vou consultar essas informações e já te dou um retorno.", humano: { reason: "commercial_policy_risk", required: true } },
+        { em: "2026-10-15T10:11:30.000Z", status: "completed", resposta: "ok", humano: null }
+      ]
+    };
+    const itens = cenariosDaSombra([sessao], contextoVillefer());
+    expect(itens.map((item) => item.cenario.id)).toEqual(["sombra_c1_2", "sombra_c1_1"]);
+    expect(itens[0].antiga).toMatchObject({ passou: true, motivo: "commercial_policy_risk", cliente: "vcs vende metalon?\n[áudio sem transcrição]" });
+    expect(itens[0].cenario.historicoInicial?.map((mensagem) => mensagem.autor)).toEqual(["contato", "agente"]);
+    expect(itens[1].cenario.historicoInicial).toEqual([]);
+    const { chaveDaDecisao } = await import("./agentes/atendimento/sombra.js");
+    const so = cenariosDaSombra([sessao], contextoVillefer(), 150, new Set([chaveDaDecisao(itens[1].antiga)]));
+    expect(so.map((item) => item.cenario.id)).toEqual(["sombra_c1_1"]);
+  });
+});
+
+describe("máscara da exportação", () => {
+  it("hides names people introduce in the text, and leaves the request alone", async () => {
+    const { mascarar } = await import("../../../scripts/harness-exportar-conversas.js");
+    expect(mascarar("Meu nome é Elcio, falo da empresa Beta Engenharia Ambiental")).toBe("Meu nome é [nome], falo da empresa [nome]");
+    expect(mascarar("Me chamo Ana e preciso de chapa")).toBe("Me chamo [nome] e preciso de chapa");
+    expect(mascarar("sou o comprador, a empresa precisa de 10 barras")).toBe("sou o comprador, a empresa precisa de 10 barras");
+  });
+});
+
+describe("ajustes da sombra de 16/10", () => {
+  it("a reply that turns the base's 'não fornece' into a yes is blocked", async () => {
+    const { regras } = await import("./agentes/atendimento/regras.js");
+    const regra = regras.find((item) => item.id === "nao_inverte_recusa")!;
+    const ficha = { ...fichaInicialAtendimento(), perguntas: [{ id: "q1", texto: "fornecem 1045 cortado?", status: "respondida" as const, resposta: { trechoId: "t9", citacao: "NÃO FORNECE: chapas expandidas; oxicorte ou material cortado" }, buscas: 1 }] };
+    const base = { ficha, pedido: contextoVillefer(), jogada: { tipo: "responder", instrucao: "" }, historico: [] };
+    expect(regra.check({ ...base, texto: "Trabalhamos com oxicorte ou material cortado. Pode me enviar o CNPJ?" } as never)).toMatchObject({ ok: false });
+    expect(regra.check({ ...base, texto: "Não fornecemos material cortado, só a barra inteira." } as never)).toMatchObject({ ok: true });
+  });
+
+  it("a hand-over on a live message still answers the contact, and a follow-up-only reason is refused there", async () => {
+    let chamada = 0;
+    const escritor = createScriptedModel("escritor", (request) => {
+      chamada += 1;
+      const pedir = request.tools?.find((tool) => tool.name === "pedir_humano");
+      expect(JSON.stringify(pedir?.parameters)).toMatch(/mensagemAoContato/);
+      expect(JSON.stringify(pedir?.parameters)).not.toMatch(/sem_base_para_retomar/);
+      return { content: null, toolCalls: [toolCall("pedir_humano", { motivo: "reclamacao", detalhe: "chapas com rachadura", mensagemAoContato: "Sinto muito pelas chapas com rachadura. Vou passar agora para o responsável, que continua com você por aqui." })] };
+    });
+    const leitor = createScriptedModel("leitor", () => ({ content: null, toolCalls: [] }));
+    const result = await runTurn(atendimento, { leitor, model: escritor, triage: createTriage() }, {
+      ficha: fichaInicialAtendimento(), pedido: contextoVillefer(), historico: [{ autor: "contato", texto: "as chapas vieram com rachadura e ninguém me explica", em: "2026-10-16T12:00:00.000Z" }],
+      evento: { tipo: "mensagem", texto: "as chapas vieram com rachadura e ninguém me explica" }
+    });
+    expect(chamada).toBe(1);
+    expect(result.enviar).toMatch(/rachadura/);
+    expect(result.humano?.motivo).toMatch(/^reclamacao/);
+  });
+});
+
+describe("ajustes da sombra de 16/10, segunda leva", () => {
+  const catalogoPdf = { id: "catalogo", titulo: "Catálogo Villefer em PDF", url: "https://arquivos.exemplo/catalogo-villefer.pdf", nomeArquivo: "catalogo-villefer.pdf", mimeType: "application/pdf" };
+
+  it("cuts long passages at sentence ends only, so '6.000 mm' and the line before it stay", async () => {
+    const { trechosDeFontes } = await import("./agentes/atendimento/ficha.js");
+    const longo = `Barras chatas: largura de 19,05 a 100 mm; espessura de 3,00 a 12,70 mm; comprimento de 6.000 mm. ${"Material a confirmar com o vendedor. ".repeat(20)}`;
+    const trechos = trechosDeFontes([{ title: "Catálogo", content: longo }]);
+    expect(trechos.length).toBeGreaterThan(1);
+    expect(trechos[0].texto).toMatch(/^Barras chatas: largura de 19,05 a 100 mm; .*comprimento de 6\.000 mm\./);
+    expect(trechos.map((trecho) => trecho.texto).join(" ").replace(/\s+/g, " ")).toBe(longo.trim().replace(/\s+/g, " "));
+  });
+
+  it("a second passage adds to the answer, and the computed weight reaches the writer apart from the minimum", async () => {
+    const { ferramentasDeLeitura } = await import("./agentes/atendimento/ferramentas.js");
+    const { decidirJogada } = await import("./agentes/atendimento/jogadas.js");
+    const responder = ferramentasDeLeitura.find((tool) => tool.name === "responder_pergunta")! as HarnessTool<FichaDoAtendimento, ContextoDoAtendimento, unknown>;
+    let ficha: FichaDoAtendimento = {
+      ...fichaInicialAtendimento(),
+      perguntas: [{ id: "q1", texto: "fornecem 20 chapas de alumínio 1000x3000?", status: "aberta" as const, resposta: null, buscas: 1 }],
+      trechosVistos: { t1: "Chapa de piso de alumínio: sob encomenda.", t47: "Alumínio: aproximadamente 300 kg.", peso1: "Peso teórico: 20 × 3 m × 1 m × 8,4 kg/m² = aproximadamente 504 kg." },
+      pesosDaVez: ["peso1"]
+    };
+    const context = () => ({ ficha, pedido: contextoVillefer(), setFicha: (next: FichaDoAtendimento) => { ficha = next; }, mensagemAtual: "", historico: [] });
+    await responder.execute(responder.schema.parse({ perguntaId: "q1", trechoId: "t1", citacao: "sob encomenda" }), context());
+    await responder.execute(responder.schema.parse({ perguntaId: "q1", trechoId: "t47", citacao: "Alumínio: aproximadamente 300 kg" }), context());
+    expect(ficha.perguntas[0].resposta?.trechoId).toBe("t1");
+    expect(ficha.perguntas[0].maisRespostas).toEqual([{ trechoId: "t47", citacao: "Alumínio: aproximadamente 300 kg." }]);
+    const jogada = decidirJogada({ ficha, pedido: contextoVillefer(), triagem: null, evento: { tipo: "mensagem", texto: "" } });
+    expect(jogada.instrucao).toMatch(/"Chapa de piso de alumínio: sob encomenda\." e "Alumínio: aproximadamente 300 kg\."/);
+    expect(jogada.instrucao).toMatch(/calculado pelo sistema: .*504 kg/);
+  });
+
+  it("asks the reader for the catalogue and the delivery city, together in one note", async () => {
+    const { conferirLeitura } = await import("./agentes/atendimento/ferramentas.js");
+    const nota = conferirLeitura({ ficha: fichaInicialAtendimento(), mensagem: "Me manda o catálogo. Entrega em Curitiba - PR", pedido: contextoVillefer({ anexos: [catalogoPdf] }) });
+    expect(nota).toMatch(/enviar_anexo/);
+    expect(nota).toMatch(/entregam em <cidade>/);
+    expect(conferirLeitura({ ficha: fichaInicialAtendimento(), mensagem: "não precisa de catálogo, obrigado", pedido: contextoVillefer({ anexos: [catalogoPdf] }) })).toBeNull();
+    expect(conferirLeitura({ ficha: fichaInicialAtendimento(), mensagem: "teria a pronta entrega?", pedido: contextoVillefer() }) ?? "").not.toMatch(/cidade/);
+  });
+
+  it("sends the approved PDF with the reply, and never says 'segue o catálogo' without it", async () => {
+    const { regras } = await import("./agentes/atendimento/regras.js");
+    const regra = regras.find((item) => item.id === "nao_promete_anexo")!;
+    const base = { pedido: contextoVillefer(), jogada: { tipo: "conversar", instrucao: "" }, historico: [] };
+    expect(regra.check({ ...base, ficha: fichaInicialAtendimento(), texto: "Claro! Segue o catálogo oficial da Villefer em PDF." } as never)).toMatchObject({ ok: false });
+    expect(regra.check({ ...base, ficha: { ...fichaInicialAtendimento(), anexosDaVez: ["catalogo"] }, texto: "Claro! Segue o catálogo oficial da Villefer em PDF." } as never)).toMatchObject({ ok: true });
+
+    const leitor = createScriptedModel("leitor", (request) => request.messages.some((message) => message.role === "tool")
+      ? { content: null, toolCalls: [] }
+      : { content: null, toolCalls: [toolCall("enviar_anexo", { anexoId: "catalogo" })] });
+    const escritor = createScriptedModel("escritor", (request) => {
+      expect(JSON.stringify(request.messages)).toMatch(/Vai anexado nesta mensagem: Catálogo Villefer em PDF/);
+      return { content: null, toolCalls: [toolCall("responder", { texto: "Claro! Segue o catálogo da Villefer em PDF. Qual produto você procura?" })] };
+    });
+    const pedido = contextoVillefer({ anexos: [catalogoPdf] });
+    const result = await runTurn(atendimento, { leitor, model: escritor, triage: createTriage() }, {
+      ficha: fichaInicialAtendimento(), pedido, historico: [{ autor: "contato", texto: "me manda o catálogo", em: "2026-10-16T12:00:00.000Z" }],
+      evento: { tipo: "mensagem", texto: "me manda o catálogo" }
+    });
+    expect(result.enviar).toMatch(/catálogo/);
+    expect(result.anexos).toEqual([{ url: catalogoPdf.url, legenda: catalogoPdf.titulo, nomeArquivo: catalogoPdf.nomeArquivo, mimeType: catalogoPdf.mimeType }]);
+    expect(result.ficha.anexosEnviados).toEqual(["catalogo"]);
+    expect(result.ficha.anexosDaVez).toEqual([]);
+  });
+});
+
+describe("sombra de 16/10, segunda rodada", () => {
+  it("a citation keeps the 'não fornece' of its sentence, so the reply cannot turn it into a yes", async () => {
+    const { citacaoInteira } = await import("./agentes/atendimento/ferramentas.js");
+    const trecho = "Pedido misto: separar. NÃO FORNECE: chapas expandidas; ferragem armada e vergalhões da linha de construção civil; oxicorte ou material cortado. Termo ambíguo exige esclarecimento.";
+    expect(citacaoInteira(trecho, "vergalhões da linha de construção civil")).toBe("NÃO FORNECE: chapas expandidas; ferragem armada e vergalhões da linha de construção civil; oxicorte ou material cortado.");
+    expect(citacaoInteira(trecho, "NÃO FORNECE: ... material cortado")).toMatch(/^NÃO FORNECE/);
+    expect(citacaoInteira(trecho, "telhas")).toBeNull();
+  });
+
+  it("blocks internal notes of the base in a reply", async () => {
+    const { regras } = await import("./agentes/atendimento/regras.js");
+    const regra = regras.find((item) => item.id === "sem_termo_interno")!;
+    const base = { ficha: fichaInicialAtendimento(), jogada: { tipo: "responder", instrucao: "" }, historico: [] };
+    expect(regra.check({ ...base, pedido: contextoVillefer({ termosInternos: ["EA36"] }), texto: "Na informação disponível consta eA36, não 1045." } as never)).toMatchObject({ ok: false });
+    expect(regra.check({ ...base, pedido: contextoVillefer({ termosInternos: ["EA36"] }), texto: "O vendedor confirma o material com você." } as never)).toMatchObject({ ok: true });
+  });
+});
+
+describe("sombra de 16/10, terceira rodada", () => {
+  it("a live reply blocked twice by the review still answers the contact with the fixed hand-over text", async () => {
+    const escritor = createScriptedModel("escritor", () => ({ content: null, toolCalls: [toolCall("responder", { texto: "Segue o catálogo em PDF." })] }));
+    const leitor = createScriptedModel("leitor", () => ({ content: null, toolCalls: [] }));
+    const result = await runTurn(atendimento, { leitor, model: escritor, triage: createTriage() }, {
+      ficha: fichaInicialAtendimento(), pedido: contextoVillefer(), historico: [{ autor: "contato", texto: "oi, bom dia", em: "2026-10-16T12:00:00.000Z" }],
+      evento: { tipo: "mensagem", texto: "oi, bom dia" }
+    });
+    expect(result.humano?.motivo).toMatch(/nao_promete_anexo/);
+    expect(result.enviar).toBe(atendimento.avisoDeRepasse);
+  });
+});
+
+describe("atendimento no motor de produção", () => {
+  it("is off unless the agent lists the channel", async () => {
+    const { readHarnessConfig, harnessNoCanal } = await import("./agentes/atendimento/producao.js");
+    expect(readHarnessConfig({})).toBeNull();
+    expect(readHarnessConfig({ harness: { agente: "atendimento" } })).toBeNull();
+    const config = readHarnessConfig({ harness: { agente: "atendimento", canais: ["canal-1"], catalogo: "villefer", propostaVillefer: true } });
+    expect(config).toMatchObject({ canais: ["canal-1"], catalogo: "villefer", propostaVillefer: true });
+    expect(harnessNoCanal(config, "canal-1")).toBe(true);
+    expect(harnessNoCanal(config, "canal-2")).toBe(false);
+  });
+
+  it("answers the contact's burst as one message, with the processed text of the current one", async () => {
+    const { conversaParaOHarness } = await import("./agentes/atendimento/producao.js");
+    const { historico, texto } = conversaParaOHarness([
+      { id: "1", autor: "contato", tipo: "text", texto: "oi", em: "2026-10-16T12:00:00.000Z" },
+      { id: "2", autor: "agente", tipo: "text", texto: "Olá! Como posso ajudar?", em: "2026-10-16T12:01:00.000Z" },
+      { id: "3", autor: "contato", tipo: "text", texto: "preciso de tubo", em: "2026-10-16T12:02:00.000Z" },
+      { id: "4", autor: "contato", tipo: "audio", texto: null, em: "2026-10-16T12:03:00.000Z" }
+    ], { id: "4", texto: "50x50 parede 2 mm, 20 barras", em: "2026-10-16T12:03:00.000Z" });
+    expect(texto).toBe("preciso de tubo\n50x50 parede 2 mm, 20 barras");
+    expect(historico.map((mensagem) => mensagem.autor)).toEqual(["contato", "agente", "contato"]);
+    expect(historico.at(-1)!.texto).toBe(texto);
+  });
+
+  it("offers only https PDFs of the base for sending, and reloads a saved record with new fields filled", async () => {
+    const { anexosDasFontes, fichaSalva, contextoDeProducao } = await import("./agentes/atendimento/producao.js");
+    const fontes = [
+      { id: "a", title: "Catálogo Villefer", content: "Catálogo.", fileUrl: "https://villefer.com.br/catalogo.pdf", fileName: "catalogo.pdf", mimeType: "application/pdf" },
+      { id: "b", title: "Planilha", content: null, fileUrl: "http://interno/planilha.pdf", fileName: "planilha.pdf", mimeType: "application/pdf" },
+      { id: "c", title: "Pedidos mínimos", content: "Tubo: cerca de 1.000 kg." }
+    ];
+    expect(anexosDasFontes(fontes)).toEqual([{ id: "catalogo", titulo: "Catálogo Villefer", url: "https://villefer.com.br/catalogo.pdf", nomeArquivo: "catalogo.pdf", mimeType: "application/pdf" }]);
+    const ficha = fichaSalva({ handoffBrief: {}, harness: { ficha: { ...fichaInicialAtendimento(), anexosEnviados: ["catalogo"], pesosDaVez: undefined } } });
+    expect(ficha.anexosEnviados).toEqual(["catalogo"]);
+    expect(fichaSalva({}).perguntas).toEqual([]);
+    const pedido = await contextoDeProducao({ agente: "atendimento", canais: ["c"], catalogo: "villefer" }, fontes);
+    expect(pedido.catalogo).toBeDefined();
+    expect(pedido.termosInternos).toEqual(["EA36"]);
+    expect(pedido.base?.todos?.().some((trecho) => /1\.000 kg/.test(trecho.texto))).toBe(true);
+  });
+});
+
+describe("sombra do follow-up", () => {
+  it("a follow-up the reviewer blocks sends nothing and does not become a seller reminder", async () => {
+    const { seguirComHarness } = await import("./agentes/atendimento/producao.js");
+    const ficha = { ...fichaInicialAtendimento(), contato: { tipo: "cliente" as const, prova: null },
+      pendencias: [{ id: "p1", dono: "cliente" as const, descricao: "informar a espessura", prova: { mensagem: 1, trecho: "Qual espessura?" }, status: "aberta" as const, resolvidaPor: null }] };
+    const analista = createScriptedModel("analista", () => ({ content: null, toolCalls: [] }));
+    const model = createScriptedModel("escritor", () => ({ content: null, toolCalls: [toolCall("responder", { texto: "Segue o catálogo em PDF." })] }));
+    const result = await seguirComHarness({
+      config: { agente: "atendimento", canais: ["c"] }, model, analista, fontes: [], sessionMetadata: { harness: { ficha } }, agora: new Date("2026-10-11T12:00:00.000Z"),
+      mensagens: [
+        { id: "0", autor: "contato", tipo: "text", texto: "Preciso de chapas", em: "2026-10-10T12:00:00.000Z" },
+        { id: "1", autor: "agente", tipo: "text", texto: "Qual espessura?", em: "2026-10-10T12:01:00.000Z" }
+      ]
+    });
+    expect(result.tipo).toBe("nada");
+    expect(result.jogada).toBe("cobrar_pendencia");
+  });
+
+  it("names the old decision in the same words as the new one", async () => {
+    const { acaoAntiga } = await import("../../../scripts/harness-sombra-followup.js");
+    expect(acaoAntiga({ status: "sent", tipo: "human_commercial", enviadoPor: "automatico" })).toBe("enviou");
+    expect(acaoAntiga({ status: "sent", tipo: "human_commercial", enviadoPor: "vendedor" })).toBe("vendedor_enviou");
+    expect(acaoAntiga({ status: "review", tipo: "seller_reminder", enviadoPor: null })).toBe("lembrete");
+    expect(acaoAntiga({ status: "review", tipo: "human_commercial", enviadoPor: null })).toBe("rascunho");
+    expect(acaoAntiga({ status: "skipped", tipo: "human_commercial", enviadoPor: null })).toBe("nada");
   });
 });

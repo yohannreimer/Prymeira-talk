@@ -41,18 +41,33 @@ const RESPONDER: ToolSpec = {
 };
 
 /** With a closed list of reasons the handover is an exception the writer must justify, not an exit. */
-function writerTools(motivos?: Record<string, string>): ToolSpec[] {
+function writerTools(motivos?: Record<string, string>, aoVivo = false): ToolSpec[] {
   const pedirHumano: ToolSpec = motivos && Object.keys(motivos).length
-    ? {
-        name: "pedir_humano",
-        description: `Passa a conversa para uma pessoa da empresa, sem responder. Só nestes casos: ${Object.entries(motivos).map(([key, when]) => `${key} (${when})`).join("; ")}. Fora deles, responda.`,
-        parameters: {
-          type: "object",
-          properties: { motivo: { type: "string", enum: Object.keys(motivos) }, detalhe: { type: "string", description: "Uma frase para a pessoa que vai assumir." } },
-          required: ["motivo", "detalhe"],
-          additionalProperties: false
+    ? aoVivo
+      ? {
+          name: "pedir_humano",
+          description: `Passa a conversa para uma pessoa da empresa, com uma mensagem curta ao contato. Só nestes casos: ${Object.entries(motivos).map(([key, when]) => `${key} (${when})`).join("; ")}. Fora deles, responda.`,
+          parameters: {
+            type: "object",
+            properties: {
+              motivo: { type: "string", enum: Object.keys(motivos) },
+              detalhe: { type: "string", description: "Uma frase para a pessoa que vai assumir." },
+              mensagemAoContato: { type: "string", description: "Uma ou duas frases ao contato, citando o assunto dele, dizendo que uma pessoa da empresa continua por aqui. Sem prometer prazo." }
+            },
+            required: ["motivo", "detalhe", "mensagemAoContato"],
+            additionalProperties: false
+          }
         }
-      }
+      : {
+          name: "pedir_humano",
+          description: `Passa a conversa para uma pessoa da empresa, sem responder. Só nestes casos: ${Object.entries(motivos).map(([key, when]) => `${key} (${when})`).join("; ")}. Fora deles, responda.`,
+          parameters: {
+            type: "object",
+            properties: { motivo: { type: "string", enum: Object.keys(motivos) }, detalhe: { type: "string", description: "Uma frase para a pessoa que vai assumir." } },
+            required: ["motivo", "detalhe"],
+            additionalProperties: false
+          }
+        }
     : {
         name: "pedir_humano",
         description: "Passa a conversa para uma pessoa da empresa, sem responder, quando a jogada não pode ser cumprida com segurança.",
@@ -105,18 +120,28 @@ export async function runTurn<Ficha, Pedido>(
     return { enviar: null, humano: { motivo: jogada.humano, resumo }, ficha, jogada, trace };
   }
 
-  const written = await writeAndReview(agent, deps, { ficha, pedido, historico, jogada }, trace);
+  const written = await writeAndReview(agent, deps, { ficha, pedido, historico, jogada, aoVivo: evento.tipo === "mensagem" }, trace);
+  // Read before aposEnvio, which marks them as sent.
+  const anexos = agent.anexosDaVez?.(ficha, pedido) ?? [];
+  const comAnexos = (texto: string | null) => {
+    if (!texto || !anexos.length) return {};
+    trace.push({ fase: "envio", detalhe: { anexos: anexos.map((anexo) => anexo.nomeArquivo ?? anexo.url) } });
+    return { anexos };
+  };
   if (written.humano) {
-    return { enviar: null, humano: { motivo: written.humano, resumo: agent.renderFicha(ficha, pedido) }, ficha, jogada, trace };
+    if (written.texto) trace.push({ fase: "envio", detalhe: written.texto });
+    const extra = comAnexos(written.texto ?? null);
+    return { enviar: written.texto ?? null, ...extra, humano: { motivo: written.humano, resumo: agent.renderFicha(ficha, pedido) }, ficha, jogada, trace };
   }
   const texto = written.texto!;
   if (agent.aposEnvio) ficha = agent.aposEnvio({ ficha, jogada, texto });
   trace.push({ fase: "envio", detalhe: texto });
+  const extra = comAnexos(texto);
   if (jogada.avisarHumano) {
     trace.push({ fase: "humano", detalhe: { motivo: jogada.avisarHumano } });
-    return { enviar: texto, humano: { motivo: jogada.avisarHumano, resumo: agent.renderFicha(ficha, pedido) }, ficha, jogada, trace };
+    return { enviar: texto, ...extra, humano: { motivo: jogada.avisarHumano, resumo: agent.renderFicha(ficha, pedido) }, ficha, jogada, trace };
   }
-  return { enviar: texto, humano: null, ficha, jogada, trace };
+  return { enviar: texto, ...extra, humano: null, ficha, jogada, trace };
 }
 
 async function readIntoRecord<Ficha, Pedido>(
@@ -162,7 +187,7 @@ async function readIntoRecord<Ficha, Pedido>(
   for (let round = 0; round < rounds; round += 1) {
     const response = await model.complete({ messages, tools: agent.ferramentasDeLeitura.map(toSpec), toolChoice: "auto" });
     if (response.toolCalls.length === 0) {
-      const nota = conferiu ? null : agent.conferirLeitura?.({ ficha, mensagem: input.mensagem });
+      const nota = conferiu ? null : agent.conferirLeitura?.({ ficha, mensagem: input.mensagem, pedido: input.pedido });
       conferiu = true;
       if (!nota) break;
       calls.push({ ferramenta: "conferencia_do_codigo", argumentos: {}, resultado: `Erro: ${nota}` });
@@ -258,9 +283,16 @@ function formatHours(hours: number) {
 async function writeAndReview<Ficha, Pedido>(
   agent: AgentDefinition<Ficha, Pedido>,
   deps: RunnerDeps,
-  input: { ficha: Ficha; pedido: Pedido; historico: HarnessMessage[]; jogada: Jogada },
+  input: { ficha: Ficha; pedido: Pedido; historico: HarnessMessage[]; jogada: Jogada; aoVivo?: boolean },
   trace: TraceStep[]
 ): Promise<{ texto?: string; humano?: string }> {
+  // On a live message only the agent's live reasons are offered, and a hand-over still answers the contact.
+  const motivos = input.aoVivo && agent.motivosParaHumano && agent.motivosAoVivo
+    ? Object.fromEntries(Object.entries(agent.motivosParaHumano).filter(([key]) => agent.motivosAoVivo!.includes(key)))
+    : agent.motivosParaHumano;
+  const aoVivo = Boolean(input.aoVivo && motivos && Object.keys(motivos).length);
+  // A live hand-over never leaves the contact without an answer: the fixed text goes when nothing written passed.
+  const repasse = (humano: string) => (aoVivo && agent.avisoDeRepasse ? { humano, texto: agent.avisoDeRepasse } : { humano });
   const fichaTexto = agent.renderFicha(input.ficha, input.pedido);
   const skills = (input.jogada.skills ?? []).flatMap((name) => agent.skills[name] ? [`## ${name}\n${agent.skills[name]}`] : []);
   const messages: ChatMessage[] = [
@@ -294,10 +326,10 @@ async function writeAndReview<Ficha, Pedido>(
 
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const started = Date.now();
-    const response = await deps.model.complete({ messages, tools: writerTools(agent.motivosParaHumano), toolChoice: "required" });
+    const response = await deps.model.complete({ messages, tools: writerTools(motivos, aoVivo), toolChoice: "required" });
     const call = response.toolCalls[0];
     const args = call ? safeParse(call.arguments) as Record<string, unknown> | null : null;
-    const motivoValido = typeof args?.motivo === "string" && (!agent.motivosParaHumano || args.motivo in agent.motivosParaHumano);
+    const motivoValido = typeof args?.motivo === "string" && (!motivos || args.motivo in motivos);
     if (call?.name === "pedir_humano" && !motivoValido && attempt === 0) {
       // A handover outside the allowed reasons is refused once: the writer has to answer.
       trace.push({ fase: "escrita", detalhe: { tentativa: 1, pedirHumanoRecusado: args?.motivo ?? null }, ms: Date.now() - started });
@@ -313,7 +345,13 @@ async function writeAndReview<Ficha, Pedido>(
         : "O agente pediu uma pessoa.";
       trace.push({ fase: "escrita", detalhe: { tentativa: attempt + 1, pedirHumano: motivo }, ms: Date.now() - started });
       trace.push({ fase: "humano", detalhe: { motivo } });
-      return { humano: motivo };
+      const aviso = aoVivo && typeof args?.mensagemAoContato === "string" ? args.mensagemAoContato.trim() : "";
+      if (aviso) {
+        const revisao = await revisar(aviso);
+        trace.push({ fase: "revisao", detalhe: revisao });
+        if (revisao.ok) return { humano: motivo, texto: aviso };
+      }
+      return repasse(motivo);
     }
     const texto = call?.name === "responder" && typeof args?.texto === "string"
       ? args.texto.trim()
@@ -321,7 +359,26 @@ async function writeAndReview<Ficha, Pedido>(
     trace.push({ fase: "escrita", detalhe: { tentativa: attempt + 1, texto }, ms: Date.now() - started });
 
     const reviewStarted = Date.now();
-    const outcome = await reviewMessage({
+    const outcome = await revisar(texto);
+    trace.push({ fase: "revisao", detalhe: outcome, ms: Date.now() - reviewStarted });
+    if (outcome.ok) return { texto };
+
+    if (outcome.regra === "juiz_indisponivel" || attempt === 1) {
+      trace.push({ fase: "humano", detalhe: { motivo: outcome.motivo } });
+      return repasse(`Mensagem bloqueada pelo revisor (${outcome.regra}): ${outcome.motivo}`);
+    }
+    messages.push(
+      ...(call
+        ? [{ role: "assistant" as const, content: null, toolCalls: [call] },
+          { role: "tool" as const, toolCallId: call.id, name: call.name, content: "BLOQUEADA, não foi enviada." }]
+        : [{ role: "assistant" as const, content: texto }]),
+      { role: "user", content: `Sua mensagem foi bloqueada pelo revisor e não foi enviada. Motivo: ${outcome.motivo} Reescreva cumprindo a jogada e chame responder de novo.` }
+    );
+  }
+  return repasse("O agente não conseguiu escrever uma mensagem aprovada.");
+
+  function revisar(texto: string) {
+    return reviewMessage({
       texto,
       ficha: input.ficha,
       pedido: input.pedido,
@@ -337,22 +394,7 @@ async function writeAndReview<Ficha, Pedido>(
         ...(input.jogada.skills ?? []).flatMap((name) => agent.skills[name] ? [`Procedimento da jogada (${name}):\n${agent.skills[name]}`] : [])
       ].filter(Boolean).join("\n\n") || undefined
     });
-    trace.push({ fase: "revisao", detalhe: outcome, ms: Date.now() - reviewStarted });
-    if (outcome.ok) return { texto };
-
-    if (outcome.regra === "juiz_indisponivel" || attempt === 1) {
-      trace.push({ fase: "humano", detalhe: { motivo: outcome.motivo } });
-      return { humano: `Mensagem bloqueada pelo revisor (${outcome.regra}): ${outcome.motivo}` };
-    }
-    messages.push(
-      ...(call
-        ? [{ role: "assistant" as const, content: null, toolCalls: [call] },
-          { role: "tool" as const, toolCallId: call.id, name: call.name, content: "BLOQUEADA, não foi enviada." }]
-        : [{ role: "assistant" as const, content: texto }]),
-      { role: "user", content: `Sua mensagem foi bloqueada pelo revisor e não foi enviada. Motivo: ${outcome.motivo} Reescreva cumprindo a jogada e chame responder de novo.` }
-    );
   }
-  return { humano: "O agente não conseguiu escrever uma mensagem aprovada." };
 }
 
 async function executeTool<Ficha, Pedido>(

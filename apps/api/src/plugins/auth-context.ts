@@ -221,10 +221,12 @@ export const authContextPlugin = fp(
 
       if (supervisionPath) {
         reply.header("Cache-Control", "private, no-store");
-        // Read only, except two actions: a supervisor answering a customer in a seller's conversation, and marking a
-        // customer as not needing an answer.
+        // Read only, except a supervisor answering a customer in a seller's conversation, marking a customer as not
+        // needing an answer, and the product owner deciding the agents' rules and improvements.
         const supervisorReply = request.method === "POST" && /^\/supervision\/workspaces\/[^/]+\/conversations\/[^/]+\/(messages|waiting)$/.test(pathname);
-        if (request.method !== "GET" && !supervisorReply) {
+        // The product owner deciding a customer's agent rules and improvements (Hub admins only, checked below on /admin/session).
+        const ownerEvaluation = request.method === "POST" && /^\/supervision\/admin\/(agent-evaluations\/[^/]+\/(run|proposals|rules\/remove)|agent-improvements\/[^/]+\/[^/]+\/(update|normalize|approve))$/.test(pathname);
+        if (request.method !== "GET" && !supervisorReply && !ownerEvaluation) {
           throw new SupervisionError(403, "A supervisão permite somente consulta.");
         }
         request.supervision = await validateSupervisionAccess({

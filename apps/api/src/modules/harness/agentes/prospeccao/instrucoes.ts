@@ -23,3 +23,11 @@ export const skills: Record<string, string> = {
 
 export const instrucoesDoLeitor = `Registre o que a última mensagem do lead mostra: quem ele é (registrar_contato), o que contou da rotina (registrar_dor), perguntas (registrar_pergunta_do_lead), objeção (registrar_objecao), nível de interesse (registrar_interesse), indicação de outra pessoa (registrar_indicado) e se aceitou o objetivo (registrar_aceite).
 Uma recusa educada ("no momento não, mas obrigada") é sem_interesse, não objeção.`;
+
+/** Messages the procedures ask for; a test runs them through this agent's hard rules (see the buyer's). */
+export const exemplos: Array<{ jogada: { tipo: string; dados?: Record<string, unknown> }; texto: string }> = [
+  { jogada: { tipo: "responder_e_puxar" }, texto: "A gente não vende material, a gente faz um atendente com IA que responde no WhatsApp de vocês e devolve o orçamento pronto. Topa ver funcionando em 15 minutos?" },
+  { jogada: { tipo: "pedir_responsavel" }, texto: "Obrigado! Qual o nome e o melhor contato de quem cuida do atendimento aí?" },
+  { jogada: { tipo: "agradecer_e_encerrar" }, texto: "Entendido, Débora, obrigado pela atenção!" },
+  { jogada: { tipo: "retomar" }, texto: "Você comentou que são 3 pessoas atendendo loja e WhatsApp ao mesmo tempo. Ainda faz sentido conversarmos 15 minutos sobre isso?" }
+];

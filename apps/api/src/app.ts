@@ -15,6 +15,7 @@ import { createJevFollowupDecision } from "./modules/agents/jev-followup-decisio
 import { createJevFollowupEligibility } from "./modules/followups/jev-followup-eligibility.js";
 import { createLunaFollowupEligibility } from "./modules/followups/luna-followup-eligibility.js";
 import { createJevReplyPreflight } from "./modules/agents/jev-reply-preflight.js";
+import { createJevClient } from "./modules/harness/core/jev.js";
 import {
   createJevAgentImprovementDetector,
   createJevAgentImprovementNormalizer
@@ -32,6 +33,7 @@ import { createInboxMediaService } from "./modules/conversations/inbox-media.js"
 import { deploymentPhotoStore } from "./modules/conversations/photo-store.js";
 import { createConversationFollowupRealtimePublisher } from "./modules/followups/conversation-followup-events.js";
 import { agentsRoutes } from "./modules/agents/agents.routes.js";
+import { createAgentEvaluationsScheduler, createAgentEvaluationsService, type AgentEvaluationsPrismaLike } from "./modules/agents/agent-evaluations.service.js";
 import { agentPackageRoutes } from "./modules/agents/agent-package.routes.js";
 import { createSimulatedAgentProvider } from "./modules/agents/provider-gateway.js";
 import { createGoogleCalendarMeetingScheduler, parseMeetingHours, parseMeetingWeekdays } from "./modules/agents/meeting-scheduler.js";
@@ -434,6 +436,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
             }
           }
         );
+  const harnessJev = env.JEV_API_KEY ? createJevClient({ apiKey: env.JEV_API_KEY, model: env.JEV_MODEL }) : undefined;
   const replyPreflight = env.JEV_API_KEY
     ? createJevReplyPreflight({ apiKey: env.JEV_API_KEY, model: env.JEV_MODEL })
     : undefined;
@@ -508,7 +511,8 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
           meetingScheduler,
           meetingReminders,
           durableMedia: durableMedia?.media,
-          transcriptions: durableMedia?.transcriptions
+          transcriptions: durableMedia?.transcriptions,
+          harness: { jev: harnessJev }
         });
   const agentReplyScheduler =
     options.prismaEnabled === false || !agentRuntime
@@ -571,7 +575,8 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
           replyPreflight,
           outbound: followupOutbound,
           publisher: followupPublisher,
-          followupBrain
+          followupBrain,
+          harness: { jev: harnessJev }
         });
   const conversationFollowupScheduler = followupService
     ? createConversationFollowupScheduler({
@@ -632,7 +637,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
     : createAssistantHistoryImporter(app.prisma, evolutionHistorySource, {
         prepareMedia: async ({ workspaceId, mediaUrl, kind }) => prepareInboundMedia({ settings: await resolveOpenAiCompatibleSettings(app.prisma, { workspaceId }), mediaUrl, kind })
       });
-  const assistantScheduler = options.prismaEnabled === false ? undefined : createAssistantScheduler(app.prisma, { generate: createAssistantGeneration(app.prisma, { durableMedia: durableMedia?.media, transcriptions: durableMedia?.transcriptions }), prepareContext: prepareAssistantHistory, onError: () => app.log.error('Assistant scheduler failed; drafts remain private.') });
+  const assistantScheduler = options.prismaEnabled === false ? undefined : createAssistantScheduler(app.prisma, { generate: createAssistantGeneration(app.prisma, { durableMedia: durableMedia?.media, transcriptions: durableMedia?.transcriptions, harness: { jev: harnessJev } }), prepareContext: prepareAssistantHistory, onError: () => app.log.error('Assistant scheduler failed; drafts remain private.') });
   assistantScheduler?.start();
   app.addHook('onClose', async () => { assistantScheduler?.stop(); handoffBriefService?.stop(); });
   const historyBackfill = options.prismaEnabled === false || !evolutionHistorySource ? undefined : async (input: { workspaceId: string; channelId: string; conversationId: string; providerKey: string; remoteJid: string; identity: string; pushName: string | null }) => {
@@ -715,7 +720,16 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
     durableMedia: durableMedia?.media,
     transcriptions: durableMedia?.transcriptions
   });
-  await app.register(supervisionRoutes, { evolution: evolutionRuntime });
+  const agentEvaluations = options.prismaEnabled === false ? undefined : createAgentEvaluationsService({
+    prisma: app.prisma as unknown as AgentEvaluationsPrismaLike,
+    jev: harnessJev
+  });
+  const agentEvaluationsScheduler = agentEvaluations && env.NODE_ENV !== "test"
+    ? createAgentEvaluationsScheduler({ service: agentEvaluations, onError: (error) => app.log.error({ err: error }, "Weekly agent evaluation failed.") })
+    : undefined;
+  agentEvaluationsScheduler?.start();
+  if (agentEvaluationsScheduler) app.addHook("onClose", async () => { await agentEvaluationsScheduler.stop(); });
+  await app.register(supervisionRoutes, { evolution: evolutionRuntime, agentEvaluations, agentImprovements });
   if (inboxTriage) await app.register(inboxTriageRoutes, { triage: inboxTriage });
   if (followupService && followupOutbound) {
     await app.register(conversationFollowupsRoutes, {

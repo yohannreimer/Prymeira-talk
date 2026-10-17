@@ -11,7 +11,7 @@ import type { ContextoDoAtendimento, FichaDoAtendimento } from "./tipos.js";
  * - Live reply: the reader registers each question and looks it up in the base; code answers what has a
  *   quoted passage and hands over only what the base does not cover.
  * - Silence (follow-up): the analyst subagent keeps the record true, code picks the move.
- * Still runs only in the simulator; the live engine is the current one.
+ * Live only where the agent turns it on for a channel (producao.ts); elsewhere the current engine answers.
  */
 export const atendimento: AgentDefinition<FichaDoAtendimento, ContextoDoAtendimento> = {
   id: "atendimento",
@@ -31,11 +31,17 @@ export const atendimento: AgentDefinition<FichaDoAtendimento, ContextoDoAtendime
   // The passages the reader already pulled from the base are true facts the judge must also see.
   fontesDoRevisor: (ficha) => Object.entries(ficha.trechosVistos).map(([id, texto]) => `[${id}] ${texto}`).join("\n"),
   janelaDeMensagens: 20,
+  anexosDaVez: (ficha, pedido) => (ficha.anexosDaVez ?? [])
+    .map((id) => pedido.anexos?.find((anexo) => anexo.id === id))
+    .filter((anexo) => anexo !== undefined)
+    .map((anexo) => ({ url: anexo.url, legenda: anexo.titulo, nomeArquivo: anexo.nomeArquivo, mimeType: anexo.mimeType })),
   motivosParaHumano: {
     sem_base_para_retomar: "num follow-up, a pendência depende de um fato (preço, prazo, estoque) que não está na conversa",
     reclamacao: "o cliente está reclamando ou irritado com a empresa",
     fechar_pedido: "o cliente quer fechar o pedido agora (faturar, pagar, emitir nota)"
-  }
+  },
+  motivosAoVivo: ["reclamacao", "fechar_pedido"],
+  avisoDeRepasse: "Vou passar sua mensagem para um vendedor, que continua o atendimento com você por aqui."
 };
 
 export type { ContextoDoAtendimento, FichaDoAtendimento } from "./tipos.js";

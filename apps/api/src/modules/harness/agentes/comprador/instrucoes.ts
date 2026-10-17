@@ -30,3 +30,15 @@ export const skills: Record<string, string> = {
 - Peça preço unitário, frete, prazo de entrega e condição de pagamento.
 - Diga até quando a empresa recebe orçamentos.`
 };
+
+/**
+ * Messages the procedures above ask for, written the way the writer should write them. A test runs each
+ * one through this agent's hard rules: a procedure that asks for something a rule blocks fails there,
+ * before any run with a real model (the 16/10 choradinha failed exactly like that).
+ */
+export const exemplos: Array<{ jogada: { tipo: string; dados?: Record<string, unknown> }; texto: string }> = [
+  { jogada: { tipo: "pedir_orcamento" }, texto: "Pode enviar os preços unitários, o frete, o prazo de entrega e a condição de pagamento?" },
+  { jogada: { tipo: "choradinha" }, texto: "Obrigado pela proposta! Já temos uma opção mais em conta. Consegue melhorar um pouco esse valor? A empresa vai escolher a proposta com a melhor condição." },
+  { jogada: { tipo: "choradinha" }, texto: "Obrigado! Tem como chegar num preço melhor? Pagamento em boleto 28 dias, como pedimos." },
+  { jogada: { tipo: "fechar_rodada", dados: { podePrometerRetorno: true } }, texto: "Obrigado! Vou apresentar sua proposta para a empresa e te retorno assim que tiver a decisão." }
+];

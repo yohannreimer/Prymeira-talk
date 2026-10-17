@@ -17,7 +17,7 @@ export function decidirJogada(input: {
 }): Jogada {
   const { ficha, pedido, evento } = input;
   if (evento.tipo === "abertura") return { tipo: "sem_abertura", silencio: true, instrucao: "O atendimento responde; não abre conversa." };
-  if (evento.tipo === "mensagem") return jogadaDaMensagem(ficha, input.triagem);
+  if (evento.tipo === "mensagem") return jogadaDaMensagem(ficha, input.triagem, pedido);
   if (NAO_CLIENTE.has(ficha.contato.tipo)) {
     return { tipo: "contato_nao_cliente", silencio: true, instrucao: `Contato ${ficha.contato.tipo}: sem follow-up.` };
   }
@@ -39,7 +39,7 @@ export function decidirJogada(input: {
   if (daEmpresa) {
     return {
       tipo: "lembrete_vendedor",
-      humano: `Lembrete: ${daEmpresa.descricao} (mensagem [${daEmpresa.prova.mensagem}]: "${daEmpresa.prova.trecho}")`,
+      humano: `Lembrete: ${daEmpresa.descricao} (${daEmpresa.doContato ? `o cliente pediu na mensagem [${daEmpresa.doContato.mensagem}]: "${daEmpresa.doContato.trecho}"` : `mensagem [${daEmpresa.prova.mensagem}]: "${daEmpresa.prova.trecho}"`})`,
       instrucao: "A vez é da empresa.",
       dados: { pendenciaId: daEmpresa.id }
     };
@@ -79,17 +79,47 @@ export function decidirJogada(input: {
  * A live reply. The order is the point: the reader registered each question and searched the base;
  * code answers with what has a quoted passage and hands over only what the base does not cover.
  */
-function jogadaDaMensagem(ficha: FichaDoAtendimento, triagem: TriageResult | null): Jogada {
+function jogadaDaMensagem(ficha: FichaDoAtendimento, triagem: TriageResult | null, pedido: ContextoDoAtendimento): Jogada {
   if (triagem?.kind === "robo") return { tipo: "aguardar_pessoa", silencio: true, instrucao: "Atendimento automático do outro lado." };
   if (triagem?.kind === "recusa" || triagem?.kind === "despedida") {
     return { tipo: "encerrar", instrucao: "O contato encerrou ou recusou. Agradeça em uma frase, sem insistir e sem perguntar nada." };
   }
+  const jogada = jogadaDasPerguntas(ficha);
+  // Weights computed by code go to the writer even when the reader did not cite them, apart from the minimum.
+  const pesos = (ficha.pesosDaVez ?? []).map((id) => ficha.trechosVistos[id]).filter(Boolean);
+  const anexos = (ficha.anexosDaVez ?? []).map((id) => pedido.anexos?.find((anexo) => anexo.id === id)).filter((anexo) => anexo !== undefined);
+  const extras = [
+    ...(pesos.length ? [`Peso do pedido, calculado pelo sistema: ${pesos.join(" ")} Use esse número como o peso; o pedido mínimo é outra coisa, compare os dois.`] : []),
+    ...(anexos.length
+      ? [`Vai anexado nesta mensagem: ${anexos.map((anexo) => anexo.titulo).join(", ")}. Diga em poucas palavras que está enviando.`]
+      : pedido.anexos?.length ? ["Nenhum arquivo vai anexado nesta mensagem: não diga que está enviando catálogo ou arquivo."] : [])
+  ];
+  // The company asked for this choice the first time a made-to-order item comes up.
+  const respondidas = ficha.perguntas.filter((item) => item.status === "respondida").flatMap(citacoes);
+  if (respondidas.some(recusa)) extras.push("Atenção: a base diz que a empresa NÃO fornece ou NÃO atende parte do que foi pedido. Diga isso com clareza; não ofereça esse item.");
+  // Not after a "no": a catalogue offer right after refusing the item or the region reads as ignoring it.
+  const encomenda = !anexos.length && !(ficha.anexosEnviados ?? []).length && pedido.anexos?.some((anexo) => /catalogo/i.test(semAcento(anexo.titulo))) &&
+    respondidas.some((citacao) => /encomenda/i.test(citacao)) && !respondidas.some(recusa);
+  if (encomenda && (jogada.tipo === "responder" || jogada.tipo === "conversar")) {
+    extras.push("É um item sob encomenda: termine perguntando se ele prefere ver o catálogo em PDF ou falar com um vendedor, no lugar de outra pergunta.");
+  }
+  return extras.length && !jogada.silencio ? { ...jogada, instrucao: `${jogada.instrucao} ${extras.join(" ")}` } : jogada;
+}
+
+const semAcento = (texto: string) => texto.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+/** A passage that says no: what the company does not supply, the places it does not serve. */
+export const RECUSA = /\bnao (fornece|fornecemos|fornecidas?|trabalhamos|atendemos|vendemos|fazemos)\b/;
+const recusa = (citacao: string) => RECUSA.test(semAcento(citacao));
+/** Every passage that answers the question, in the order the reader cited them. */
+export const citacoes = (pergunta: FichaDoAtendimento["perguntas"][number]) => [pergunta.resposta, ...(pergunta.maisRespostas ?? [])].filter((item) => item !== null).map((item) => item.citacao);
+
+function jogadaDasPerguntas(ficha: FichaDoAtendimento): Jogada {
   const atuais = ficha.perguntas.filter((item) => item.status !== "tratada");
   const respondidas = atuais.filter((item) => item.status === "respondida");
   // Unanswered after a search, or never searched: a person answers it. Nothing is promised in general.
   const semBase = atuais.filter((item) => item.status === "sem_base" || (item.status === "aberta" && item.buscas > 0));
   const naoBuscadas = atuais.filter((item) => item.status === "aberta" && item.buscas === 0);
-  const respostas = respondidas.map((item) => `"${item.texto}": a base diz "${item.resposta!.citacao}"`);
+  const respostas = respondidas.map((item) => `"${item.texto}": a base diz ${citacoes(item).map((citacao) => `"${citacao}"`).join(" e ")}`);
 
   if (ficha.pediuPessoa) {
     return {
@@ -123,14 +153,22 @@ function jogadaDaMensagem(ficha: FichaDoAtendimento, triagem: TriageResult | nul
     tipo: "conversar",
     instrucao: naoBuscadas.length
       ? `Sobre ${naoBuscadas.map((item) => `"${item.texto}"`).join(", ")}: não afirme preço, prazo, estoque nem condição. Pergunte o detalhe que falta (produto, medida, quantidade, cidade).`
-      : "Responda ao que o contato disse, curto. Se faltar algo para o pedido andar (produto, medida, quantidade, cidade), pergunte uma coisa só."
+      : "Responda ao que o contato disse, curto. Se for só conversa (cumprimento, o tempo, futebol), responda numa frase simpática acompanhando o que ele contou, sem dizer nada sobre você ou sobre o tempo aí da empresa, e pergunte se pode ajudar em algo. Se faltar algo para o pedido andar (produto, medida, quantidade, cidade), pergunte uma coisa só."
   };
 }
 
 export function aposEnvio(input: { ficha: FichaDoAtendimento; jogada: Jogada; texto: string }): FichaDoAtendimento {
   if (input.jogada.tipo !== "cobrar_pendencia") {
-    // Everything asked so far was handled by this reply (answered here or passed to a person).
-    return { ...input.ficha, pediuPessoa: false, perguntas: input.ficha.perguntas.map((item) => ({ ...item, status: "tratada" as const })) };
+    // Everything asked so far was handled by this reply (answered here or passed to a person), files included.
+    const { ficha } = input;
+    return {
+      ...ficha,
+      pediuPessoa: false,
+      perguntas: ficha.perguntas.map((item) => ({ ...item, status: "tratada" as const })),
+      pesosDaVez: [],
+      anexosDaVez: [],
+      anexosEnviados: [...new Set([...(ficha.anexosEnviados ?? []), ...(ficha.anexosDaVez ?? [])])]
+    };
   }
   const pendenciaId = input.jogada.dados?.pendenciaId;
   if (typeof pendenciaId !== "string") return input.ficha;

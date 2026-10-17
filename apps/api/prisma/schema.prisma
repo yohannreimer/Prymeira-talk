@@ -1179,6 +1179,27 @@ model AiAgent {
   @@map("ai_agents")
 }
 
+/// The weekly evaluation of one customer's new attendance agent. A customer (behaviorConfig.harness.cliente)
+/// may run the same agent in several workspaces, so it is keyed by customer and lists the agents it covered.
+model AiAgentEvaluation {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  clientKey   String   @map("client_key")
+  agents      Json     @default("[]")
+  periodStart DateTime @map("period_start")
+  periodEnd   DateTime @map("period_end")
+  status      String   @default("running")
+  summary     Json     @default("{}")
+  cases       Json     @default("[]")
+  proposals   Json     @default("[]")
+  error       String?
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@unique([clientKey, periodStart])
+  @@index([clientKey, createdAt])
+  @@map("ai_agent_evaluations")
+}
+
 model AssistantConversationState {
   id             String       @id @default(uuid()) @db.Uuid
   workspaceId    String       @map("workspace_id")

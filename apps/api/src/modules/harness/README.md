@@ -40,9 +40,19 @@ Um agente novo é uma pasta em `agentes/` que preenche `AgentDefinition` (`core/
 Agentes:
 - `comprador`: módulo de orçamentos.
 - `prospeccao` (João): conversa fria aberta por campanha. Robô de recepção recebe silêncio, recusa educada recebe um agradecimento pelo nome, toda explicação termina com o próximo passo, e aceite ou indicação avisam o time. Os cenários são as conversas de 13/10.
-- `atendimento`: respostas ao vivo e follow-up. Ainda roda só no simulador; o atendimento real continua no motor atual.
+- `atendimento`: respostas ao vivo e follow-up. Responde de verdade só nos canais ligados (veja "No motor de produção"), com follow-up e sugestão ao vendedor também.
   - **Ao vivo**, o leitor registra cada pergunta e procura nos documentos (`buscar_na_base`). Ela só conta como respondida com a citação exata de um trecho, e só pode ser marcada "sem base" depois de procurar. O código responde o que tem trecho e passa para o vendedor só o que a base não cobre, com uma frase sobre aquele assunto (jogada `responder_e_passar`).
   - **No silêncio**, o analista confere a ficha e o código decide entre cobrar o cliente, lembrar o vendedor ou ficar quieto.
+
+## No motor de produção
+
+O agente de atendimento responde de verdade só onde o agente da empresa liga, canal por canal, no `behaviorConfig`:
+
+```json
+"harness": { "agente": "atendimento", "canais": ["<id do canal>"], "catalogo": "villefer", "propostaVillefer": true }
+```
+
+Sem `canais` ele fica desligado. Nos canais listados, `agent-runtime.ts` chama `agentes/atendimento/producao.ts` no lugar do provedor antigo, com o modelo do workspace em modo JSON e reasoning low, e o JEV na triagem e no juiz quando `JEV_API_KEY` existe. O PDF aprovado vai junto com a resposta, inclusive num repasse; o repasse mantém a mensagem que o agente escreveu; a ficha fica em `aiAgentSession.metadata.harness`. No mesmo canal, a sugestão da IA de apoio sai do mesmo turno, sem enviar nem salvar (o vendedor recebe o aviso do PDF a anexar), e o follow-up passa pelo analista: ele lê a conversa inteira na hora da etapa, e o código decide entre cobrar o cliente (envio automático ou rascunho, conforme o canal), lembrar o vendedor ou não fazer nada. Nos outros canais nada muda. Áudio, imagem que não abriu e o restante da mídia continuam tratados pelo motor antes do harness.
 
 ## Simulador
 

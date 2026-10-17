@@ -2,7 +2,8 @@ import type { HarnessMessage } from "../../core/types.js";
 import type { Check, Scenario, ScenarioRun } from "../../simulador/simulador.js";
 import { semelhanca } from "./regras.js";
 import { baseEmMemoria } from "./ficha.js";
-import type { ContextoDoAtendimento, FichaDoAtendimento, TrechoDaBase } from "./tipos.js";
+import type { Catalogo } from "./catalogo.js";
+import type { AnexoAprovado, BaseDeConhecimento, ContextoDoAtendimento, FichaDoAtendimento, TrechoDaBase } from "./tipos.js";
 
 type Cenario = Scenario<FichaDoAtendimento, ContextoDoAtendimento>;
 type Run = ScenarioRun<FichaDoAtendimento, ContextoDoAtendimento>;
@@ -291,17 +292,19 @@ const cliente = (...mensagens: string[]) => ({ tipo: "roteiro" as const, respond
 const GENERICA = /consultar (essas |as )?informa[cç][oõ]es|j[aá] te (dou um )?retorno/i;
 
 /** Checks for one live reply: handed over or not, what it says, and never the generic holding phrase. */
-function respostaAoVivo(input: { humano: boolean; fala?: RegExp; humanoFala?: RegExp }) {
+function respostaAoVivo(input: { humano?: boolean; fala?: RegExp; humanoFala?: RegExp; naoFala?: RegExp; anexo?: boolean }) {
   return (run: Run): Check[] => {
     const resposta = run.turnos.find((turno) => turno.evento.startsWith("contato:"))?.resultado;
     const texto = resposta?.enviar ?? "";
     const checks: Check[] = [
-      { nome: input.humano ? "passou_o_que_faltava" : "respondeu_sem_passar", ok: Boolean(resposta?.humano) === input.humano, detalhe: resposta?.humano?.motivo ?? "sem humano" },
       { nome: "respondeu_algo", ok: texto.length > 0, detalhe: texto || "(nada enviado)" },
       { nome: "sem_frase_generica", ok: !GENERICA.test(texto), detalhe: texto }
     ];
+    if (input.humano !== undefined) checks.unshift({ nome: input.humano ? "passou_o_que_faltava" : "respondeu_sem_passar", ok: Boolean(resposta?.humano) === input.humano, detalhe: resposta?.humano?.motivo ?? "sem humano" });
+    if (input.naoFala) checks.push({ nome: "nao_disse_o_que_nao_devia", ok: !input.naoFala.test(texto), detalhe: texto });
     if (input.fala) checks.push({ nome: "resposta_certa", ok: input.fala.test(texto), detalhe: texto });
     if (input.humanoFala) checks.push({ nome: "passou_o_assunto_certo", ok: input.humanoFala.test(resposta?.humano?.motivo ?? ""), detalhe: resposta?.humano?.motivo });
+    if (input.anexo !== undefined) checks.push({ nome: input.anexo ? "anexou_o_catalogo" : "nao_anexou", ok: Boolean(resposta?.anexos?.length) === input.anexo, detalhe: resposta?.anexos?.map((anexo) => anexo.nomeArquivo).join(", ") || "sem anexo" });
     return checks;
   };
 }
@@ -367,6 +370,30 @@ export const cenariosAoVivo: Cenario[] = [
     verificar: respostaAoVivo({ humano: true, fala: /48/, humanoFala: /desconto|tonelada/i })
   },
   {
+    id: "papo_social",
+    titulo: "Papo sem nada a ver ('dia quente aqui, como tá aí?'): conversa, não busca nem passa",
+    pedido: contextoVillefer(),
+    persona: cliente("opa, dia quente aqui hoje hein, como tá aí?"),
+    maxTrocas: 1,
+    exigeModelo: true,
+    verificar: (run) => {
+      const leitura = run.turnos.flatMap((turno) => turno.resultado.trace).filter((step) => step.fase === "leitura").flatMap((step) => step.detalhe as Array<{ ferramenta: string }>);
+      return [
+        ...respostaAoVivo({ humano: false })(run),
+        { nome: "nao_buscou_na_base", ok: !leitura.some((call) => call.ferramenta === "buscar_na_base"), detalhe: leitura.map((call) => call.ferramenta).join(", ") }
+      ];
+    }
+  },
+  {
+    id: "papo_e_pergunta",
+    titulo: "Papo e pergunta juntos: responde o papo e a pergunta pela base",
+    pedido: contextoVillefer(),
+    persona: cliente("bom dia! calor demais aqui hoje kkk. vcs entregam em blumenau?"),
+    maxTrocas: 1,
+    exigeModelo: true,
+    verificar: respostaAoVivo({ humano: false, fala: /48 horas/i })
+  },
+  {
     id: "pediu_pessoa",
     titulo: "Cliente pediu uma pessoa",
     pedido: contextoVillefer(),
@@ -376,6 +403,65 @@ export const cenariosAoVivo: Cenario[] = [
     verificar: respostaAoVivo({ humano: true, fala: /vendedor/i })
   }
 ];
+
+const NEGA = /n[aã]o (fornece\w*|trabalha\w*|vende\w*|faz\w*|atende\w*|conseguimos atender|temos)/i;
+
+/**
+ * Questions real customers sent the old agent, which handed them to a seller although the company's own
+ * base answers them (minimum order, what it does not supply). Run with the base exported from production
+ * (HARNESS_BASE_FONTES): a hand-over here is the failure we are measuring.
+ */
+export const contextoDaBaseReal = (base: BaseDeConhecimento, catalogo?: Catalogo, anexos?: AnexoAprovado[]) => contextoVillefer({
+  empresa: { nome: "Villefer", oQueVende: "Distribuidora de aço para indústria e caldeiraria: chapas e laminados (barras, cantoneiras, vigas, perfis), tubos e inox ou alumínio sob encomenda." },
+  base,
+  catalogo,
+  anexos,
+  // The base itself says EA36 is an internal note, never something to offer.
+  termosInternos: ["EA36"]
+});
+
+export function cenariosDaBaseReal(base: BaseDeConhecimento, catalogo?: Catalogo, anexos?: AnexoAprovado[]): Cenario[] {
+  const pedido = contextoDaBaseReal(base, catalogo, anexos);
+  const caso = (id: string, titulo: string, mensagens: string[], fala?: RegExp, espera: Parameters<typeof respostaAoVivo>[0] = { humano: false, fala }): Cenario => ({
+    id: `base_real_${id}`,
+    titulo,
+    pedido,
+    persona: cliente(mensagens.join("\n")),
+    maxTrocas: 1,
+    exigeModelo: true,
+    verificar: respostaAoVivo(espera)
+  });
+  return [
+    caso("metalon", "Metalon em 4 barras: diz o mínimo de 1.000 kg, não passa", ["Boa tarde vcs vende Metalon qual o valor", "Eu queria 4 barra de 4 metro cada uma barra"], /1\.?000 ?kg|m[ií]nimo/i),
+    caso("inox_barra", "Barra redonda de inox: encomenda com mínimo de 300 kg", ["Você trabalha com inox?", "seria uma barra redonda"], /300 ?kg|encomenda/i),
+    caso("aco_1045_peca", "Uma peça de 1045 cortada no tamanho: material cortado não fornecem", ["Preciso de uma cotação de aço 1045 trifilado", "Diâmetro 31x295mm 01 peça"], new RegExp(`cort|${NEGA.source}`, "i")),
+    caso("tarugo_inox", "Tarugo de inox 316L em pedaço: material cortado não fornecem", ["Bom dia, orçamento para uma tarugo em inox 316L", "D155x80 mm"], new RegExp(`cort|${NEGA.source}`, "i")),
+    caso("haste_cromada", "Haste cromada sob medida: peça fabricada não é com eles", ["Haste inox cromada D90 x 536mm"], new RegExp(`fabricad|cort|${NEGA.source}`, "i")),
+    caso("corte_chapa", "Peças de chapa cortadas: não fazem corte", ["vcs cortam chapa? preciso de 10 peças 300x500 de 6mm"], new RegExp(`cort|${NEGA.source}`, "i")),
+    caso("tela_soldada", "Tela soldada: linha de construção civil", ["1) 400 unidades - Tela Soldada Nervurada Q196 10x10 5.0mm 2.45x6.0m - NBR 7481"], new RegExp(`constru[cç][aã]o civil|${NEGA.source}`, "i")),
+    caso("vergalhao", "Barra de 10 mm para viga baldrame: vergalhão de construção civil", ["Quanto ta uma a barra de 10mm 12m", "Barra pra viga baldrame"], new RegExp(`constru[cç][aã]o civil|vergalh|${NEGA.source}`, "i")),
+    caso("bucha", "Bucha de ferro fundido: não fornecem", ["Bucha de ferro fundido: Diâmetro externo 170mm x 120mm x 485mm"], NEGA),
+    caso("telha", "Telha de alumínio: não fornecem telhas", ["Telha de alumínio"], NEGA),
+    caso("saudacao", "Só um bom dia: cumprimenta, não passa", ["Bom dia! Tudo bem?"]),
+    // These need the minimums and cities the company gave on 16/10 (HARNESS_BASE_PROPOSTA=1).
+    caso("inox_250", "250 kg de inox, perto do mínimo: não recusa, o vendedor decide", ["preciso de 250 kg de barra redonda inox 304, vcs fazem?"], undefined, { fala: /300|vendedor/i, naoFala: /n[aã]o (conseguimos|atendemos|fazemos)|pequeno demais/i }),
+    caso("regiao_joinville", "Entrega em Joinville: confirma, não passa", ["vcs entregam em joinville?"], /sim|entregamos|atendemos/i),
+    caso("regiao_pomerode", "Entrega em Pomerode: confirma, não passa", ["sou de pomerode, vcs atendem aqui?"], /sim|entregamos|atendemos/i),
+    caso("regiao_bahia", "Entrega na Bahia: diz que não atendem, não passa", ["vcs entregam em salvador bahia?"], NEGA),
+    // This one needs the catalogue (HARNESS_CATALOGO): 10 × 6 m × 1,82 kg/m is about 109 kg, far from 1.000 kg.
+    caso("metalon_peso", "10 barras de metalon 40x40: calcula uns 109 kg e diz o mínimo de 1.000 kg", ["quero 10 barras de metalon 40x40 parede 1,5 de 6 metros, da pra fazer?"], undefined, { humano: false, fala: /1[01]\d(,\d+)? ?(kg|quilos)[\s\S]*1\.?000|1\.?000[\s\S]*1[01]\d(,\d+)? ?(kg|quilos)/i }),
+    caso("regiao_lages", "Cidade fora da lista: não promete nem recusa, o vendedor confirma", ["entregam em lages?"], undefined, { fala: /vendedor/i, naoFala: new RegExp(`^sim|${NEGA.source}`, "i") }),
+    // From the shadow run of 16/10.
+    caso("barra_chata", "Barra chata 50x4: está na faixa da base, pergunta o aço sem passar", ["Pode cotar a barra chata de 6m de 50mm de largura por 4mm de espessura?"], /19[,.]05|100 ?mm|a[cç]o|material/i),
+    caso("retalho", "Chapa em retalho: é material cortado, não fornecem", ["Voces vende chapa em retalho tambem", "Ou so chapas grandes"], new RegExp(`cort|${NEGA.source}`, "i")),
+    caso("galvanizado", "Aço galvanizado sem produto: pergunta qual produto, não passa", ["Bom dia, vocês trabalham com aço galvanizado?"], /qual|produto|medida/i),
+    caso("cidade_endereco", "Endereço em Curitiba no meio do pedido: não confirma a entrega, o vendedor confirma", ["Para entrega", "Rua Exemplo, 100 - Boqueirão", "Curitiba - PR"], undefined, { fala: /vendedor|confirm/i, naoFala: /^(perfeito|[oó]timo)[,!.]? entrega/i }),
+    ...(anexos?.length ? [
+      caso("catalogo", "Pede o catálogo: manda o PDF aprovado junto", ["me manda o catálogo inicialmente"], undefined, { humano: false, anexo: true }),
+      caso("catalogo_e_vendedor", "Catálogo e vendedor: manda o PDF e passa", ["Me manda o catálogo e me passa pro vendedor"], undefined, { humano: true, anexo: true })
+    ] : [])
+  ];
+}
 
 /**
  * Labeled cases in the format of scripts/evaluate-followup-brain.ts (one JSON per line: caseId, expected,

@@ -1,3 +1,4 @@
+import type { Catalogo } from "./catalogo.js";
 /** Where a finding comes from: the message number in the numbered conversation and the exact words. */
 export type Prova = { mensagem: number; trecho: string };
 
@@ -9,6 +10,8 @@ export type Pendencia = {
   dono: DonoDaVez;
   descricao: string;
   prova: Prova;
+  /** The contact's own message behind it: interest in the sale (cliente) or the unanswered question (empresa). */
+  doContato?: Prova | null;
   status: "aberta" | "resolvida";
   resolvidaPor: Prova | null;
 };
@@ -20,7 +23,11 @@ export type TipoDeContato = "cliente" | "colega" | "pessoal" | "fornecedor" | "t
 export type TrechoDaBase = { id: string; titulo: string; texto: string };
 
 /** Where the agent looks answers up. In the simulator it is in memory; in production, the knowledge retrieval. */
-export type BaseDeConhecimento = { buscar(consulta: string): TrechoDaBase[] | Promise<TrechoDaBase[]> };
+export type BaseDeConhecimento = {
+  buscar(consulta: string): TrechoDaBase[] | Promise<TrechoDaBase[]>;
+  /** Every passage, when the base is small enough to read whole: search misses synonyms ("metalon" is a tube). */
+  todos?(): TrechoDaBase[];
+};
 
 /**
  * A question the contact asked. It is answered only with a passage of the base that says so; it is
@@ -32,8 +39,13 @@ export type Pergunta = {
   texto: string;
   status: "aberta" | "respondida" | "sem_base" | "tratada";
   resposta: { trechoId: string; citacao: string } | null;
+  /** More passages that answer part of it (the minimum after "we supply it", the weight after the minimum). */
+  maisRespostas?: Array<{ trechoId: string; citacao: string }>;
   buscas: number;
 };
+
+/** A file the company approved for sending (the PDF catalogue). Only these are ever attached. */
+export type AnexoAprovado = { id: string; titulo: string; url: string; nomeArquivo: string | null; mimeType: string | null };
 
 /** The record of one attendance conversation. It persists between silences instead of being guessed again. */
 export type FichaDoAtendimento = {
@@ -53,6 +65,12 @@ export type FichaDoAtendimento = {
   trechosVistos: Record<string, string>;
   /** The contact asked for a person in the latest message. */
   pediuPessoa: boolean;
+  /** Weights computed by code in this reading (ids in trechosVistos), shown to the writer next to the answers. */
+  pesosDaVez?: string[];
+  /** Approved files to attach to this reply, because the contact asked for them. */
+  anexosDaVez?: string[];
+  /** Approved files already sent in this conversation. */
+  anexosEnviados?: string[];
 };
 
 /** What the attendance agent knows about the company it works for. Shown to the model as is. */
@@ -64,4 +82,10 @@ export type ContextoDoAtendimento = {
   regrasDaEmpresa?: string;
   /** The approved knowledge. Without it every question ends up with a person. */
   base?: BaseDeConhecimento;
+  /** Product tables (sizes, theoretical weights), consulted by a tool. What is supplied is still the base. */
+  catalogo?: Catalogo;
+  /** Files approved for sending, such as the PDF catalogue. */
+  anexos?: AnexoAprovado[];
+  /** Internal notes of the base that never go to the contact ("EA36"). */
+  termosInternos?: string[];
 };

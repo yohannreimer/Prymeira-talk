@@ -6,6 +6,7 @@ import type {
   AgentToolExecutorTransactionLike
 } from "./agent-tool-executor.js";
 import type { AgentProvider } from "./provider-gateway.js";
+import * as harnessModelHelpers from "../harness/core/model.js";
 import * as monitoring from '../../observability/glitchtip.js';
 
 const now = new Date("2026-06-23T18:00:00.000Z");
@@ -3288,5 +3289,98 @@ it("continues after a material answer without requiring a document for its own p
         component: 'agents', operation: 'run_for_message', impact: 'operation_failed', recovery: 'unknown' });
       expect(JSON.stringify(report.mock.calls)).not.toMatch(/PRIVATE_FIXTURE|workspace_a|5511999999999/);
     } finally { report.mockRestore(); }
+  });
+});
+
+describe("createAgentRuntime with the harness attendance agent", () => {
+  const channelId = baseConversation.channelId;
+  const catalogSource = {
+    id: "knowledge_catalog",
+    title: "Catálogo Villefer em PDF",
+    content: "Catálogo oficial aprovado para envio.",
+    fileUrl: "https://villefer.com.br/catalogo.pdf",
+    fileName: "catalogo.pdf",
+    mimeType: "application/pdf",
+    status: "ready"
+  };
+  const harnessAgent = (canais: string[]) => ({
+    ...baseAgent,
+    allowedActions: ["send_message", "send_attachment", "request_handoff"],
+    behaviorConfig: { harness: { agente: "atendimento", canais } }
+  });
+  // One model plays reader and writer, as in production: the writer's request offers "responder".
+  const scriptedModel = (write: Record<string, unknown> & { tool: "responder" | "pedir_humano" }) => {
+    const { createScriptedModel, toolCall } = harnessModelHelpers;
+    return createScriptedModel("luna-test", (request) => {
+      if (request.tools?.some((tool) => tool.name === "responder")) {
+        const { tool, ...args } = write;
+        return { content: null, toolCalls: [toolCall(tool, args)] };
+      }
+      return request.messages.some((entry) => entry.role === "tool")
+        ? { content: null, toolCalls: [] }
+        : { content: null, toolCalls: [toolCall("enviar_anexo", { anexoId: "catalogo" })] };
+    });
+  };
+  const run = async (input: { canais: string[]; model: ReturnType<typeof scriptedModel>; body: string }) => {
+    const prisma = buildPrisma({
+      aiAgent: { findFirst: vi.fn().mockResolvedValue(harnessAgent(input.canais)) },
+      aiKnowledgeSource: { findMany: vi.fn().mockResolvedValue([catalogSource]) }
+    });
+    vi.mocked(prisma.message.findFirst).mockResolvedValue({ ...baseMessage, body: input.body });
+    vi.mocked(prisma.message.findMany).mockResolvedValue([...baseConversationMessages.slice(0, 2), { ...baseMessage, body: input.body }]);
+    const provider = buildProvider({ confidence: 0.9, reply: "Resposta do motor atual.", actions: [], handoff: { required: false, reason: null } });
+    const replyPreflight = { evaluate: vi.fn(), audit: vi.fn() };
+    const sendText = vi.fn().mockResolvedValue({ providerMessageId: "evo-text" });
+    const sendMedia = vi.fn().mockResolvedValue({ providerMessageId: "evo-media" });
+    const result = await createAgentRuntime({
+      prisma, provider, replyPreflight: replyPreflight as never,
+      evolution: { mode: "real", client: { sendText, sendMedia } },
+      harness: { modelFactory: () => input.model }
+    }).runForMessage({ workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation, messageId: ids.message, trigger: "automation" });
+    return { result, prisma, provider, replyPreflight, sendText, sendMedia };
+  };
+
+  it("answers on the listed channel and sends the approved catalogue the contact asked for", async () => {
+    const { result, prisma, provider, replyPreflight, sendText, sendMedia } = await run({
+      canais: [channelId],
+      body: "me manda o catálogo",
+      model: scriptedModel({ tool: "responder", texto: "Claro! Segue o catálogo da Villefer em PDF. Qual produto você procura?" })
+    });
+    expect(result.status).toBe("completed");
+    expect(provider.generate).not.toHaveBeenCalled();
+    expect(replyPreflight.evaluate).not.toHaveBeenCalled();
+    expect(sendText).toHaveBeenCalledWith(expect.objectContaining({ text: "Claro! Segue o catálogo da Villefer em PDF. Qual produto você procura?" }));
+    expect(sendMedia).toHaveBeenCalledWith(expect.objectContaining({ media: "https://villefer.com.br/catalogo.pdf", fileName: "catalogo.pdf" }));
+    // The record survives to the next message in the session metadata.
+    expect(prisma.aiAgentSession.update).toHaveBeenLastCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ metadata: { harness: expect.objectContaining({ ficha: expect.objectContaining({ anexosEnviados: ["catalogo"] }) }) } })
+    }));
+  });
+
+  it("keeps its own hand-over message and still sends the catalogue with it", async () => {
+    const { result, sendText, sendMedia, provider } = await run({
+      canais: [channelId],
+      body: "me manda o catálogo, quero fechar o pedido hoje",
+      model: scriptedModel({
+        tool: "pedir_humano",
+        motivo: "fechar_pedido",
+        detalhe: "Quer fechar o pedido hoje.",
+        mensagemAoContato: "Segue o catálogo em PDF. Um vendedor continua com você por aqui para fechar o pedido."
+      })
+    });
+    expect(result.status).toBe("handoff_requested");
+    expect(provider.generate).not.toHaveBeenCalled();
+    expect(sendText).toHaveBeenCalledWith(expect.objectContaining({ text: "Segue o catálogo em PDF. Um vendedor continua com você por aqui para fechar o pedido." }));
+    expect(sendMedia).toHaveBeenCalledWith(expect.objectContaining({ media: "https://villefer.com.br/catalogo.pdf" }));
+  });
+
+  it("leaves other channels with the current engine", async () => {
+    const model = scriptedModel({ tool: "responder", texto: "não deveria responder" });
+    const complete = vi.spyOn(model, "complete");
+    const { result, provider, sendText } = await run({ canais: ["outro-canal"], body: "qual o pedido mínimo de tubo?", model });
+    expect(result.status).toBe("completed");
+    expect(complete).not.toHaveBeenCalled();
+    expect(provider.generate).toHaveBeenCalled();
+    expect(sendText).toHaveBeenCalledWith(expect.objectContaining({ text: "Resposta do motor atual." }));
   });
 });

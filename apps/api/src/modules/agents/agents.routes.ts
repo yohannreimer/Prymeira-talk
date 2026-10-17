@@ -96,7 +96,7 @@ const improvementsQuerySchema = z.object({
   status: z.enum(["pending", "accepted", "rejected", "all"]).optional()
 });
 
-const updateImprovementBodySchema = z
+export const updateImprovementBodySchema = z
   .object({
     title: z.string().trim().min(1).max(160).optional(),
     content: z.string().trim().min(1).max(20000).optional(),
@@ -107,7 +107,7 @@ const updateImprovementBodySchema = z
   })
   .refine((body) => Object.keys(body).length > 0, "At least one improvement field is required.");
 
-const approveImprovementBodySchema = z.object({
+export const approveImprovementBodySchema = z.object({
   title: z.string().trim().min(1).max(160).optional(),
   content: z.string().trim().min(1).max(20000).optional()
 });
@@ -175,24 +175,27 @@ function handleAgentTestChatError(reply: FastifyReply, error: unknown) {
   return handleAgentsError(reply, error);
 }
 
+/** The HTTP status of an improvement error, shared with the product owner's page. */
+export function agentImprovementErrorStatus(error: AgentImprovementsServiceError) {
+  return error.code === "AGENT_NOT_FOUND" || error.code === "IMPROVEMENT_NOT_FOUND"
+    ? 404
+    : error.code === "IMPROVEMENT_NORMALIZER_UNAVAILABLE" || error.code === "IMPROVEMENT_WRITER_UNAVAILABLE"
+      ? 503
+      : error.code === "IMPROVEMENT_WRITER_FAILED" || error.code === "IMPROVEMENT_JEV_FAILED"
+        ? 502
+      : [
+          "IMPROVEMENT_CLARIFICATION_REQUIRED",
+          "IMPROVEMENT_NORMALIZATION_REQUIRED",
+          "IMPROVEMENT_NORMALIZATION_AMBIGUOUS",
+          "IMPROVEMENT_DRAFT_INCONSISTENT"
+        ].includes(error.code)
+      ? 400
+      : 409;
+}
+
 function handleAgentImprovementsError(reply: FastifyReply, error: unknown) {
   if (error instanceof AgentImprovementsServiceError) {
-    const statusCode =
-      error.code === "AGENT_NOT_FOUND" || error.code === "IMPROVEMENT_NOT_FOUND"
-        ? 404
-        : error.code === "IMPROVEMENT_NORMALIZER_UNAVAILABLE" || error.code === "IMPROVEMENT_WRITER_UNAVAILABLE"
-          ? 503
-          : error.code === "IMPROVEMENT_WRITER_FAILED" || error.code === "IMPROVEMENT_JEV_FAILED"
-            ? 502
-          : [
-              "IMPROVEMENT_CLARIFICATION_REQUIRED",
-              "IMPROVEMENT_NORMALIZATION_REQUIRED",
-              "IMPROVEMENT_NORMALIZATION_AMBIGUOUS",
-              "IMPROVEMENT_DRAFT_INCONSISTENT"
-            ].includes(error.code)
-          ? 400
-          : 409;
-    return reply.code(statusCode).send({
+    return reply.code(agentImprovementErrorStatus(error)).send({
       code: error.code,
       error: error.message
     });

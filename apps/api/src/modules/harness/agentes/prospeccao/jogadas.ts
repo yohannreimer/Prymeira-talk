@@ -58,6 +58,14 @@ export function decidirJogada(input: { ficha: FichaDoLead; pedido: CampanhaDePro
   }
   if (ficha.objecao) {
     if (ficha.objecao.tratada) return { tipo: "agradecer_e_encerrar", instrucao: ENCERRAR, dados: { semPergunta: true } };
+    // The invite already went out: asking again trips nao_repete_pergunta and the rewrite asks again too.
+    if (ficha.propostasDoObjetivo >= 1) {
+      return {
+        tipo: "tratar_objecao",
+        instrucao: `${responder}O lead levantou: "${ficha.objecao.texto}". Reconheça em poucas palavras e atenda o que ele pediu. O convite (${pedido.objetivo}) já foi feito: não repita. Termine com uma pergunta leve sobre a rotina dele (quantos orçamentos chegam por dia, quem responde hoje).`,
+        dados: { objecao: true, propoeObjetivo: false }
+      };
+    }
     return {
       tipo: "tratar_objecao",
       instrucao: `${responder}O lead levantou: "${ficha.objecao.texto}". Reconheça em poucas palavras, mostre em uma frase por que ainda pode valer (ligado ao que ele contou, se contou) e proponha ${pedido.objetivo} sem pressão.`,

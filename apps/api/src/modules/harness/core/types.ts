@@ -115,11 +115,26 @@ export type AgentDefinition<Ficha, Pedido> = {
    */
   motivosParaHumano?: Record<string, string>;
   /**
+   * Reasons the writer may use on a live message (the rest only on a silence). A hand-over on a live message
+   * also carries a short message to the contact, so the contact is never left without an answer.
+   */
+  motivosAoVivo?: string[];
+  /**
+   * Sent on a live hand-over when no written message passed the review (blocked twice, judge down). Fixed text,
+   * so it promises nothing; without it the contact would get no answer at all.
+   */
+  avisoDeRepasse?: string;
+  /**
    * Checks the record after the reader and, when something is missing or doubtful, returns a note that
    * gives the reader extra rounds (once per turn). Models stop early or give up on a passage that does
    * answer; code can see that and ask them to look again.
    */
-  conferirLeitura?: (input: { ficha: Ficha; mensagem: string }) => string | null;
+  conferirLeitura?: (input: { ficha: Ficha; mensagem: string; pedido?: Pedido }) => string | null;
+  /**
+   * Approved files that go with this turn's message (the PDF catalogue the contact asked for). The agent
+   * picks them by id with a tool; the URL always comes from the company's approved list, never the model.
+   */
+  anexosDaVez?: (ficha: Ficha, pedido: Pedido) => Anexo[];
   /** Extra sources the writer could use and the judge must see too (e.g. knowledge-base passages already read). */
   fontesDoRevisor?: (ficha: Ficha, pedido: Pedido) => string;
   /**
@@ -146,9 +161,14 @@ export type TraceStep = {
   ms?: number;
 };
 
+/** A file sent with the message, as the send_attachment action of the live engine takes it. */
+export type Anexo = { url: string; legenda: string | null; nomeArquivo: string | null; mimeType: string | null };
+
 export type TurnResult<Ficha> = {
   /** Message to send to the contact, already reviewed. Null when nothing is sent. */
   enviar: string | null;
+  /** Files sent with the message; only when there is a message. */
+  anexos?: Anexo[];
   /** Set when a person must take over, with the reason and a short summary for them. */
   humano: { motivo: string; resumo: string } | null;
   ficha: Ficha;

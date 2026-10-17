@@ -1,3 +1,4 @@
+import { citacoes, RECUSA } from "./jogadas.js";
 import { findMoneyAmounts, findPercentages, sameAmount } from "../../core/dinheiro.js";
 import type { ReviewRule } from "../../core/types.js";
 import type { ContextoDoAtendimento, FichaDoAtendimento } from "./tipos.js";
@@ -53,4 +54,39 @@ const semPressao: Rule = {
     : { ok: true }
 };
 
-export const regras: Rule[] = [naoRepete, semValorNovo, semPressao];
+const sem = (text: string) => text.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+
+/**
+ * A question answered by "não fornece" must be answered with a "no". Seen in the shadow run of 16/10: the
+ * base said "NÃO FORNECE: … oxicorte ou material cortado" and the reply said "Trabalhamos com oxicorte".
+ */
+const naoInverteRecusa: Rule = {
+  id: "nao_inverte_recusa",
+  check: ({ texto, ficha }) => {
+    const recusa = ficha.perguntas.filter((pergunta) => pergunta.status === "respondida").flatMap(citacoes).find((citacao) => RECUSA.test(sem(citacao)));
+    if (!recusa || /\b(nao|nem)\b/.test(sem(texto))) return { ok: true };
+    return { ok: false, regra: "nao_inverte_recusa", motivo: `A base diz que a empresa não fornece o que foi pedido ("${recusa.slice(0, 100)}"), mas a mensagem não diz isso. Diga ao contato que não fornecem.` };
+  }
+};
+
+/** "Segue o catálogo em PDF" with nothing attached. Seen 4 times in the shadow run of 16/10. */
+const ANUNCIA_ARQUIVO = /\b(segue|seguem|envio|enviando|mando|mandando|te mandei|estou te enviando|anexo|anexei)\b.{0,40}\b(catalogo|arquivo|pdf)\b|\b(catalogo|pdf)\b.{0,30}\b(segue|anexo|em anexo|abaixo)\b/;
+const naoPrometeAnexo: Rule = {
+  id: "nao_promete_anexo",
+  check: ({ texto, ficha }) => !(ficha.anexosDaVez ?? []).length && ANUNCIA_ARQUIVO.test(sem(texto))
+    ? { ok: false, regra: "nao_promete_anexo", motivo: "A mensagem diz que um arquivo segue, mas nenhum vai anexado. Não diga que está enviando." }
+    : { ok: true }
+};
+
+/** Notes the base marks as internal ("EA36 é anotação interna"): seen in a reply on the shadow rerun of 16/10. */
+const semTermoInterno: Rule = {
+  id: "sem_termo_interno",
+  check: ({ texto, pedido }) => {
+    const termo = (pedido.termosInternos ?? []).find((item) => new RegExp(`\\b${sem(item)}\\b`).test(sem(texto)));
+    return termo
+      ? { ok: false, regra: "sem_termo_interno", motivo: `A mensagem cita "${termo}", que é anotação interna da empresa. Não cite; diga que o vendedor confirma a especificação.` }
+      : { ok: true };
+  }
+};
+
+export const regras: Rule[] = [naoRepete, semValorNovo, semPressao, naoInverteRecusa, naoPrometeAnexo, semTermoInterno];

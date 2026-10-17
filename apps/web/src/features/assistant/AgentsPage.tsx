@@ -29,7 +29,6 @@ import {
 import {
   BookOpen,
   Bot,
-  Check,
   FileText,
   HelpCircle,
   Lightbulb,
@@ -49,6 +48,7 @@ import {
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { AgentPackagePanel } from "./AgentPackagePanel";
+import { ImprovementsReview } from "./ImprovementsReview";
 import { getTestUploadMime, validateTestUpload } from "./agent-test-upload";
 import { AgentTestInspection } from "./AgentTestInspection";
 
@@ -108,12 +108,6 @@ type KnowledgeUploadFormState = {
 
 type KnowledgeInputMode = "file" | "text";
 type AgentDetailTab = "profile" | "capabilities" | "knowledge" | "improvements" | "test";
-type ImprovementFilter = AiAgentImprovementDto["status"] | "all";
-
-type ImprovementFormState = {
-  title: string;
-  content: string;
-};
 
 type AgentTestDebugState = Record<string, unknown> | null;
 
@@ -182,15 +176,17 @@ function emptyKnowledgeUploadForm(): KnowledgeUploadFormState {
   };
 }
 
-function emptyImprovementForm(): ImprovementFormState {
-  return { title: "", content: "" };
-}
-
 const allowedActionGroups: Array<{ title: string; actions: AiAgentAllowedAction[] }> = [
   { title: "Conversar com o cliente", actions: ["send_message", "send_attachment", "schedule_meeting"] },
   { title: "Organizar a conversa", actions: ["add_tag", "remove_tag", "change_priority", "create_internal_note"] },
   { title: "Passar para o time", actions: ["assign_user", "assign_department", "request_handoff"] }
 ];
+
+/** The new attendance agent (behaviorConfig.harness) is on for at least one channel. */
+function usesNewAttendanceAgent(agent: AiAgentDto | null) {
+  const harness = agent?.behaviorConfig.harness as { agente?: unknown; canais?: unknown } | undefined;
+  return harness?.agente === "atendimento" && Array.isArray(harness.canais) && harness.canais.length > 0;
+}
 
 function agentInitials(name: string) {
   const words = name.replace(/[^\p{L}\p{N}\s]/gu, " ").trim().split(/\s+/).filter(Boolean);
@@ -206,26 +202,6 @@ function knowledgeTypeLabel(type: AiKnowledgeSourceDto["type"]) {
   if (type === "faq") return "FAQ";
   if (type === "text") return "Texto";
   return "Arquivo";
-}
-
-function improvementKindLabel(kind: AiAgentImprovementDto["kind"]) {
-  if (kind === "not_sold") return "Produto não comercializado";
-  if (kind === "made_to_order") return "Sob encomenda";
-  if (kind === "policy") return "Política";
-  return "FAQ";
-}
-
-function improvementStatusLabel(status: AiAgentImprovementDto["status"]) {
-  if (status === "accepted") return "Incluída na base";
-  if (status === "rejected") return "Recusada";
-  return "Pendente de revisão";
-}
-
-function improvementScopeLabel(scope: NonNullable<AiAgentImprovementDto["clarification"]["normalization"]>["scope"]) {
-  if (scope === "requested_item_only") return "Apenas o item exatamente solicitado.";
-  if (scope === "requested_item_variations") return "As variações confirmadas do item solicitado.";
-  if (scope === "material_or_finish_family") return "A família de material ou acabamento confirmada.";
-  return "O escopo amplo de catálogo confirmado pelo time.";
 }
 
 function readKnowledgeCategory(source: AiKnowledgeSourceDto) {
@@ -300,10 +276,6 @@ export function AgentsPage() {
   const [editingKnowledgeId, setEditingKnowledgeId] = useState<string | null>(null);
   const [agentDetailTab, setAgentDetailTab] = useState<AgentDetailTab>("profile");
   const [improvements, setImprovements] = useState<AiAgentImprovementDto[]>([]);
-  const [improvementFilter, setImprovementFilter] = useState<ImprovementFilter>("pending");
-  const [editingImprovementId, setEditingImprovementId] = useState<string | null>(null);
-  const [improvementForm, setImprovementForm] = useState<ImprovementFormState>(emptyImprovementForm);
-  const [clarificationDrafts, setClarificationDrafts] = useState<Record<string, Record<string, string>>>({});
   const [testMessages, setTestMessages] = useState<AgentTestChatMessageDto[]>([]);
   const [testMessageBody, setTestMessageBody] = useState("");
   const [testDebug, setTestDebug] = useState<AgentTestDebugState>(null);
@@ -317,7 +289,6 @@ export function AgentsPage() {
   const [isSavingKnowledge, setIsSavingKnowledge] = useState(false);
   const [deletingKnowledgeId, setDeletingKnowledgeId] = useState<string | null>(null);
   const [isLoadingImprovements, setIsLoadingImprovements] = useState(false);
-  const [improvementActionId, setImprovementActionId] = useState<string | null>(null);
   const [isUploadingKnowledge, setIsUploadingKnowledge] = useState(false);
   const [isSendingTestMessage, setIsSendingTestMessage] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -337,14 +308,6 @@ export function AgentsPage() {
   const pendingImprovementCount = useMemo(
     () => improvements.filter((improvement) => improvement.status === "pending").length,
     [improvements]
-  );
-
-  const visibleImprovements = useMemo(
-    () =>
-      improvementFilter === "all"
-        ? improvements
-        : improvements.filter((improvement) => improvement.status === improvementFilter),
-    [improvementFilter, improvements]
   );
 
   async function loadAgents() {
@@ -415,7 +378,6 @@ export function AgentsPage() {
     if (!selectedAgentId) {
       setKnowledge([]);
       setImprovements([]);
-      setClarificationDrafts({});
       return;
     }
 
@@ -445,9 +407,6 @@ export function AgentsPage() {
     setKnowledgeForm(emptyKnowledgeForm());
     setAgentDetailTab("profile");
     setImprovements([]);
-    setEditingImprovementId(null);
-    setImprovementForm(emptyImprovementForm());
-    setClarificationDrafts({});
     setTestMessages([]);
     setTestMessageBody("");
     setTestDebug(null);
@@ -467,9 +426,6 @@ export function AgentsPage() {
     setAgentDetailTab("profile");
     // Re-clicking the selected agent must not wipe its suggestions: the loader only re-runs when the id changes.
     if (agent.id !== selectedAgentId) setImprovements([]);
-    setEditingImprovementId(null);
-    setImprovementForm(emptyImprovementForm());
-    setClarificationDrafts({});
     setTestMessages([]);
     setTestMessageBody("");
     setTestDebug(null);
@@ -572,7 +528,6 @@ export function AgentsPage() {
       setAgentForm(nextAgent ? agentFormFromAgent(nextAgent) : emptyAgentForm());
       setKnowledge([]);
       setImprovements([]);
-      setClarificationDrafts({});
       setKnowledgeForm(emptyKnowledgeForm());
       setKnowledgeUploadForm(emptyKnowledgeUploadForm());
       setEditingKnowledgeId(null);
@@ -692,250 +647,6 @@ export function AgentsPage() {
       );
     } finally {
       setDeletingKnowledgeId(null);
-    }
-  }
-
-  function startEditingImprovement(improvement: AiAgentImprovementDto) {
-    setEditingImprovementId(improvement.id);
-    setImprovementForm({
-      title: improvement.title,
-      content: improvement.content
-    });
-    setError(null);
-    setNotice(null);
-  }
-
-  function cancelImprovementEditing() {
-    setEditingImprovementId(null);
-    setImprovementForm(emptyImprovementForm());
-  }
-
-  function clarificationAnswersFor(improvement: AiAgentImprovementDto) {
-    return clarificationDrafts[improvement.id] ?? improvement.clarification.answers;
-  }
-
-  function clarificationIsComplete(improvement: AiAgentImprovementDto) {
-    const answers = clarificationAnswersFor(improvement);
-    return improvement.clarification.questions.every((question) => Boolean(answers[question.id]?.trim()));
-  }
-
-  function clarificationIsSaved(improvement: AiAgentImprovementDto) {
-    const answers = clarificationAnswersFor(improvement);
-    return improvement.clarification.questions.every(
-      (question) => answers[question.id]?.trim() === improvement.clarification.answers[question.id]?.trim()
-    );
-  }
-
-  function setClarificationAnswer(improvement: AiAgentImprovementDto, questionId: string, answer: string) {
-    setClarificationDrafts((current) => ({
-      ...current,
-      [improvement.id]: {
-        ...(current[improvement.id] ?? improvement.clarification.answers),
-        [questionId]: answer
-      }
-    }));
-  }
-
-  async function saveClarification(improvement: AiAgentImprovementDto) {
-    if (!selectedAgent || improvementActionId) {
-      return;
-    }
-
-    if (!clarificationIsComplete(improvement)) {
-      setError("Responda todas as perguntas de escopo. Quando não houver exceção, escreva “Nenhuma”.");
-      return;
-    }
-
-    setImprovementActionId(improvement.id);
-    setError(null);
-    setNotice(null);
-
-    try {
-      const updated = await apiUpdateAgentImprovement(
-        getToken,
-        selectedAgent.id,
-        improvement.id,
-        { clarificationAnswers: clarificationAnswersFor(improvement) }
-      );
-      setImprovements((current) =>
-        current.map((item) => item.id === updated.id ? updated : item)
-      );
-      setClarificationDrafts((current) => ({
-        ...current,
-        [updated.id]: updated.clarification.answers
-      }));
-      setNotice("Escopo salvo e incorporado ao conhecimento proposto.");
-    } catch (saveError) {
-      setError(
-        saveError instanceof Error
-          ? saveError.message
-          : "Não foi possível salvar as respostas de escopo."
-      );
-    } finally {
-      setImprovementActionId(null);
-    }
-  }
-
-  async function normalizeImprovement(improvement: AiAgentImprovementDto) {
-    if (!selectedAgent || improvementActionId) {
-      return;
-    }
-
-    if (!clarificationIsComplete(improvement) || !clarificationIsSaved(improvement)) {
-      setError("Complete e salve as respostas de escopo antes de pedir a interpretação do JEV.");
-      return;
-    }
-
-    setImprovementActionId(improvement.id);
-    setError(null);
-    setNotice(null);
-
-    try {
-      const updated = await apiNormalizeAgentImprovement(getToken, selectedAgent.id, improvement.id);
-      setImprovements((current) =>
-        current.map((item) => item.id === updated.id ? updated : item)
-      );
-      setClarificationDrafts((current) => ({
-        ...current,
-        [updated.id]: updated.clarification.answers
-      }));
-      setNotice("A regra foi preparada e teve o escopo validado pelo JEV. Revise o texto antes de aprovar.");
-    } catch (normalizationError) {
-      setError(
-        normalizationError instanceof Error
-          ? normalizationError.message
-          : "Não foi possível preparar a regra para revisão."
-      );
-    } finally {
-      setImprovementActionId(null);
-    }
-  }
-
-  async function saveImprovement(improvement: AiAgentImprovementDto) {
-    if (!selectedAgent || improvementActionId) {
-      return;
-    }
-
-    setImprovementActionId(improvement.id);
-    setError(null);
-    setNotice(null);
-
-    try {
-      const updated = await apiUpdateAgentImprovement(
-        getToken,
-        selectedAgent.id,
-        improvement.id,
-        improvementForm
-      );
-      setImprovements((current) =>
-        current.map((item) => item.id === updated.id ? updated : item)
-      );
-      setEditingImprovementId(null);
-      setImprovementForm(emptyImprovementForm());
-      setNotice("Sugestão de aprimoramento atualizada.");
-    } catch (saveError) {
-      setError(
-        saveError instanceof Error
-          ? saveError.message
-          : "Não foi possível atualizar a sugestão de aprimoramento."
-      );
-    } finally {
-      setImprovementActionId(null);
-    }
-  }
-
-  async function approveImprovement(improvement: AiAgentImprovementDto) {
-    if (!selectedAgent || improvementActionId) {
-      return;
-    }
-
-    const isEditing = editingImprovementId === improvement.id;
-    if (!clarificationIsComplete(improvement)) {
-      setError("Complete e salve as perguntas de escopo antes de incluir este aprimoramento na base.");
-      return;
-    }
-    if (!clarificationIsSaved(improvement)) {
-      setError("Salve as respostas de escopo antes de incluir este aprimoramento na base.");
-      return;
-    }
-    if (!improvement.clarification.normalization) {
-      setError("Peça para o JEV interpretar o escopo antes de incluir este aprimoramento na base.");
-      return;
-    }
-    const confirmed = window.confirm(
-      "Aprovar esta sugestão e incluí-la na base de conhecimento do agente? O conteúdo aprovado poderá ser usado nas próximas conversas equivalentes."
-    );
-    if (!confirmed) {
-      return;
-    }
-
-    setImprovementActionId(improvement.id);
-    setError(null);
-    setNotice(null);
-
-    try {
-      const updated = await apiApproveAgentImprovement(
-        getToken,
-        selectedAgent.id,
-        improvement.id,
-        isEditing ? improvementForm : {}
-      );
-      setImprovements((current) =>
-        current.map((item) => item.id === updated.id ? updated : item)
-      );
-      setEditingImprovementId(null);
-      setImprovementForm(emptyImprovementForm());
-      await loadKnowledge(selectedAgent.id);
-      setNotice("Sugestão aprovada e adicionada à base de conhecimento.");
-    } catch (approveError) {
-      setError(
-        approveError instanceof Error
-          ? approveError.message
-          : "Não foi possível aprovar a sugestão de aprimoramento."
-      );
-    } finally {
-      setImprovementActionId(null);
-    }
-  }
-
-  async function rejectImprovement(improvement: AiAgentImprovementDto) {
-    if (!selectedAgent || improvementActionId) {
-      return;
-    }
-
-    const confirmed = window.confirm(
-      `Recusar a sugestão “${improvement.title}”? Ela não será adicionada à base de conhecimento.`
-    );
-    if (!confirmed) {
-      return;
-    }
-
-    setImprovementActionId(improvement.id);
-    setError(null);
-    setNotice(null);
-
-    try {
-      const updated = await apiUpdateAgentImprovement(
-        getToken,
-        selectedAgent.id,
-        improvement.id,
-        { reject: true }
-      );
-      setImprovements((current) =>
-        current.map((item) => item.id === updated.id ? updated : item)
-      );
-      if (editingImprovementId === improvement.id) {
-        cancelImprovementEditing();
-      }
-      setNotice("Sugestão de aprimoramento recusada.");
-    } catch (rejectError) {
-      setError(
-        rejectError instanceof Error
-          ? rejectError.message
-          : "Não foi possível recusar a sugestão de aprimoramento."
-      );
-    } finally {
-      setImprovementActionId(null);
     }
   }
 
@@ -1075,19 +786,20 @@ export function AgentsPage() {
     setAgentForm(agentFormFromAgent(agent));
     setKnowledge([]);
     setImprovements([]);
-    setClarificationDrafts({});
     setTestMessages([]);
     setTestDebug(null);
   }
 
   const isFormTab = agentDetailTab === "profile" || agentDetailTab === "capabilities";
-  const workspaceTabs: Array<{ id: AgentDetailTab; label: string; icon: typeof Bot; needsAgent: boolean; count?: number }> = [
+  const allTabs: Array<{ id: AgentDetailTab; label: string; icon: typeof Bot; needsAgent: boolean; count?: number }> = [
     { id: "profile", label: "Quem é o agente", icon: UserRound, needsAgent: false },
     { id: "capabilities", label: "O que ele pode fazer", icon: ShieldCheck, needsAgent: false },
     { id: "knowledge", label: "Conhecimento", icon: BookOpen, needsAgent: true, count: selectedAgent ? knowledge.length : undefined },
     { id: "improvements", label: "Aprimoramentos", icon: Lightbulb, needsAgent: true, count: pendingImprovementCount || undefined },
     { id: "test", label: "Testar", icon: MessageSquare, needsAgent: true }
   ];
+  // With the new attendance agent on, its improvements are reviewed on the product owner's page, per customer.
+  const workspaceTabs = allTabs.filter((tab) => tab.id !== "improvements" || !usesNewAttendanceAgent(selectedAgent));
 
   return (
     <section className="module-page agents-page" aria-label="Agentes">
@@ -1756,273 +1468,25 @@ export function AgentsPage() {
             </div>
           ) : null}
 
-          {agentDetailTab === "improvements" ? (
-            <section className="agents-card agent-improvements-panel" aria-label="Aprimoramentos do agente">
-              <div className="panel-title-row">
-                <div>
-                  <h2>Aprimoramentos</h2>
-                  <p className="agent-improvements-panel__intro">
-                    O JEV identifica decisões explícitas do time depois de um repasse. Nada entra na
-                    base automaticamente: revise, edite, aprove ou recuse cada sugestão.
-                  </p>
-                </div>
-                <span className={`status-badge status-badge--${pendingImprovementCount > 0 ? "waiting" : "open"}`}>
-                  {pendingImprovementCount} pendentes
-                </span>
-              </div>
-
-              <div className="segmented-control" role="tablist" aria-label="Filtro de aprimoramentos">
-                {([
-                  ["pending", "Pendentes"],
-                  ["accepted", "Incluídas"],
-                  ["rejected", "Recusadas"],
-                  ["all", "Todas"]
-                ] as Array<[ImprovementFilter, string]>).map(([filter, label]) => (
-                  <button
-                    className={improvementFilter === filter ? "is-active" : ""}
-                    key={filter}
-                    onClick={() => setImprovementFilter(filter)}
-                    role="tab"
-                    aria-selected={improvementFilter === filter}
-                    type="button"
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-
-              <div className="agent-improvement-list" aria-label="Sugestões de aprimoramento">
-                {isLoadingImprovements ? <p className="list-note">Carregando aprimoramentos...</p> : null}
-                {!isLoadingImprovements && !selectedAgent ? (
-                  <p className="list-note">Selecione um agente para revisar seus aprimoramentos.</p>
-                ) : null}
-                {!isLoadingImprovements && selectedAgent && visibleImprovements.length === 0 ? (
-                  <div className="agent-improvements-empty">
-                    <Lightbulb size={20} aria-hidden="true" />
-                    <div>
-                      <strong>Nenhuma sugestão nesta lista</strong>
-                      <p>
-                        Novas sugestões aparecem quando o humano resolve um repasse com uma orientação
-                        comercial clara e reutilizável.
-                      </p>
-                    </div>
-                  </div>
-                ) : null}
-                {visibleImprovements.map((improvement) => {
-                  const isEditing = editingImprovementId === improvement.id;
-                  const isWorking = improvementActionId === improvement.id;
-                  const clarificationComplete = clarificationIsComplete(improvement);
-                  const clarificationSaved = clarificationIsSaved(improvement);
-                  const clarificationAnswers = clarificationAnswersFor(improvement);
-                  const normalization = improvement.clarification.normalization;
-
-                  return (
-                    <article className="agent-improvement-card" key={improvement.id}>
-                      <div className="agent-improvement-card__header">
-                        <div className="assistant-log-header">
-                          <span className="status-badge status-badge--bot">
-                            <Lightbulb size={12} />
-                            {improvementKindLabel(improvement.kind)}
-                          </span>
-                          <span className={`status-badge status-badge--${
-                            improvement.status === "pending"
-                              ? "waiting"
-                              : improvement.status === "accepted" ? "open" : "closed"
-                          }`}>
-                            {improvementStatusLabel(improvement.status)}
-                          </span>
-                        </div>
-                      </div>
-
-                      {isEditing ? (
-                        <form
-                          className="module-form agent-improvement-form"
-                          onSubmit={(event) => {
-                            event.preventDefault();
-                            void saveImprovement(improvement);
-                          }}
-                        >
-                          <label className="form-field">
-                            Título da regra
-                            <input
-                              value={improvementForm.title}
-                              onChange={(event) =>
-                                setImprovementForm((current) => ({ ...current, title: event.target.value }))
-                              }
-                              required
-                            />
-                          </label>
-                          <label className="form-field">
-                            Conteúdo que será usado pelo agente
-                            <textarea
-                              value={improvementForm.content}
-                              onChange={(event) =>
-                                setImprovementForm((current) => ({ ...current, content: event.target.value }))
-                              }
-                              rows={7}
-                              required
-                            />
-                          </label>
-                          <div className="agent-improvement-card__actions">
-                            <button className="secondary-button" type="button" onClick={cancelImprovementEditing}>
-                              Cancelar
-                            </button>
-                            <button className="secondary-button" type="submit" disabled={isWorking}>
-                              <Save size={15} />
-                              {isWorking ? "Salvando" : "Salvar edição"}
-                            </button>
-                            <button
-                              className="primary-button"
-                              type="button"
-                              disabled={
-                                isWorking ||
-                                !clarificationComplete ||
-                                !clarificationSaved ||
-                                !normalization
-                              }
-                              onClick={() => void approveImprovement(improvement)}
-                            >
-                              <Check size={15} />
-                              Aprovar e incluir
-                            </button>
-                          </div>
-                        </form>
-                      ) : (
-                        <>
-                          <h3>{improvement.title}</h3>
-                          {improvement.rationale ? (
-                            <p className="agent-improvement-card__rationale">{improvement.rationale}</p>
-                          ) : null}
-                          <div className="agent-improvement-evidence">
-                            <div>
-                              <span>Pedido que originou a sugestão</span>
-                              <p>{improvement.sourceCustomerMessage}</p>
-                            </div>
-                            <div>
-                              <span>Resposta confirmada pelo humano</span>
-                              <p>{improvement.sourceHumanReply}</p>
-                            </div>
-                          </div>
-                          <div className="agent-improvement-proposal">
-                            <span>Conhecimento proposto</span>
-                            <p>{improvement.content}</p>
-                          </div>
-                          {improvement.status === "pending" ? (
-                            <>
-                              <section className="agent-improvement-clarification" aria-label="Completar escopo">
-                                <div className="agent-improvement-clarification__header">
-                                  <HelpCircle size={17} aria-hidden="true" />
-                                  <div>
-                                    <h4>Complete o escopo antes de incluir</h4>
-                                    <p>
-                                      Essas respostas tornam a regra específica. Se não houver exceção,
-                                      responda “Nenhuma”.
-                                    </p>
-                                  </div>
-                                </div>
-                                <div className="agent-improvement-clarification__questions">
-                                  {improvement.clarification.questions.map((question) => (
-                                    <label className="form-field" key={question.id}>
-                                      {question.question}
-                                      <textarea
-                                        rows={3}
-                                        value={clarificationAnswers[question.id] ?? ""}
-                                        onChange={(event) =>
-                                          setClarificationAnswer(improvement, question.id, event.target.value)
-                                        }
-                                        disabled={isWorking}
-                                        required
-                                      />
-                                      <small>{question.help}</small>
-                                    </label>
-                                  ))}
-                                </div>
-                                <div className="agent-improvement-card__actions">
-                                  <p className="agent-improvement-clarification__status">
-                                    {clarificationComplete
-                                      ? clarificationSaved
-                                        ? normalization
-                                          ? "Regra preparada e escopo validado. Revise o texto e inclua quando estiver correto."
-                                          : "Escopo salvo. Prepare a proposta para revisão antes de incluir."
-                                        : "Respostas prontas. Salve o escopo para atualizar a regra proposta."
-                                      : "Responda as duas perguntas para liberar a aprovação."}
-                                  </p>
-                                  <button
-                                    className="secondary-button"
-                                    type="button"
-                                    onClick={() => void saveClarification(improvement)}
-                                    disabled={isWorking || !clarificationComplete || clarificationSaved}
-                                  >
-                                    <Save size={15} />
-                                    {isWorking ? "Salvando" : "Salvar escopo"}
-                                  </button>
-                                  <button
-                                    className="primary-button"
-                                    type="button"
-                                    onClick={() => void normalizeImprovement(improvement)}
-                                    disabled={isWorking || !clarificationComplete || !clarificationSaved}
-                                  >
-                                    <Sparkles size={15} />
-                                    {isWorking ? "Preparando" : "Preparar regra com IA"}
-                                  </button>
-                                </div>
-                              </section>
-                              {normalization ? (
-                                <div className="agent-improvement-normalization" aria-live="polite">
-                                  <ShieldCheck size={17} aria-hidden="true" />
-                                  <div>
-                                    <strong>Regra interpretada pelo JEV</strong>
-                                    <p>
-                                      {improvementScopeLabel(normalization.scope)} {normalization.requiresHandoffOutsideScope
-                                        ? "Qualquer caso fora desse escopo seguirá para o comercial."
-                                        : "O escopo amplo foi confirmado pelo time."}
-                                    </p>
-                                  </div>
-                                </div>
-                              ) : null}
-                              <div className="agent-improvement-card__actions">
-                                <button
-                                  className="secondary-button"
-                                  type="button"
-                                  onClick={() => startEditingImprovement(improvement)}
-                                  disabled={isWorking}
-                                >
-                                  <Pencil size={15} />
-                                  Editar
-                                </button>
-                                <button
-                                  className="secondary-button danger-button"
-                                  type="button"
-                                  onClick={() => void rejectImprovement(improvement)}
-                                  disabled={isWorking}
-                                >
-                                  <Trash2 size={15} />
-                                  {isWorking ? "Processando" : "Recusar"}
-                                </button>
-                                <button
-                                  className="primary-button"
-                                  type="button"
-                                  onClick={() => void approveImprovement(improvement)}
-                                  disabled={
-                                    isWorking ||
-                                    !clarificationComplete ||
-                                    !clarificationSaved ||
-                                    !normalization
-                                  }
-                                >
-                                  <Check size={15} />
-                                  {isWorking ? "Processando" : "Aprovar e incluir"}
-                                </button>
-                              </div>
-                            </>
-                          ) : null}
-                        </>
-                      )}
-                    </article>
-                  );
-                })}
-              </div>
-            </section>
+          {agentDetailTab === "improvements" && !usesNewAttendanceAgent(selectedAgent) ? (
+            <ImprovementsReview
+              key={selectedAgent?.id ?? "none"}
+              improvements={improvements}
+              loading={isLoadingImprovements}
+              ready={Boolean(selectedAgent)}
+              api={{
+                update: (improvement, body) => apiUpdateAgentImprovement(getToken, improvement.agentId, improvement.id, body),
+                normalize: (improvement) => apiNormalizeAgentImprovement(getToken, improvement.agentId, improvement.id),
+                approve: (improvement, body) => apiApproveAgentImprovement(getToken, improvement.agentId, improvement.id, body)
+              }}
+              onUpdated={(updated) => setImprovements((current) => current.map((item) => item.id === updated.id ? updated : item))}
+              onApproved={async (approved) => { await loadKnowledge(approved.agentId); }}
+              onError={setError}
+              onNotice={setNotice}
+              intro="O JEV identifica decisões explícitas do time depois de um repasse. Nada entra na base automaticamente: revise, edite, aprove ou recuse cada sugestão."
+              approveConfirm="Aprovar esta sugestão e incluí-la na base de conhecimento do agente? O conteúdo aprovado poderá ser usado nas próximas conversas equivalentes."
+              approvedNotice="Sugestão aprovada e adicionada à base de conhecimento."
+            />
           ) : null}
 
           {agentDetailTab === "test" ? (
