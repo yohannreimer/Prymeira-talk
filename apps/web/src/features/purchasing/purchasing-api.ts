@@ -1,5 +1,5 @@
 import type {
-  PriceHistoryDto, PriceHistoryRow, PurchaseQuoteInput, PurchaseRequestDetailDto, PurchaseRequestInput,
+  PriceHistoryDto, PriceHistoryRow, PurchaseQuoteInput, PurchaseRequestDetailDto, PurchaseRequestInput, PurchaseStartInput,
   PurchaseRequestSummaryDto, SupplierDto, SupplierImportResult, SupplierInput
 } from "@prymeira-talk/shared";
 import { fetchJson } from "../../app/api";
@@ -16,8 +16,14 @@ export const purchasingApi = {
     fetchJson(getToken, `/purchasing/requests/${requestId}`, {}, id<PurchaseRequestDetailDto>, "Não foi possível abrir o pedido."),
   createRequest: (getToken: GetToken, input: PurchaseRequestInput) =>
     fetchJson(getToken, "/purchasing/requests", post(input), id<PurchaseRequestDetailDto>, "Não foi possível criar o pedido."),
-  startQuoting: (getToken: GetToken, requestId: string) =>
-    fetchJson(getToken, `/purchasing/requests/${requestId}/start`, post(), id<PurchaseRequestDetailDto>, "Não foi possível iniciar a cotação."),
+  startQuoting: (getToken: GetToken, requestId: string, input: PurchaseStartInput = {}) =>
+    fetchJson(getToken, `/purchasing/requests/${requestId}/start`, post(input), id<PurchaseRequestDetailDto>, "Não foi possível iniciar a cotação."),
+  sendDraft: (getToken: GetToken, requestId: string, inviteId: string, text?: string) =>
+    fetchJson(getToken, `/purchasing/requests/${requestId}/invites/${inviteId}/draft/send`, post(text ? { text } : {}), id<PurchaseRequestDetailDto>, "Não foi possível enviar a mensagem."),
+  discardDraft: (getToken: GetToken, requestId: string, inviteId: string) =>
+    fetchJson(getToken, `/purchasing/requests/${requestId}/invites/${inviteId}/draft/discard`, post(), id<PurchaseRequestDetailDto>, "Não foi possível descartar."),
+  resumeAgent: (getToken: GetToken, requestId: string, inviteId: string) =>
+    fetchJson(getToken, `/purchasing/requests/${requestId}/invites/${inviteId}/agent/resume`, post(), id<PurchaseRequestDetailDto>, "Não foi possível devolver ao agente."),
   addSuppliers: (getToken: GetToken, requestId: string, supplierIds: string[]) =>
     fetchJson(getToken, `/purchasing/requests/${requestId}/suppliers`, post({ supplierIds }), id<PurchaseRequestDetailDto>, "Não foi possível adicionar."),
   removeInvite: (getToken: GetToken, requestId: string, inviteId: string) =>

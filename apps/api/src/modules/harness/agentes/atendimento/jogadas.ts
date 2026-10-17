@@ -98,10 +98,12 @@ function jogadaDaMensagem(ficha: FichaDoAtendimento, triagem: TriageResult | nul
   const respondidas = ficha.perguntas.filter((item) => item.status === "respondida").flatMap(citacoes);
   if (respondidas.some(recusa)) extras.push("Atenção: a base diz que a empresa NÃO fornece ou NÃO atende parte do que foi pedido. Diga isso com clareza; não ofereça esse item.");
   // Not after a "no": a catalogue offer right after refusing the item or the region reads as ignoring it.
-  const encomenda = !anexos.length && !(ficha.anexosEnviados ?? []).length && pedido.anexos?.some((anexo) => /catalogo/i.test(semAcento(anexo.titulo))) &&
+  // Offered once per conversation: asking it again on every reply read as a script in the test of 17/10.
+  const encomenda = !ficha.catalogoOferecido && !anexos.length && !(ficha.anexosEnviados ?? []).length && pedido.anexos?.some((anexo) => /catalogo/i.test(semAcento(anexo.titulo))) &&
     respondidas.some((citacao) => /encomenda/i.test(citacao)) && !respondidas.some(recusa);
   if (encomenda && (jogada.tipo === "responder" || jogada.tipo === "conversar")) {
     extras.push("É um item sob encomenda: termine perguntando se ele prefere ver o catálogo em PDF ou falar com um vendedor, no lugar de outra pergunta.");
+    return { ...jogada, instrucao: `${jogada.instrucao} ${extras.join(" ")}`, dados: { ...jogada.dados, ofereceCatalogo: true } };
   }
   return extras.length && !jogada.silencio ? { ...jogada, instrucao: `${jogada.instrucao} ${extras.join(" ")}` } : jogada;
 }
@@ -136,7 +138,7 @@ function jogadaDasPerguntas(ficha: FichaDoAtendimento): Jogada {
     return {
       tipo: "responder_e_passar",
       instrucao: [
-        ...(respostas.length ? [`Responda com estas informações da base: ${respostas.join("; ")}.`] : []),
+        ...(respostas.length ? [`Responda com estas informações da base: ${respostas.join("; ")}. Use só o que responde a última mensagem; o que a conversa já disse ao cliente, não repita.`] : []),
         `Os documentos não respondem: ${semBase.map((item) => `"${item.texto}"`).join(", ")}. Diga, nomeando esse assunto, que o vendedor confirma isso com ele. Não diga nada genérico como "vou consultar as informações".`
       ].join(" "),
       avisarHumano: `Sem base nos documentos para: ${semBase.map((item) => item.texto).join(" | ")}`,
@@ -146,7 +148,7 @@ function jogadaDasPerguntas(ficha: FichaDoAtendimento): Jogada {
   if (respostas.length) {
     return {
       tipo: "responder",
-      instrucao: `Responda com estas informações da base, com as palavras do cliente: ${respostas.join("; ")}.${naoBuscadas.length ? ` Sobre ${naoBuscadas.map((item) => `"${item.texto}"`).join(", ")}, não afirme nada; pergunte o detalhe que falta.` : ""} Se fizer sentido, termine com uma pergunta que ajude o pedido a andar.`
+      instrucao: `Responda com estas informações da base, com as palavras do cliente: ${respostas.join("; ")}. Use só o que responde a última mensagem; o que a conversa já disse ao cliente, não repita.${naoBuscadas.length ? ` Sobre ${naoBuscadas.map((item) => `"${item.texto}"`).join(", ")}, não afirme nada; pergunte o detalhe que falta.` : ""} Se fizer sentido, termine com uma pergunta que ajude o pedido a andar.`
     };
   }
   return {
@@ -167,7 +169,8 @@ export function aposEnvio(input: { ficha: FichaDoAtendimento; jogada: Jogada; te
       perguntas: ficha.perguntas.map((item) => ({ ...item, status: "tratada" as const })),
       pesosDaVez: [],
       anexosDaVez: [],
-      anexosEnviados: [...new Set([...(ficha.anexosEnviados ?? []), ...(ficha.anexosDaVez ?? [])])]
+      anexosEnviados: [...new Set([...(ficha.anexosEnviados ?? []), ...(ficha.anexosDaVez ?? [])])],
+      catalogoOferecido: ficha.catalogoOferecido || input.jogada.dados?.ofereceCatalogo === true
     };
   }
   const pendenciaId = input.jogada.dados?.pendenciaId;

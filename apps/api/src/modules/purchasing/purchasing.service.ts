@@ -6,10 +6,12 @@ import {
   purchaseItemKey,
   purchaseQuoteInputSchema,
   purchaseRequestInputSchema,
+  purchaseStartSchema,
   quoteTotalCents,
   supplierInputSchema,
   supplierUpdateSchema,
   type PriceHistoryDto,
+  type PurchaseAgentMode,
   type PurchaseInviteDto,
   type PurchaseInviteStatus,
   type PurchaseQuoteKind,
@@ -21,6 +23,7 @@ import {
   type SupplierImportResult
 } from "@prymeira-talk/shared";
 import type { z } from "zod";
+import { agenteDoConviteDto, estadoInicial, modoDoAgente } from "./buyer-agent-state.js";
 
 export class PurchasingError extends Error {
   constructor(readonly code: string, readonly statusCode: number, message: string) {
@@ -90,7 +93,7 @@ function toQuoteDto(items: Array<{ id: string; quantity: number }>, quote: Reque
   };
 }
 
-function toInviteDto(items: Array<{ id: string; quantity: number }>, invite: RequestRecord["invites"][number]): PurchaseInviteDto {
+function toInviteDto(items: Array<{ id: string; quantity: number }>, invite: RequestRecord["invites"][number], mode: PurchaseAgentMode | null = null): PurchaseInviteDto {
   return {
     id: invite.id,
     status: invite.status as PurchaseInviteStatus,
@@ -101,7 +104,8 @@ function toInviteDto(items: Array<{ id: string; quantity: number }>, invite: Req
     declinedReason: invite.declinedReason,
     sentAt: invite.sentAt?.toISOString() ?? null,
     lastReplyAt: invite.lastReplyAt?.toISOString() ?? null,
-    quotes: invite.quotes.map((quote) => toQuoteDto(items, quote))
+    quotes: invite.quotes.map((quote) => toQuoteDto(items, quote)),
+    agent: agenteDoConviteDto(invite.ficha, mode)
   };
 }
 
@@ -279,8 +283,15 @@ export function createPurchasingService(prisma: PrismaClient) {
     async getRequest(workspaceId: string, requestId: string): Promise<PurchaseRequestDetailDto> {
       const record = await loadRequest(workspaceId, requestId);
       const lastPaid = await lastPaidFor(workspaceId, record.items.map((item) => item.description));
-      const invites = record.invites.map((invite) => toInviteDto(record.items, invite));
+      const mode = modoDoAgente(record.negotiationRules);
+      const invites = record.invites.map((invite) => toInviteDto(record.items, invite, mode));
       const summary = toSummary(record);
+      const channels = await prisma.channel.findMany({
+        where: { workspaceId, provider: "evolution", archivedAt: null }, orderBy: { createdAt: "asc" },
+        select: { id: true, displayName: true, phoneNumber: true }
+      });
+      const channelName = (channel: { id: string; displayName: string | null; phoneNumber: string | null }) =>
+        channel.displayName?.trim() || channel.phoneNumber || "WhatsApp";
       return {
         id: record.id, title: record.title, status: summary.status, needsDecision: summary.needsDecision,
         responseDeadline: summary.responseDeadline, deliveryDeadline: summary.deliveryDeadline,
@@ -298,7 +309,12 @@ export function createPurchasingService(prisma: PrismaClient) {
         comparison: comparisonFor(record, invites),
         events: record.events.map((row) => ({ id: row.id, inviteId: row.inviteId, type: row.type, summary: row.summary,
           reason: row.reason, createdAt: row.createdAt.toISOString() })),
-        agentConnected: false
+        agentConnected: mode !== null,
+        agent: mode ? { mode, channel: (() => {
+          const channel = channels.find((candidate) => candidate.id === record.channelId);
+          return channel ? { id: channel.id, name: channelName(channel) } : null;
+        })() } : null,
+        agentChannels: channels.map((channel) => ({ id: channel.id, name: channelName(channel) }))
       };
     },
 
@@ -330,7 +346,10 @@ export function createPurchasingService(prisma: PrismaClient) {
         const already = new Set(record.invites.map((invite) => invite.supplierId));
         const suppliers = (await assertSuppliers(tx, actor.workspaceId, supplierIds)).filter((supplier) => !already.has(supplier.id));
         if (!suppliers.length) return;
-        await tx.purchaseQuoteInvite.createMany({ data: suppliers.map((supplier) => ({ workspaceId: actor.workspaceId, requestId, supplierId: supplier.id })) });
+        // Once the agent is asking, a supplier added later gets the opening too.
+        const agentAsking = record.status !== "draft" && modoDoAgente(record.negotiationRules) !== null;
+        await tx.purchaseQuoteInvite.createMany({ data: suppliers.map((supplier) => ({ workspaceId: actor.workspaceId, requestId, supplierId: supplier.id,
+          ...(agentAsking ? { ficha: { ...estadoInicial(), pendente: { tipo: "abertura" } } as Prisma.InputJsonObject } : {}) })) });
         await event(tx, actor, requestId, "suppliers_added", `${suppliers.map((supplier) => supplier.name).join(", ")} ${suppliers.length === 1 ? "entrou" : "entraram"} no pedido.`);
       });
       return this.getRequest(actor.workspaceId, requestId);
@@ -348,14 +367,28 @@ export function createPurchasingService(prisma: PrismaClient) {
       return this.getRequest(actor.workspaceId, requestId);
     },
 
-    async startQuoting(actor: Actor, requestId: string) {
+    /** With `agent`, the buyer agent opens every supplier conversation from that number (the poller writes and sends). */
+    async startQuoting(actor: Actor, requestId: string, body: unknown = {}) {
+      const { agent } = purchaseStartSchema.parse(body ?? {});
       await prisma.$transaction(async (tx) => {
         const record = await loadRequest(actor.workspaceId, requestId, tx);
         if (record.status !== "draft") throw new PurchasingError("PURCHASE_INVALID_TRANSITION", 409, "A cotação já começou.");
         if (!record.invites.length) throw new PurchasingError("PURCHASE_NO_SUPPLIERS", 409, "Escolha pelo menos um fornecedor.");
-        await tx.purchaseRequest.update({ where: { id: record.id }, data: { status: "quoting", startedAt: new Date() } });
+        if (agent) {
+          const channel = await tx.channel.findFirst({ where: { workspaceId: actor.workspaceId, id: agent.channelId, archivedAt: null } });
+          if (!channel) throw new PurchasingError("PURCHASE_CHANNEL_NOT_FOUND", 404, "Número de WhatsApp não encontrado.");
+          if (channel.provider !== "evolution") throw new PurchasingError("PURCHASE_CHANNEL_UNSUPPORTED", 409, "Esse número não pode iniciar conversas: escolha um número conectado pelo QR Code.");
+          for (const invite of record.invites) {
+            await tx.purchaseQuoteInvite.update({ where: { id: invite.id }, data: { ficha: { ...estadoInicial(), pendente: { tipo: "abertura" } } as Prisma.InputJsonObject } });
+          }
+        }
+        const rules = record.negotiationRules && typeof record.negotiationRules === "object" && !Array.isArray(record.negotiationRules) ? record.negotiationRules : {};
+        await tx.purchaseRequest.update({ where: { id: record.id }, data: { status: "quoting", startedAt: new Date(),
+          ...(agent ? { channelId: agent.channelId, negotiationRules: { ...rules, agente: { modo: agent.mode } } as Prisma.InputJsonObject } : {}) } });
         await event(tx, actor, requestId, "quoting_started", `Cotação iniciada com ${record.invites.length} ${record.invites.length === 1 ? "fornecedor" : "fornecedores"}.`,
-          { reason: "O agente comprador ainda não manda as mensagens nesta versão: as propostas são registradas à mão." });
+          { reason: agent
+            ? agent.mode === "review" ? "O agente escreve cada mensagem e uma pessoa confere antes de enviar." : "O agente conversa sozinho com os fornecedores."
+            : "As propostas são registradas à mão." });
       });
       return this.getRequest(actor.workspaceId, requestId);
     },

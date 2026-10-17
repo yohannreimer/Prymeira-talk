@@ -43,6 +43,12 @@ export const coreRules: ReviewRule<unknown, unknown>[] = [
       : { ok: false, regra: "sem_promessa_de_retorno", motivo: "Não prometa consultar e retornar depois. Responda com o que está no pedido, na ficha ou na conversa, ou pergunte o dado que falta. Se não der mesmo para responder, use pedir_humano com o motivo." }
   },
   {
+    id: "sem_emoji",
+    check: ({ texto }) => EMOJI.test(texto)
+      ? { ok: false, regra: "sem_emoji", motivo: "A mensagem usa emoji. Escreva sem nenhum emoji." }
+      : { ok: true }
+  },
+  {
     id: "sem_bastidores",
     check: ({ texto }) => /\b(minhas instru[cç][oõ]es|meu prompt|system prompt|minha ficha|a jogada|minhas ferramentas|tool_call)\b/i.test(texto)
       ? { ok: false, regra: "sem_bastidores", motivo: "A mensagem fala dos bastidores do agente (instruções, ficha, ferramentas)." }
@@ -51,6 +57,9 @@ export const coreRules: ReviewRule<unknown, unknown>[] = [
 ];
 
 const PROMESSA_DE_RETORNO = /\b(?:vou|vamos|irei|deixa eu|deixe-me|vou so)\s+(?:consultar|verificar|checar|conferir|confirmar|ver|levantar|olhar)\b.{0,80}\b(?:retorno|retornar|aviso|avisar|volto|te falo|te passo|te digo)\b|\bja (?:te |lhe )?(?:dou um |trago um )?(?:retorno|aviso|volto)\b|\bem breve (?:te |lhe )?(?:retorno|retornamos|aviso)\b/;
+
+/** Pictographs, not the marks that show up in product names (©, ®, ™). */
+const EMOJI = /(?![©®™])\p{Extended_Pictographic}/u;
 
 function normalizeText(text: string) {
   return text.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();

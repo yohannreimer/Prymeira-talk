@@ -46,6 +46,20 @@ function buildPrisma(overrides: Record<string, any> = {}) {
 }
 
 describe("createAgentReplyScheduler", () => {
+  it("leaves a supplier's message to the buyer agent instead of the sales agent", async () => {
+    const prisma = buildPrisma();
+    const claimInbound = vi.fn().mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    const scheduler = createAgentReplyScheduler({ prisma, agentRuntime: { runForMessage: vi.fn() }, purchaseInbound: { claimInbound } });
+    const scope = { workspaceId: ids.workspace, conversationId: ids.conversation, messageId: ids.firstMessage };
+    expect(await scheduler.scheduleActiveSessionForMessage(scope)).toEqual({ scheduled: false });
+    expect(claimInbound).toHaveBeenCalledWith(scope);
+    expect(prisma.conversation.findUnique).not.toHaveBeenCalled();
+    expect(prisma.aiAgentPendingReply.upsert).not.toHaveBeenCalled();
+    await scheduler.scheduleActiveSessionForMessage(scope);
+    expect(prisma.conversation.findUnique).toHaveBeenCalled();
+    scheduler.stop();
+  });
+
   it("does not recreate the pending queue when reset happens during settings lookup", async () => {
     const prisma = buildPrisma();
     prisma.workspaceMirror.findUnique.mockImplementation(async () => {

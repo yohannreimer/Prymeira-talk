@@ -85,6 +85,18 @@ export const purchaseQuoteInputSchema = z.object({
 });
 export type PurchaseQuoteInput = z.input<typeof purchaseQuoteInputSchema>;
 
+/** How the buyer agent works on a request: "review" leaves each message as a draft for a person to send; "auto" sends on its own. */
+export const purchaseAgentModeSchema = z.enum(["review", "auto"]);
+export type PurchaseAgentMode = z.infer<typeof purchaseAgentModeSchema>;
+
+/** Starting the quote. With `agent`, the buyer agent asks the suppliers on WhatsApp from that number; without it, quotes are registered by hand. */
+export const purchaseStartSchema = z.object({
+  agent: z.object({ mode: purchaseAgentModeSchema, channelId: z.string().uuid() }).optional().nullable().transform((value) => value ?? null)
+});
+export type PurchaseStartInput = z.input<typeof purchaseStartSchema>;
+
+export const purchaseDraftSendSchema = z.object({ text: z.string().trim().min(1).max(4000).optional() });
+
 export const priceHistoryImportSchema = z.object({ rows: z.array(z.unknown()).min(1).max(5000) });
 export const priceHistoryRowSchema = z.object({
   itemName: z.string().trim().min(1).max(200),
@@ -152,6 +164,20 @@ export type PurchaseInviteDto = {
   sentAt: string | null;
   lastReplyAt: string | null;
   quotes: PurchaseQuoteVersionDto[];
+  /** What the buyer agent is doing in this conversation; null when the request runs by hand. */
+  agent: PurchaseInviteAgentDto | null;
+};
+
+export type PurchaseInviteAgentDto = {
+  /** The agent's stage in this conversation (nao_iniciado, abordado, conversando, choradinha, aguardando_empresa, declinou, encerrado, humano). */
+  stage: string;
+  /** A message the agent wrote and a person still has to send (review mode). */
+  draft: { text: string; move: string; createdAt: string } | null;
+  /** The agent stopped and a person has to answer in the conversation. */
+  needsHuman: { reason: string; summary: string; at: string } | null;
+  /** The agent is about to read or write (supplier just answered, opening queued). */
+  working: boolean;
+  error: string | null;
 };
 
 export type PurchaseEventDto = {
@@ -194,8 +220,11 @@ export type PurchaseRequestDetailDto = Omit<PurchaseRequestSummaryDto, "itemCoun
   invites: PurchaseInviteDto[];
   comparison: PurchaseComparison;
   events: PurchaseEventDto[];
-  /** False while the buyer agent is not wired to real WhatsApp conversations: quotes are registered by hand. */
+  /** True when the buyer agent talks to the suppliers on WhatsApp; false when quotes are registered by hand. */
   agentConnected: boolean;
+  agent: { mode: PurchaseAgentMode; channel: { id: string; name: string } | null } | null;
+  /** WhatsApp numbers the agent can ask from (shown when the quote starts). */
+  agentChannels: Array<{ id: string; name: string }>;
 };
 
 export type PriceHistoryDto = {

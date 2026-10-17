@@ -92,6 +92,11 @@ export function createAgentReplyScheduler(input: {
   prisma: AgentReplySchedulerPrismaLike;
   agentRuntime: AgentReplySchedulerRuntime;
   followupService?: ConversationFollowupsObserver;
+  /**
+   * The buyer agent (Orçamentos) takes the messages of a supplier asked for a quote, so the workspace's sales
+   * agent never answers a supplier. Returns true when it took the message.
+   */
+  purchaseInbound?: { claimInbound(input: { workspaceId: string; conversationId: string; messageId: string }): Promise<boolean> };
   debounceMs?: number;
   pollIntervalMs?: number;
   batchSize?: number;
@@ -112,6 +117,11 @@ export function createAgentReplyScheduler(input: {
     messageId: string;
     now?: Date;
   }) {
+    if (input.purchaseInbound && await input.purchaseInbound.claimInbound({
+      workspaceId: scheduleInput.workspaceId, conversationId: scheduleInput.conversationId, messageId: scheduleInput.messageId
+    })) {
+      return { scheduled: false as const };
+    }
     const conversation = await input.prisma.conversation.findUnique({
       where: {
         workspaceId_id: {

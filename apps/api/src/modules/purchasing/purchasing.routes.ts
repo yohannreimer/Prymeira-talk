@@ -1,7 +1,8 @@
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
-import { priceHistoryImportSchema, supplierImportSchema, uuidSchema } from "@prymeira-talk/shared";
+import { priceHistoryImportSchema, purchaseDraftSendSchema, supplierImportSchema, uuidSchema } from "@prymeira-talk/shared";
 import { canPerform } from "../access/roles.js";
+import type { BuyerAgent } from "./buyer-agent.js";
 import { createPurchasingService, PurchasingError, type PurchasingService } from "./purchasing.service.js";
 
 const requestParams = z.object({ requestId: uuidSchema });
@@ -12,7 +13,7 @@ const supplierIdsBody = z.object({ supplierIds: z.array(uuidSchema).min(1).max(3
 const declineBody = z.object({ reason: z.string().trim().max(500).optional().nullable() });
 
 /** Orçamentos: a paid add-on. Every route answers 403 until the Hub releases limits.modules.orcamentos for the workspace. */
-export const purchasingRoutes: FastifyPluginAsync<{ service?: PurchasingService }> = async (app, options) => {
+export const purchasingRoutes: FastifyPluginAsync<{ service?: PurchasingService; buyerAgent?: BuyerAgent }> = async (app, options) => {
   const service = options.service ?? createPurchasingService(app.prisma);
 
   app.addHook("preHandler", async (request, reply) => {
@@ -63,7 +64,7 @@ export const purchasingRoutes: FastifyPluginAsync<{ service?: PurchasingService 
     return service.removeInvite(actor(request), params.requestId, params.inviteId);
   });
   app.post("/purchasing/requests/:requestId/start", async (request) =>
-    service.startQuoting(actor(request), requestParams.parse(request.params).requestId));
+    service.startQuoting(actor(request), requestParams.parse(request.params).requestId, request.body ?? {}));
   app.post("/purchasing/requests/:requestId/invites/:inviteId/quotes", async (request, reply) => {
     const params = inviteParams.parse(request.params);
     return reply.code(201).send(await service.recordQuote(actor(request), params.requestId, params.inviteId, request.body));
@@ -78,6 +79,23 @@ export const purchasingRoutes: FastifyPluginAsync<{ service?: PurchasingService 
     }
     const params = inviteParams.parse(request.params);
     return service.approve(actor(request), params.requestId, params.inviteId);
+  });
+  // The buyer agent's drafts (review mode) and the way back after a person answered for it.
+  const agent = () => {
+    if (!options.buyerAgent) throw new PurchasingError("PURCHASE_AGENT_OFF", 409, "O agente comprador não está ativo neste servidor.");
+    return options.buyerAgent;
+  };
+  app.post("/purchasing/requests/:requestId/invites/:inviteId/draft/send", async (request) => {
+    const params = inviteParams.parse(request.params);
+    return agent().sendDraft(actor(request), params.requestId, params.inviteId, purchaseDraftSendSchema.parse(request.body ?? {}).text);
+  });
+  app.post("/purchasing/requests/:requestId/invites/:inviteId/draft/discard", async (request) => {
+    const params = inviteParams.parse(request.params);
+    return agent().discardDraft(actor(request), params.requestId, params.inviteId);
+  });
+  app.post("/purchasing/requests/:requestId/invites/:inviteId/agent/resume", async (request) => {
+    const params = inviteParams.parse(request.params);
+    return agent().resume(actor(request), params.requestId, params.inviteId);
   });
   app.post("/purchasing/requests/:requestId/cancel", async (request) =>
     service.cancel(actor(request), requestParams.parse(request.params).requestId));

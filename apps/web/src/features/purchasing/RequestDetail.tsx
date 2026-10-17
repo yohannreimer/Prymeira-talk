@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { PurchaseInviteDto, PurchaseRequestDetailDto } from "@prymeira-talk/shared";
 import {
-  AlertTriangle, ArrowLeft, Ban, CalendarClock, CheckCircle2, Clock, FilePlus2, Info, MapPin, MessageCircle, Play, Plus, Sparkles, Trophy, Truck, UserMinus, UserPlus
+  AlertTriangle, ArrowLeft, Ban, Bot, CalendarClock, CheckCircle2, Clock, FilePlus2, Hand, Info, MapPin, MessageCircle, Pencil, Play, Plus, Send, Sparkles, Trash2, Trophy, Truck, UserMinus, UserPlus
 } from "lucide-react";
 import { useTalkAuth } from "../../app/auth";
 import { useOptionalTalkSession } from "../../app/session/TalkSessionProvider";
@@ -10,6 +10,7 @@ import { deadlineLabel, formatCep, inviteStage, money, plural, quantity, relativ
 import type { PurchasingView } from "./PurchasingPage";
 import { purchasingApi } from "./purchasing-api";
 import { QuoteDrawer } from "./QuoteDrawer";
+import { StartQuotingDrawer } from "./StartQuotingDrawer";
 import { SupplierPickerDrawer } from "./SupplierPickerDrawer";
 import { AnimatedNumber, Avatar, ConfirmButton, EmptyState, Pill, ProgressDots, Skeleton, Tabs, useToast } from "./ui";
 
@@ -35,6 +36,7 @@ export function RequestDetail({ requestId, go }: { requestId: string; go: (view:
   const [busy, setBusy] = useState<string | null>(null);
   const [quoteFor, setQuoteFor] = useState<PurchaseInviteDto | null>(null);
   const [picking, setPicking] = useState(false);
+  const [starting, setStarting] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -45,6 +47,17 @@ export function RequestDetail({ requestId, go }: { requestId: string; go: (view:
     }).catch((cause: unknown) => { if (alive) setError(cause instanceof Error ? cause.message : "Não foi possível abrir o pedido."); });
     return () => { alive = false; };
   }, [getToken, requestId]);
+
+  // While the agent talks to suppliers, the page follows along: drafts, quotes and hand-overs show up on their own.
+  const following = request?.agentConnected && ["quoting", "awaiting_approval"].includes(request.status);
+  useEffect(() => {
+    if (!following) return;
+    const timer = window.setInterval(() => {
+      if (document.hidden) return;
+      purchasingApi.getRequest(getToken, requestId).then(setRequest).catch(() => undefined);
+    }, 15_000);
+    return () => window.clearInterval(timer);
+  }, [following, getToken, requestId]);
 
   const run = useCallback(async (key: string, action: () => Promise<PurchaseRequestDetailDto>, done?: string) => {
     setBusy(key);
@@ -83,7 +96,7 @@ export function RequestDetail({ requestId, go }: { requestId: string; go: (view:
         <div className="po-head-actions">
           {request.status === "draft" ? (
             <button className="po-btn po-btn-primary" disabled={busy !== null || !request.invites.length}
-              onClick={() => void run("start", () => purchasingApi.startQuoting(getToken, request.id), "Cotação iniciada")} type="button">
+              onClick={() => setStarting(true)} type="button">
               {busy === "start" ? <span className="po-spinner" aria-hidden="true" /> : <Play size={15} aria-hidden="true" />} Iniciar cotação
             </button>
           ) : null}
@@ -141,9 +154,15 @@ export function RequestDetail({ requestId, go }: { requestId: string; go: (view:
       <div className="po-tab-panel" key={tab}>
         {tab === "suppliers" ? (
           <div className="po-stack-sm">
-            {!request.agentConnected && request.status === "quoting" ? (
+            {request.agent && open && request.status !== "draft" ? (
+              <div className="po-alert po-alert-info"><Bot size={16} aria-hidden="true" />
+                <span>O agente pede os orçamentos pelo número <b>{request.agent.channel?.name ?? "escolhido"}</b>. {request.agent.mode === "review"
+                  ? "Cada mensagem espera no cartão do fornecedor até você enviar."
+                  : "Ele envia sozinho; você acompanha aqui e na conversa."} As propostas que ele lê entram no comparativo.</span>
+              </div>
+            ) : !request.agentConnected && request.status === "quoting" ? (
               <div className="po-alert po-alert-info"><Info size={16} aria-hidden="true" />
-                <span>Nesta versão o agente ainda não conversa sozinho: registre cada proposta e a resposta à choradinha no cartão do fornecedor.</span>
+                <span>Cotação à mão: registre cada proposta e a resposta à choradinha no cartão do fornecedor.</span>
               </div>
             ) : null}
             <div className="po-items-summary">
@@ -161,6 +180,9 @@ export function RequestDetail({ requestId, go }: { requestId: string; go: (view:
               <div className="po-invite-grid">
                 {request.invites.map((invite, index) => (
                   <InviteCard busy={busy} invite={invite} key={invite.id} onQuote={() => setQuoteFor(invite)} open={open} quoting={request.status !== "draft"}
+                    onSendDraft={(text) => run(`draft-${invite.id}`, () => purchasingApi.sendDraft(getToken, request.id, invite.id, text), `Mensagem enviada para ${invite.supplier.name}`)}
+                    onDiscardDraft={() => void run(`draft-${invite.id}`, () => purchasingApi.discardDraft(getToken, request.id, invite.id), "Mensagem descartada")}
+                    onResume={() => void run(`resume-${invite.id}`, () => purchasingApi.resumeAgent(getToken, request.id, invite.id), "O agente voltou para a conversa")}
                     onDecline={() => void run(`decline-${invite.id}`, () => purchasingApi.decline(getToken, request.id, invite.id, null), `${invite.supplier.name} marcado como não vai cotar`)}
                     onRemove={() => void run(`remove-${invite.id}`, () => purchasingApi.removeInvite(getToken, request.id, invite.id), `${invite.supplier.name} removido`)}
                     request={request} style={{ animationDelay: `${Math.min(index, 8) * 40}ms` }} />
@@ -184,6 +206,13 @@ export function RequestDetail({ requestId, go }: { requestId: string; go: (view:
             if (next) setQuoteFor(null);
           }} saving={busy === "quote"} />
       ) : null}
+      {starting ? (
+        <StartQuotingDrawer onClose={() => setStarting(false)} request={request} saving={busy === "start"}
+          onStart={async (input) => {
+            const next = await run("start", () => purchasingApi.startQuoting(getToken, request.id, input), input.agent ? "Cotação iniciada: o agente está escrevendo" : "Cotação iniciada");
+            if (next) setStarting(false);
+          }} />
+      ) : null}
       {picking ? (
         <SupplierPickerDrawer exclude={new Set(request.invites.map((invite) => invite.supplier.id))} onClose={() => setPicking(false)} saving={busy === "add"}
           onSave={async (ids) => {
@@ -199,8 +228,9 @@ function BackLink({ go }: { go: (view: PurchasingView) => void }) {
   return <button className="po-back" onClick={() => go({ kind: "list" })} type="button"><ArrowLeft size={15} aria-hidden="true" /> Orçamentos</button>;
 }
 
-function InviteCard({ invite, request, onQuote, onDecline, onRemove, busy, open, quoting, style }: {
+function InviteCard({ invite, request, onQuote, onDecline, onRemove, onSendDraft, onDiscardDraft, onResume, busy, open, quoting, style }: {
   invite: PurchaseInviteDto; request: PurchaseRequestDetailDto; onQuote: () => void; onDecline: () => void; onRemove: () => void;
+  onSendDraft: (text?: string) => Promise<unknown>; onDiscardDraft: () => void; onResume: () => void;
   busy: string | null; open: boolean; quoting: boolean; style: React.CSSProperties;
 }) {
   const column = request.comparison.columns.find((candidate) => candidate.inviteId === invite.id);
@@ -242,6 +272,9 @@ function InviteCard({ invite, request, onQuote, onDecline, onRemove, busy, open,
         </ul>
       ) : null}
 
+      {open && invite.agent ? <AgentPanel agent={invite.agent} busy={busy === `draft-${invite.id}` || busy === `resume-${invite.id}`}
+        conversationId={invite.conversationId} onDiscard={onDiscardDraft} onResume={onResume} onSend={onSendDraft} /> : null}
+
       <footer>
         {invite.lastReplyAt ? <span className="po-muted po-small"><Clock size={12} aria-hidden="true" /> {relativeTime(invite.lastReplyAt)}</span> : <span />}
         <span className="po-grow" />
@@ -260,7 +293,71 @@ function InviteCard({ invite, request, onQuote, onDecline, onRemove, busy, open,
   );
 }
 
+const MOVE_LABEL: Record<string, string> = {
+  abertura: "Pedido de orçamento", cobranca: "Cobrança", choradinha: "Choradinha", pedir_faltantes: "Pedido do que falta", pedir_orcamento: "Pedido de orçamento",
+  fechar_rodada: "Agradecimento", agradecer_recusa: "Agradecimento", revelar_valor: "Resposta sobre o valor", aguardar_retorno: "Resposta", aguardando_empresa: "Resposta"
+};
+
+/** What the agent is doing in this conversation: a draft to send (review mode), a hand-over, or a quiet status line. */
+function AgentPanel({ agent, conversationId, busy, onSend, onDiscard, onResume }: {
+  agent: NonNullable<PurchaseInviteDto["agent"]>; conversationId: string | null; busy: boolean;
+  onSend: (text?: string) => Promise<unknown>; onDiscard: () => void; onResume: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [text, setText] = useState(agent.draft?.text ?? "");
+  useEffect(() => { setText(agent.draft?.text ?? ""); setEditing(false); }, [agent.draft?.createdAt, agent.draft?.text]);
+
+  if (agent.needsHuman) {
+    return (
+      <div className="po-agent po-agent-human">
+        <p><Hand size={14} aria-hidden="true" /> <span><b>Precisa de você.</b> {humanReason(agent.needsHuman.reason)}</span></p>
+        <div className="po-agent-actions">
+          {conversationId ? <button className="po-btn po-btn-small" onClick={() => openConversation(conversationId)} type="button"><MessageCircle size={14} aria-hidden="true" /> Responder na conversa</button> : null}
+          <button className="po-btn po-btn-small po-btn-ghost" disabled={busy} onClick={onResume} type="button"><Bot size={14} aria-hidden="true" /> Devolver ao agente</button>
+        </div>
+      </div>
+    );
+  }
+  if (agent.draft) {
+    return (
+      <div className="po-agent po-agent-draft">
+        <p className="po-agent-label"><Bot size={13} aria-hidden="true" /> {MOVE_LABEL[agent.draft.move] ?? "Mensagem"} esperando você</p>
+        {editing
+          ? <textarea aria-label="Mensagem para o fornecedor" onChange={(event) => setText(event.target.value)} rows={4} value={text} />
+          : <p className="po-agent-text">{agent.draft.text}</p>}
+        <div className="po-agent-actions">
+          <button className="po-btn po-btn-small po-btn-primary" disabled={busy || !text.trim()} type="button"
+            onClick={() => void onSend(editing && text.trim() !== agent.draft!.text ? text.trim() : undefined)}>
+            {busy ? <span className="po-spinner" aria-hidden="true" /> : <Send size={14} aria-hidden="true" />} Enviar
+          </button>
+          {!editing ? <button className="po-btn po-btn-small po-btn-ghost" disabled={busy} onClick={() => setEditing(true)} type="button"><Pencil size={14} aria-hidden="true" /> Editar</button> : null}
+          <button className="po-btn po-btn-small po-btn-ghost" disabled={busy} onClick={onDiscard} type="button"><Trash2 size={14} aria-hidden="true" /> Descartar</button>
+        </div>
+      </div>
+    );
+  }
+  if (agent.error) return <p className="po-agent-status is-error"><AlertTriangle size={13} aria-hidden="true" /> O agente não conseguiu responder: {agent.error}</p>;
+  if (agent.working) return <p className="po-agent-status"><span className="po-spinner" aria-hidden="true" /> O agente está lendo e escrevendo…</p>;
+  return null;
+}
+
+const HUMAN_REASON: Record<string, string> = {
+  pergunta_fora_do_pedido: "O fornecedor perguntou algo que o pedido não responde",
+  quer_falar_com_pessoa: "O fornecedor pediu para falar com uma pessoa",
+  fora_da_alcada: "O fornecedor quer fechar ou mudar o pedido"
+};
+
+/** "quer_falar_com_pessoa: quer negociar por telefone" → the reason in words, with the agent's detail. */
+export function humanReason(reason: string) {
+  const [key, ...rest] = reason.split(":");
+  const detail = rest.join(":").trim();
+  if (key && HUMAN_REASON[key]) return `${HUMAN_REASON[key]}${detail ? `: ${detail}` : "."}`;
+  if (reason.startsWith("Mensagem bloqueada pelo revisor") || reason.startsWith("O agente não conseguiu")) return "O agente não conseguiu escrever uma resposta segura. Responda na conversa.";
+  return reason;
+}
+
 const EVENT_ICON: Record<string, typeof Info> = {
+  agent_invite_sent: Send, agent_followup_sent: Clock, agent_choradinha_sent: Sparkles, agent_needs_human: Hand, agent_gave_up: UserMinus,
   created: FilePlus2, quoting_started: Play, quote_initial: FilePlus2, quote_choradinha: Sparkles, quote_counter: Sparkles, quote_correction: FilePlus2,
   supplier_declined: UserMinus, suppliers_added: UserPlus, supplier_removed: UserMinus, approved: Trophy, canceled: Ban, completed: CheckCircle2
 };
