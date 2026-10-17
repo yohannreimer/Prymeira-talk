@@ -2,6 +2,7 @@ import { citacoes, RECUSA } from "./jogadas.js";
 import { findMoneyAmounts, findPercentages, sameAmount } from "../../core/dinheiro.js";
 import type { ReviewRule } from "../../core/types.js";
 import type { ContextoDoAtendimento, FichaDoAtendimento } from "./tipos.js";
+import { soSaudacaoOuOferta } from "./cobertura.js";
 
 type Rule = ReviewRule<FichaDoAtendimento, ContextoDoAtendimento>;
 
@@ -111,4 +112,15 @@ const semTermoInterno: Rule = {
   }
 };
 
-export const regras: Rule[] = [naoRepete, naoRepeteFrase, semValorNovo, semPressao, naoInverteRecusa, naoPrometeAnexo, semTermoInterno];
+const respondePerguntas: Rule = {
+  id: "resposta_omitida",
+  check: ({ texto, ficha, jogada }) => {
+    if (!["responder", "responder_e_passar"].includes(jogada.tipo)) return { ok: true };
+    const perguntas = ficha.perguntas.filter(p => p.status === "respondida");
+    return perguntas.length && soSaudacaoOuOferta(texto)
+      ? { ok: false, regra: "resposta_omitida", motivo: `A mensagem só cumprimenta ou oferece catálogo/vendedor. Responda primeiro: ${perguntas.map(p => `${p.id}: ${p.texto}`).join("; ")}, usando as citações da ficha.` }
+      : { ok: true };
+  }
+};
+
+export const regras: Rule[] = [respondePerguntas, naoRepete, naoRepeteFrase, semValorNovo, semPressao, naoInverteRecusa, naoPrometeAnexo, semTermoInterno];

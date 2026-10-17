@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { HarnessMessage, HarnessTool } from "../../core/types.js";
 import { ferramentasDoCatalogo } from "./catalogo.js";
+import { lacunasDaBase } from "./cobertura.js";
 import { frasesDe, renderFicha } from "./ficha.js";
 import type { ContextoDoAtendimento, FichaDoAtendimento, Prova } from "./tipos.js";
 
@@ -402,6 +403,8 @@ export function conferirLeitura(input: { ficha: FichaDoAtendimento; mensagem: st
   }
   const perguntas = conferirPerguntas(input);
   if (perguntas) notas.push(perguntas);
+  const lacuna = lacunasDaBase(ficha);
+  if (lacuna) notas.push(lacuna);
   return notas.length ? notas.join(" Também: ") : null;
 }
 

@@ -1,5 +1,6 @@
 import type { HarnessEvent, Jogada, TriageResult } from "../../core/types.js";
 import { pendenciasAbertas } from "./ficha.js";
+import { soSaudacaoOuOferta } from "./cobertura.js";
 import type { ContextoDoAtendimento, FichaDoAtendimento, Pendencia } from "./tipos.js";
 
 const NAO_CLIENTE = new Set(["colega", "pessoal", "fornecedor", "transportadora"]);
@@ -102,7 +103,7 @@ function jogadaDaMensagem(ficha: FichaDoAtendimento, triagem: TriageResult | nul
   const encomenda = !ficha.catalogoOferecido && !anexos.length && !(ficha.anexosEnviados ?? []).length && pedido.anexos?.some((anexo) => /catalogo/i.test(semAcento(anexo.titulo))) &&
     respondidas.some((citacao) => /encomenda/i.test(citacao)) && !respondidas.some(recusa);
   if (encomenda && (jogada.tipo === "responder" || jogada.tipo === "conversar")) {
-    extras.push("É um item sob encomenda: termine perguntando se ele prefere ver o catálogo em PDF ou falar com um vendedor, no lugar de outra pergunta.");
+    extras.push("Primeiro responda explicitamente se fornecemos o produto e as condições relevantes citadas acima. Depois, por ser sob encomenda, pode terminar perguntando se prefere ver o catálogo em PDF ou falar com um vendedor. A oferta nunca substitui a resposta ao pedido.");
     return { ...jogada, instrucao: `${jogada.instrucao} ${extras.join(" ")}`, dados: { ...jogada.dados, ofereceCatalogo: true } };
   }
   return extras.length && !jogada.silencio ? { ...jogada, instrucao: `${jogada.instrucao} ${extras.join(" ")}` } : jogada;
@@ -161,16 +162,16 @@ function jogadaDasPerguntas(ficha: FichaDoAtendimento): Jogada {
 
 export function aposEnvio(input: { ficha: FichaDoAtendimento; jogada: Jogada; texto: string }): FichaDoAtendimento {
   if (input.jogada.tipo !== "cobrar_pendencia") {
-    // Everything asked so far was handled by this reply (answered here or passed to a person), files included.
+    // Only answered or explicitly handed-off questions advance after an accepted reply.
     const { ficha } = input;
     return {
       ...ficha,
       pediuPessoa: false,
-      perguntas: ficha.perguntas.map((item) => ({ ...item, status: "tratada" as const })),
+      perguntas: ficha.perguntas.map((item) => ({ ...item, status: !soSaudacaoOuOferta(input.texto) && (item.status === "respondida" || item.status === "sem_base" && Boolean(input.jogada.avisarHumano)) ? "tratada" as const : item.status })),
       pesosDaVez: [],
       anexosDaVez: [],
       anexosEnviados: [...new Set([...(ficha.anexosEnviados ?? []), ...(ficha.anexosDaVez ?? [])])],
-      catalogoOferecido: ficha.catalogoOferecido || input.jogada.dados?.ofereceCatalogo === true
+      catalogoOferecido: ficha.catalogoOferecido || input.jogada.dados?.ofereceCatalogo === true && /cat[aá]logo|vendedor/i.test(input.texto)
     };
   }
   const pendenciaId = input.jogada.dados?.pendenciaId;

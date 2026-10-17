@@ -130,6 +130,8 @@ export type AgentDefinition<Ficha, Pedido> = {
    * answer; code can see that and ask them to look again.
    */
   conferirLeitura?: (input: { ficha: Ficha; mensagem: string; pedido?: Pedido }) => string | null;
+  /** Final reader gate after bounded retries; enabled only by agents opting in. */
+  validarLeitura?: (input: { ficha: Ficha; mensagem: string; pedido: Pedido }) => string | null;
   /**
    * Approved files that go with this turn's message (the PDF catalogue the contact asked for). The agent
    * picks them by id with a tool; the URL always comes from the company's approved list, never the model.

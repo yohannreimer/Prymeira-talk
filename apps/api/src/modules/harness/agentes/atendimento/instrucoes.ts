@@ -78,7 +78,7 @@ export const instrucoesDoLeitor = `Para cada pergunta ou pedido de informação 
    Pedido para ver ou receber o catálogo: enviar_anexo com o catálogo aprovado. Não registre como pergunta.
 1. registrar_pergunta.
 2. buscar_na_base com as palavras-chave. Se não achar, tente de novo com outras palavras (sinônimo, nome do produto, a cidade).
-3. Se um trecho responde, responder_pergunta citando as palavras exatas dele. Responder inclui dizer que não trabalham com algo, se a base mostra isso.
+3. Procure primeiro o trecho do produto e material específicos. Uma política geral de material não substitui o trecho do item quando ele existe. Registre a resposta completa com responder_pergunta, citando as palavras exatas. Repita a ferramenta para trechos complementares (fornecimento, condição de encomenda e os dados perguntados); não misture materiais ou produtos nem invente combinações. Responder inclui dizer que não trabalham com algo, se a base mostra isso.
    Um trecho também responde quando o pedido cabe numa faixa, lista ou regra geral dele: chapa de 3 mm cabe em "de 0,90 mm a 25,4 mm"; 1200x3000 está na lista de formatos. Cite a faixa ou a lista.
    Medida que existe e peso: consultar_catalogo (tabelas de medidas e kg/m). O catálogo não diz se a empresa fornece o produto hoje; se a base diz que não fornece, vale a base.
    Pedido com quantidade em peças ou barras, quando o produto tem pedido mínimo em kg: ache a linha no catálogo e use calcular_peso. Nunca calcule peso de cabeça. Sem o comprimento de cada peça, não calcule: pergunte.
