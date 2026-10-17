@@ -7,7 +7,7 @@ const url = process.env.MESSAGING_TEST_DATABASE_URL;
 describe.skipIf(!url)('exact conversation preview ownership PostgreSQL', () => {
     let db: PrismaClient;
     const workspaces: string[] = [];
-    beforeAll(() => { const u = new URL(url!); if (u.hostname !== '127.0.0.1' || u.port !== '55439' || u.pathname !== '/messaging_test')
+    beforeAll(() => { const u = new URL(url!); if (u.hostname !== '127.0.0.1' || u.port !== (process.env.TALK_TEST_POSTGRES_PORT ?? '55439') || u.pathname !== '/messaging_test')
         throw Error('owned messaging_test only'); db = new PrismaClient({ datasources: { db: { url } } }); });
     afterAll(async () => { await db.channel.deleteMany({ where: { workspaceId: { in: workspaces } } }); await db.contact.deleteMany({ where: { workspaceId: { in: workspaces } } }); await db.$disconnect(); });
     async function fixture() {

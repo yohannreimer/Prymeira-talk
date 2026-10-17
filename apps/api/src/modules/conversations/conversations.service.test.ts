@@ -2602,9 +2602,7 @@ describe("conversation routes", () => {
       expect(prisma.channel.updateMany).toHaveBeenCalledWith({
         where: {
           workspaceId: "workspace_a",
-          provider: "evolution",
-          status: "connected",
-          conversations: { some: { id: "00000000-0000-4000-8000-000000000001" } }
+          id: "channel_1"
         },
         data: { status: "failed" }
       });

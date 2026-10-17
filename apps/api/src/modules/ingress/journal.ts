@@ -29,6 +29,10 @@ export class IngressJournal {
     const id = randomUUID(), source = input.source;
     return this.db.$transaction(async tx => {
       await enterSourceFenceTransaction(tx, source);
+      if (source.connectionId) {
+        const owners = await tx.channelConnection.findMany({ where: { provider: source.provider as 'evolution' | 'waha', sessionName: source.sessionName }, select: { id: true, workspaceId: true, channelId: true }, take: 2 });
+        if (owners.length !== 1 || owners[0]!.id !== source.connectionId || owners[0]!.workspaceId !== source.workspaceId || owners[0]!.channelId !== source.channelId) throw new Error('Physical messaging source is ambiguous');
+      }
       await input.reauthenticate(tx);
       const scope = { workspaceId: source.workspaceId, channelId: source.channelId };
       const channel = await tx.channel.findUniqueOrThrow({ where: { id: source.channelId } });
@@ -37,6 +41,7 @@ export class IngressJournal {
       if (source.provider === 'waha') await tx.$queryRaw`SELECT id FROM channel_connections WHERE workspace_id=${source.workspaceId} AND channel_id=${source.channelId}::uuid AND provider='evolution' FOR SHARE`;
       const primary = source.provider === 'waha' ? await tx.channelConnection.findFirst({where:{...scope,provider:'evolution'}}) : null;
       const acceptedFacts = { channelProviderKey: channel.providerKey, channelLifecycleGeneration: channel.connectionLifecycleGeneration,
+        verifiedMessagingPhoneNumber: normalizeWhatsappPhone(channel.verifiedMessagingPhoneNumber),
         verifiedPhoneNumber: connection?.verifiedPhoneNumber ?? null, connectionEligible: connection?.eligible ?? null,
         connectionStatus: connection?.status ?? null, integrationConfigId: config?.id ?? null,
         ...(source.provider === 'waha' ? { pairing: { primaryConnectionId:primary?.id??null, primaryLifecycleGeneration:primary?.lifecycleGeneration??null,

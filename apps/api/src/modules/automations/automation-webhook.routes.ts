@@ -35,6 +35,7 @@ interface AutomationWebhookRoutesOptions {
   service?: AutomationWebhookService;
   /** Runs work after the 202 answer; tests replace it to await the processing. */
   schedule?: (task: () => Promise<unknown>) => void;
+  recoveryIntervalMs?: number;
 }
 
 function handleServiceError(reply: FastifyReply, error: unknown) {
@@ -56,6 +57,7 @@ export const automationWebhookRoutes: FastifyPluginAsync<AutomationWebhookRoutes
     createAutomationWebhookService({
       prisma: app.prisma as unknown as AutomationWebhookPrismaLike,
       realtime: app.realtime,
+      onRecoveryError: error => app.log.error({ err: error }, "Automation webhook recovery failed."),
       runner: createAutomationRunner({
         prisma: app.prisma as unknown as AutomationRunnerPrisma,
         agentRuntime: options.agentRuntime,
@@ -80,8 +82,17 @@ export const automationWebhookRoutes: FastifyPluginAsync<AutomationWebhookRoutes
       pending.add(promise);
     });
 
+  let recovery: Promise<unknown> | null = null;
+  const recover = () => {
+    if (recovery || typeof service.processDueSubmissions !== 'function') return;
+    recovery = service.processDueSubmissions().catch(error => app.log.error({ err: error }, 'Automation webhook recovery failed.')).finally(() => { recovery = null; });
+  };
+  const recoveryTimer = setInterval(recover, options.recoveryIntervalMs ?? 5_000);
+  recoveryTimer.unref();
+  app.addHook('onReady', async () => { recover(); });
   app.addHook("onClose", async () => {
-    await Promise.allSettled([...pending]);
+    clearInterval(recoveryTimer);
+    await Promise.allSettled([...pending, ...(recovery ? [recovery] : [])]);
   });
 
   // Public: the token in the URL is the credential. CORS for this path is
@@ -119,7 +130,8 @@ export const automationWebhookRoutes: FastifyPluginAsync<AutomationWebhookRoutes
 
       const claim = await service.claimSubmission({ rule, submission });
       if (claim.claimed) {
-        schedule(() => service.processSubmission({ rule, eventKey: claim.eventKey, submission }));
+        try { schedule(() => service.processSubmission({ rule, eventKey: claim.eventKey, submission })); }
+        catch (error) { app.log.error({ err: error }, 'Immediate webhook wakeup failed; durable recovery will resume it.'); }
       }
 
       return reply.code(202).send({ ok: true });

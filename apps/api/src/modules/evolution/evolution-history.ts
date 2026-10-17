@@ -3,6 +3,7 @@ import { completeProviderKey, fullProviderKeyMatches, explicitAddressMatch, exac
 import { normalizeChatAddress, type WhatsAppMessageKey } from '../messaging/whatsapp-identity.js';
 import { usableContactName } from '../contacts/contact-name.js';
 import { stable } from '../messaging/canonical-values.js';
+import { HistoryMemoryBudget, historyDigest } from '../channels/history-memory-budget.js';
 
 export type HistoryRecord = {
   key: { id: string; remoteJid: string; remoteJidAlt?: string; participant?: string; participantAlt?: string; fromMe: boolean };
@@ -31,24 +32,47 @@ function activityTime(value: unknown): number | null {
 }
 
 // This adapter deliberately has no send, mark-read, webhook or instance mutation methods.
-export function createEvolutionHistorySource(options: { baseUrl: string; apiKey: string; fetch?: typeof fetch }) {
+export function createEvolutionHistorySource(options: { baseUrl: string; apiKey: string; fetch?: typeof fetch; exactLookupTimeoutMs?: number }) {
   const request = options.fetch ?? fetch;
-  async function post(path: string, body: unknown, maxResponseBytes = 16 * 1024 * 1024) {
+  const exactLookupTimeoutMs = options.exactLookupTimeoutMs ?? 30_000;
+  if (!Number.isSafeInteger(exactLookupTimeoutMs) || exactLookupTimeoutMs < 1 || exactLookupTimeoutMs > 30_000) throw new Error('HISTORY_DEADLINE_CONFIG');
+  async function post(path: string, body: unknown, maxResponseBytes = 16 * 1024 * 1024, deadline?: AbortSignal) {
+    const signal = deadline ? AbortSignal.any([deadline, AbortSignal.timeout(15000)]) : AbortSignal.timeout(15000);
+    signal.throwIfAborted();
     const response = await request(options.baseUrl.replace(/\/$/, '') + path, {
       method: 'POST', redirect: 'error', headers: { apikey: options.apiKey, 'Content-Type': 'application/json' },
-      body: JSON.stringify(body), signal: AbortSignal.timeout(15000)
+      body: JSON.stringify(body), signal
     });
     if (!response.ok) throw new Error(`HISTORY_HTTP_${response.status}`);
-    const text = await response.text();
-    if (text.length > maxResponseBytes) throw new Error('HISTORY_RESPONSE_LIMIT');
-    return JSON.parse(text) as unknown;
+    let text: string;
+    if (response.body) {
+      const reader = response.body.getReader(), chunks: Uint8Array[] = []; let size = 0;
+      const cancel = () => { void reader.cancel().catch(() => {}); };
+      signal.addEventListener('abort', cancel, { once: true });
+      try {
+        if (signal.aborted) cancel();
+        signal.throwIfAborted();
+        for (;;) {
+          const part = await reader.read(); signal.throwIfAborted(); if (part.done) break;
+          size += part.value.byteLength;
+          if (size > maxResponseBytes) { cancel(); throw new Error('HISTORY_RESPONSE_LIMIT'); }
+          chunks.push(part.value);
+        }
+        text = Buffer.concat(chunks).toString('utf8');
+      } finally { signal.removeEventListener('abort', cancel); reader.releaseLock(); }
+    } else text = await response.text();
+    signal.throwIfAborted();
+    if (Buffer.byteLength(text) > maxResponseBytes) throw new Error('HISTORY_RESPONSE_LIMIT');
+    const parsed: unknown = JSON.parse(text); signal.throwIfAborted(); return parsed;
   }
-  async function page(instance: string, key: Record<string, string | boolean>, index: number) {
-    const data = await post(`/chat/findMessages/${encodeURIComponent(instance)}`, { where: { key }, page: index, offset: 100 });
+  async function page(instance: string, key: Record<string, string | boolean>, index: number, deadline?: AbortSignal, capacity: 100 | 5000 = 100) {
+    const data = await post(`/chat/findMessages/${encodeURIComponent(instance)}`, { where: { key }, page: index, offset: capacity }, undefined, deadline);
     if (!record(data) || !record(data.messages) || !Array.isArray(data.messages.records) || !Number.isInteger(data.messages.pages) || Number(data.messages.pages) < 0) throw new Error('HISTORY_SHAPE');
     const pages = Number(data.messages.pages);
-    if (pages > 50) throw new Error('HISTORY_PAGE_LIMIT');
-    return { pages, records: data.messages.records };
+    if (pages > 50 || data.messages.records.length > capacity) throw new Error('HISTORY_PAGE_LIMIT');
+    const currentPage = Number.isInteger(data.messages.currentPage) ? Number(data.messages.currentPage) : null;
+    if (data.messages.currentPage !== undefined && currentPage !== index) throw new Error('HISTORY_PAGINATION');
+    return { pages, currentPage, records: data.messages.records, total: Number.isInteger(data.messages.total) && Number(data.messages.total) >= 0 ? Number(data.messages.total) : null };
   }
   function parse(value: unknown): HistoryRecord {
     if (!record(value) || !record(value.key) || typeof value.key.id !== 'string' || !value.key.id || !historyAddress(value.key.remoteJid) || typeof value.key.fromMe !== 'boolean' || !record(value.message)) throw new Error('HISTORY_RECORD');
@@ -63,9 +87,16 @@ export function createEvolutionHistorySource(options: { baseUrl: string; apiKey:
       ...(typeof value.messageType === 'string' ? { messageType: value.messageType } : {}),
       ...(pushName ? { pushName } : {}) };
   }
-  function nativeKey(key: WhatsAppMessageKey) {
-    return { id: key.nativeId!, remoteJid: key.nativeChatAddress!, fromMe: key.direction === 'outbound',
-      ...(key.nativeSenderParticipant ? { participant: key.nativeSenderParticipant } : {}) };
+  /** Broadcast-list envelopes share the recipient stanza ID but cannot identify
+   * PN/LID/group media. Recognize only the observed complete native tuple; any
+   * aliases, sender claims or malformed fields still go through strict parse(). */
+  function numericBroadcastEnvelope(value: Record<string, unknown>, nativeId: string) {
+    const key = value.key, timestamp = value.messageTimestamp;
+    return record(key) && Object.keys(key).every(name => ['id', 'remoteJid', 'fromMe'].includes(name))
+      && key.id === nativeId && typeof key.remoteJid === 'string' && /^\d+@broadcast$/.test(key.remoteJid)
+      && typeof key.fromMe === 'boolean' && record(value.message)
+      && !['remoteJid', 'remoteJidAlt', 'fromMe', 'author', 'participant', 'participantAlt'].some(name => Object.hasOwn(value, name))
+      && typeof timestamp === 'number' && Number.isFinite(timestamp) && timestamp > 0 && timestamp <= 1e11;
   }
   function exactRecordKey(item: HistoryRecord): WhatsAppMessageKey {
     const k = item.key, chatAddress = normalizeChatAddress(k.remoteJid), providerNative = k.id.startsWith('wamid.');
@@ -82,26 +113,94 @@ export function createEvolutionHistorySource(options: { baseUrl: string; apiKey:
     if (item.participant && !explicitAddressMatch(normalizeChatAddress(item.participant), key.nativeSenderParticipant, item.key.participantAlt)) return { kind: 'ambiguous', key };
     return { kind: 'consistent', key };
   }
-  async function findMessageExact(input: { instanceName: string; key: WhatsAppMessageKey }): Promise<
-    { kind: 'resolved'; record: HistoryRecord } | { kind: 'missing' | 'incomplete' | 'ambiguous' }> {
-    if (!input.instanceName || !completeProviderKey(input.key)) return { kind: 'incomplete' };
-    const result = await page(input.instanceName, nativeKey(input.key), 1);
-    // More than one page cannot establish uniqueness from the first page.
-    if (result.pages > 1) return { kind: 'ambiguous' };
-    const matches: HistoryRecord[] = [];
-    for (const raw of result.records) {
-      const item = parse(raw), identity = exactRecordIdentity(item);
-      if (!fullProviderKeyMatches(input.key, identity.key, { chat: item.key.remoteJidAlt, sender: item.key.participantAlt })) continue;
-      // A contradictory claim for this exact tuple cannot disappear when another
-      // response row is clean. Neither row certifies uniqueness or an I/O anchor.
-      if (identity.kind !== 'consistent') return { kind: 'ambiguous' };
-      matches.push(item);
+  /** A provider database may store the explicit PN/LID alias opposite to the
+   * authenticated webhook. Rebind only this lookup's native fields, never the
+   * stored source or the shared exact matcher. Raw IDs, direction and canonical
+   * chat/sender remain checked by the full matcher after the local binding. */
+  function exactRecordMatches(expected: WhatsAppMessageKey, actual: WhatsAppMessageKey, item: HistoryRecord) {
+    const bound = { ...expected };
+    const provenAlias = (requested: string | null, native: string | null, alternate?: string) => {
+      const a = normalizeChatAddress(requested), b = normalizeChatAddress(native);
+      const pair = a?.endsWith('@lid') && b?.endsWith('@s.whatsapp.net') || a?.endsWith('@s.whatsapp.net') && b?.endsWith('@lid');
+      return !!pair && explicitAddressMatch(a, native, alternate);
+    };
+    if (expected.nativeChatAddress !== actual.nativeChatAddress) {
+      if (!provenAlias(expected.nativeChatAddress, actual.nativeChatAddress, item.key.remoteJidAlt)) return false;
+      bound.nativeChatAddress = actual.nativeChatAddress;
     }
-    return matches.length > 1 ? { kind: 'ambiguous' } : matches.length ? { kind: 'resolved', record: matches[0]! } : { kind: 'missing' };
+    if (expected.nativeSenderParticipant !== actual.nativeSenderParticipant) {
+      if (!expected.chatAddress?.endsWith('@g.us') || !actual.chatAddress?.endsWith('@g.us') ||
+        !provenAlias(expected.nativeSenderParticipant, actual.nativeSenderParticipant, item.key.participantAlt)) return false;
+      bound.nativeSenderParticipant = actual.nativeSenderParticipant;
+    }
+    return fullProviderKeyMatches(bound, actual, { chat: item.key.remoteJidAlt, sender: item.key.participantAlt });
   }
-  async function mediaData(instanceName: string, message: HistoryRecord, purpose: MediaPurpose) {
+  async function lookupExact(input: { instanceName: string; key: WhatsAppMessageKey }, deadline: AbortSignal): Promise<
+    { kind: 'resolved'; record: HistoryRecord } | { kind: 'missing' | 'incomplete' | 'ambiguous' }> {
+    if (!input.instanceName || !completeProviderKey(input.key) || !normalizeChatAddress(input.key.nativeChatAddress)) return { kind: 'incomplete' };
+    const incompleteCandidate = (item: HistoryRecord, identity: ReturnType<typeof exactRecordIdentity>) =>
+      identity.kind === 'incomplete' && identity.key.nativeId === input.key.nativeId && identity.key.direction === input.key.direction
+        && explicitAddressMatch(input.key.chatAddress, identity.key.nativeChatAddress, item.key.remoteJidAlt);
+    let first: Awaited<ReturnType<typeof page>> | null = await page(input.instanceName, { id: input.key.nativeId! }, 1, deadline);
+    // An ID may be reused by broadcasts. Even a singleton needs metadata,
+    // terminal exhaustion and convergence before it can certify media identity.
+    if (first.total === null || first.currentPage !== 1) return { kind: 'ambiguous' };
+    const discoveredTotal = first.total;
+    if (discoveredTotal > 5000) throw new Error('HISTORY_PAGE_LIMIT');
+    if (first.pages !== Math.ceil(discoveredTotal / 100) || first.records.length !== Math.min(100, discoveredTotal)) throw new Error('HISTORY_PAGINATION');
+    // The provider orders by timestamp without a unique tie-breaker: offset
+    // pages can overlap. A bounded single batch avoids cross-page ordering;
+    // it still needs exact counts, terminal exhaustion and two full manifests.
+    const capacity = discoveredTotal > 100 ? 5000 : 100;
+    if (capacity === 5000) first = null; // Discovery is never a completeness pass.
+    let previous: string | undefined;
+    for (let pass = 0; pass < 3; pass++) {
+      const rows = new Map<string, string>(), budget = new HistoryMemoryBudget();
+      let pages: number | undefined, total: number | null = null, candidate: HistoryRecord | null = null, candidateHash: string | null = null;
+      for (let index = 1; index <= (pages ?? 1) + 1; index++) {
+        deadline.throwIfAborted();
+        const result = index === 1 && first ? first : await page(input.instanceName, { id: input.key.nativeId! }, index, deadline, capacity);
+        first = null;
+        if (result.total === null || result.currentPage !== index) return { kind: 'ambiguous' };
+        if (result.total > 5000) throw new Error('HISTORY_PAGE_LIMIT');
+        if (result.total !== discoveredTotal) throw new Error('HISTORY_UNSTABLE');
+        if (pages !== undefined && (pages !== result.pages || total !== result.total)) throw new Error('HISTORY_UNSTABLE');
+        pages = result.pages; total = result.total;
+        if (pages !== Math.ceil(total / capacity) || result.records.length !== Math.min(capacity, Math.max(0, total - (index - 1) * capacity))) throw new Error('HISTORY_PAGINATION');
+        for (const raw of result.records) {
+          deadline.throwIfAborted();
+          // Provider DB IDs prove physical pagination only; never message identity.
+          if (!record(raw) || typeof raw.id !== 'string' || !raw.id) return { kind: 'ambiguous' };
+          if (rows.has(raw.id)) throw new Error('HISTORY_PAGINATION');
+          if (numericBroadcastEnvelope(raw, input.key.nativeId!)) {
+            // Count and fingerprint the entire raw envelope, including metadata;
+            // never omit it from physical exhaustion, duplicates or convergence.
+            budget.reserve(raw);
+            const hash = historyDigest(raw);
+            budget.reserve([raw.id, hash]); rows.set(raw.id, hash);
+            continue;
+          }
+          const item = parse(raw), identity = exactRecordIdentity(item), hash = historyDigest(item);
+          budget.reserve([raw.id, hash]); rows.set(raw.id, hash);
+          if (incompleteCandidate(item, identity)) return { kind: 'ambiguous' };
+          if (!exactRecordMatches(input.key, identity.key, item)) continue;
+          if (identity.kind !== 'consistent' || (candidateHash !== null && candidateHash !== hash)) return { kind: 'ambiguous' };
+          if (!candidate) { budget.reserve(item); candidate = item; candidateHash = hash; }
+        }
+      }
+      if (rows.size !== total) throw new Error('HISTORY_PAGINATION');
+      const manifest = historyDigest([...rows].sort(([a], [b]) => a.localeCompare(b)));
+      if (manifest === previous) return candidate ? { kind: 'resolved', record: candidate } : { kind: 'missing' };
+      previous = manifest;
+    }
+    throw new Error('HISTORY_UNSTABLE');
+  }
+  async function findMessageExact(input: { instanceName: string; key: WhatsAppMessageKey }) {
+    return lookupExact(input, AbortSignal.timeout(exactLookupTimeoutMs));
+  }
+  async function mediaData(instanceName: string, message: HistoryRecord, purpose: MediaPurpose, deadline?: AbortSignal) {
     const limit = exactMediaLimit(purpose);
-    const data = await post(`/chat/getBase64FromMediaMessage/${encodeURIComponent(instanceName)}`, { message, convertToMp4: false }, Math.ceil(limit * 4 / 3) + 65536);
+    const data = await post(`/chat/getBase64FromMediaMessage/${encodeURIComponent(instanceName)}`, { message, convertToMp4: false }, Math.ceil(limit * 4 / 3) + 65536, deadline);
     if (!record(data) || typeof data.base64 !== 'string' || typeof data.mimetype !== 'string') throw new Error('HISTORY_MEDIA_SHAPE');
     const mime = data.mimetype.split(';')[0]!.trim().toLowerCase();
     if (!/^(image\/(jpeg|png|webp)|audio\/(mpeg|mp3|mp4|m4a|x-m4a|wav|x-wav|ogg|opus|webm)|video\/(mp4|webm)|application\/pdf)$/.test(mime)) throw new Error('HISTORY_MEDIA_TYPE');
@@ -109,13 +208,79 @@ export function createEvolutionHistorySource(options: { baseUrl: string; apiKey:
     if (!base64 || !/^[A-Za-z0-9+/]*={0,2}$/.test(base64) || Buffer.from(base64, 'base64').length > limit) throw new Error('HISTORY_MEDIA_LIMIT');
     return `data:${mime};base64,${base64}`;
   }
+  /** A complete offset scan is repeated until the fixed result converges. Empty terminal
+   * pages establish exhaustion even when an installation silently caps take. */
+  async function recoveryChats(input: { instanceName: string; from: Date; to: Date }): Promise<RecentEvolutionChats> {
+    let previous: string | undefined;
+    for (let pass = 0; pass < 3; pass++) {
+      const rows = new Map<string, RecentEvolutionChat>(), budget = new HistoryMemoryBudget(); let exhausted = false;
+      for (let offset = 0; offset < 100_000;) {
+        const data = await post(`/chat/findChats/${encodeURIComponent(input.instanceName)}`, { take: 100, skip: offset });
+        const page = Array.isArray(data) ? data : record(data) && Array.isArray(data.chats) ? data.chats : null;
+        if (!page) throw new Error('HISTORY_CHATS_SHAPE');
+        if (!page.length) { exhausted = true; break; }
+        for (const raw of page) {
+          if (!record(raw) || !historyAddress(raw.remoteJid)) throw new Error('HISTORY_CHAT_IDENTITY_INCOMPLETE');
+          if (rows.has(raw.remoteJid)) throw new Error('HISTORY_PAGINATION');
+          const last = record(raw.lastMessage) ? raw.lastMessage : null;
+          const alt = last && record(last.key) ? last.key.remoteJidAlt : null;
+          const pn = phoneJid(raw.remoteJid) ? raw.remoteJid : phoneJid(raw.remoteJidAlt) ? raw.remoteJidAlt : phoneJid(alt) ? alt : null;
+          if (!pn && raw.remoteJid.endsWith('@lid')) throw new Error('HISTORY_CHAT_IDENTITY_INCOMPLETE');
+          const chat = { remoteJid: raw.remoteJid, phoneJid: pn ?? raw.remoteJid, pushName: typeof raw.pushName === 'string' ? usableContactName(raw.pushName) : null, profilePicUrl: typeof raw.profilePicUrl === 'string' && /^https:\/\//i.test(raw.profilePicUrl) ? raw.profilePicUrl : null };
+          budget.reserve(chat); rows.set(raw.remoteJid, chat);
+        }
+        offset += page.length;
+      }
+      if (!exhausted) throw new Error('HISTORY_PAGE_LIMIT');
+      const chats = [...rows.values()].sort((a, b) => a.remoteJid.localeCompare(b.remoteJid)), current = historyDigest(chats.map(chat => [chat.remoteJid, chat.phoneJid]));
+      if (current === previous) return { chats, unresolvedLids: 0 };
+      previous = current;
+    }
+    throw new Error('HISTORY_UNSTABLE');
+  }
+  async function recoveryMessages(input: { instanceName: string; remoteJid: string; from: Date; to: Date }): Promise<HistoryRecord[]> {
+    if (!historyAddress(input.remoteJid) || !Number.isFinite(input.from.getTime()) || !Number.isFinite(input.to.getTime()) || input.from > input.to) throw new Error('HISTORY_WINDOW');
+    let previous: string | undefined;
+    for (let pass = 0; pass < 3; pass++) {
+      const rows = new Map<string, HistoryRecord>(), seen = new Set<string>(), budget = new HistoryMemoryBudget(); let pageCount: number | undefined, total: number | null = null;
+      for (let index = 1; index <= (pageCount ?? 1); index++) {
+        const result = await page(input.instanceName, { remoteJid: input.remoteJid }, index);
+        if (pageCount !== undefined && pageCount !== result.pages) throw new Error('HISTORY_UNSTABLE');
+        pageCount = result.pages;
+        if ((pageCount > 1 && !result.records.length) || (pageCount === 0 && result.records.length)) throw new Error('HISTORY_PAGINATION');
+        if (total !== null && result.total !== total) throw new Error('HISTORY_UNSTABLE');
+        total = result.total;
+        for (const raw of result.records) {
+          const item = parse(raw);
+          if (item.key.remoteJid !== input.remoteJid) throw new Error('HISTORY_IDENTITY');
+          const identity = exactRecordIdentity(item);
+          if (identity.kind !== 'consistent') throw new Error('HISTORY_IDENTITY');
+          const key = stable(identity.key);
+          if (seen.has(key)) throw new Error('HISTORY_PAGINATION');
+          budget.reserve(key); seen.add(key);
+          // Exhaustion and exact identity cover every row. Retain payloads only
+          // for the requested interval, so old history cannot exhaust the worker.
+          if (item.messageTimestamp * 1000 >= input.from.getTime() && item.messageTimestamp * 1000 <= input.to.getTime()) {
+            budget.reserve(item); rows.set(key, item);
+          }
+        }
+      }
+      if (total !== null && seen.size !== total) throw new Error('HISTORY_PAGINATION');
+      const records = [...rows.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([, item]) => item);
+      const current = historyDigest(records);
+      if (current === previous) return records.sort((a, b) => a.messageTimestamp - b.messageTimestamp || stable(a.key).localeCompare(stable(b.key)));
+      previous = current;
+    }
+    throw new Error('HISTORY_UNSTABLE');
+  }
   return {
-    findMessageExact,
+    findMessageExact, recoveryChats, recoveryMessages,
     /** Network-only API; use a proven canonical source/key outside the DB transaction. */
     async mediaExact(input: { instanceName: string; key: WhatsAppMessageKey; purpose: MediaPurpose }) {
-      const found = await findMessageExact(input);
+      const deadline = AbortSignal.timeout(exactLookupTimeoutMs);
+      const found = await lookupExact(input, deadline);
       if (found.kind !== 'resolved') return found;
-      return { kind: 'resolved' as const, record: found.record, mediaUrl: await mediaData(input.instanceName, found.record, input.purpose) };
+      return { kind: 'resolved' as const, record: found.record, mediaUrl: await mediaData(input.instanceName, found.record, input.purpose, deadline) };
     },
     async loadExact(input: { instanceName: string; key: WhatsAppMessageKey; from: Date; to: Date }) {
       if (!Number.isFinite(input.from.getTime()) || !Number.isFinite(input.to.getTime()) || input.from > input.to) throw new Error('HISTORY_WINDOW');

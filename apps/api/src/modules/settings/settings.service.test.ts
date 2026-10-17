@@ -771,6 +771,10 @@ describe("settings Meta Evolution template routes", () => {
         upsert: vi.fn()
       }
     });
+    Object.assign(prisma, {
+      channel: { findMany: vi.fn().mockResolvedValue([{ id: 'owned-meta-channel', workspaceId: 'workspace_a', provider: 'meta_cloud', providerKey: 'prymeiradisparos1', providerInstanceClaim: 'prymeiradisparos1', archivedAt: null }]) },
+      channelConnection: { findMany: vi.fn().mockResolvedValue([]) }
+    });
     const { app } = await buildSettingsApp({ prisma });
 
     try {

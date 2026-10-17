@@ -173,3 +173,24 @@ describe('inbox media without AI or sending', () => {
     expect(profile).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('canonical inbox media identity', () => {
+  const key = { identityFormat: 'whatsapp_stanza', nativeId: 'collision', rawId: 'collision', nativeChatAddress: '15550000001@s.whatsapp.net', chatAddress: '15550000001@s.whatsapp.net', direction: 'inbound', senderParticipant: '', nativeSenderParticipant: null } as const;
+  it('uses the full accepted key instead of an unscoped raw id', async () => {
+    const { prisma, resolve, fetchMedia } = setup();
+    const canonicalMessageIdentity = { findFirst: vi.fn(async () => ({ state: 'active', rawId: 'collision', direction: 'inbound', observations: [{ payload: { key } }] })) };
+    prisma.message.findFirst.mockResolvedValue({ id: 'm', type: 'image', mediaUrl: null, providerMessageId: null });
+    resolve.mockRejectedValueOnce(Error('unavailable'));
+    const service = createInboxMediaService({ prisma: { ...prisma, canonicalMessageIdentity } as never, client: { fetchMedia }, resolve });
+    await service.media('w', 'c', 'm');
+    expect(fetchMedia).toHaveBeenCalledWith({ instanceName: 'instance', id: 'collision', key });
+  });
+  it('does not downgrade a canonical identity without an exact source to legacy id-only media', async () => {
+    const { prisma, resolve, fetchMedia } = setup();
+    const canonicalMessageIdentity = { findFirst: vi.fn(async () => ({ state: 'active', rawId: 'collision', direction: 'inbound', observations: [] })) };
+    resolve.mockRejectedValueOnce(Error('unavailable'));
+    const service = createInboxMediaService({ prisma: { ...prisma, canonicalMessageIdentity } as never, client: { fetchMedia }, resolve });
+    await expect(service.media('w', 'c', 'm')).rejects.toThrow('MEDIA_IDENTITY_UNAVAILABLE');
+    expect(fetchMedia).not.toHaveBeenCalled();
+  });
+});

@@ -56,7 +56,13 @@ interface ContactRecord {
   phone: string;
 }
 
+export interface WebhookRunRecord {
+  id: string; workspaceId: string; ruleId: string; eventKey: string; status: string;
+  input: unknown; result?: unknown; executionToken?: string | null; leaseUntil?: Date | null; updatedAt?: Date;
+}
 export interface AutomationWebhookPrismaLike {
+  $transaction<T>(work: (tx: AutomationWebhookPrismaLike) => Promise<T>, options?: { isolationLevel: 'ReadCommitted'; timeout: number }): Promise<T>;
+  $executeRaw(...args: unknown[]): Promise<unknown>;
   automationRule: {
     findFirst(args: unknown): Promise<AutomationRuleRecord | null>;
   };
@@ -66,9 +72,11 @@ export interface AutomationWebhookPrismaLike {
     upsert(args: unknown): Promise<WebhookTokenRecord>;
   };
   automationRun: {
-    findFirst(args: unknown): Promise<{ id: string } | null>;
+    findFirst(args: unknown): Promise<WebhookRunRecord | null>;
+    findMany(args: unknown): Promise<WebhookRunRecord[]>;
     create(args: unknown): Promise<unknown>;
     update(args: unknown): Promise<unknown>;
+    updateMany(args: unknown): Promise<{ count: number }>;
   };
   channel: {
     findFirst(args: unknown): Promise<ChannelRecord | null>;
@@ -246,16 +254,13 @@ function toWebhookDto(record: WebhookTokenRecord): AutomationWebhookDto {
   };
 }
 
-function sanitizeError(error: unknown) {
-  return error instanceof Error ? error.message : "Falha ao processar o webhook.";
-}
-
 export function createAutomationWebhookService(options: {
   prisma: AutomationWebhookPrismaLike;
   runner: AutomationWebhookRunner;
   realtime?: { publish(event: unknown): void };
   generateToken?: () => string;
   now?: () => Date;
+  onRecoveryError?: (error: unknown) => void;
 }) {
   const { prisma } = options;
   const generateToken = options.generateToken ?? generateAutomationWebhookToken;
@@ -280,30 +285,14 @@ export function createAutomationWebhookService(options: {
     return rule;
   }
 
-  async function failRun(input: { workspaceId: string; ruleId: string; eventKey: string; error: string }) {
-    await prisma.automationRun.update({
-      where: {
-        workspaceId_ruleId_eventKey: {
-          workspaceId: input.workspaceId,
-          ruleId: input.ruleId,
-          eventKey: input.eventKey
-        }
-      },
-      data: {
-        status: "failed",
-        result: { mode: "real", runner: "graph", error: input.error, actionResults: [] }
-      }
-    });
-  }
-
-  async function upsertContact(input: { workspaceId: string; phone: string; name: string | null }) {
+  async function upsertContact(input: { workspaceId: string; phone: string; name: string | null }, database = prisma) {
     const phone = normalizePhoneForStorage(input.phone);
     const where = { workspaceId: input.workspaceId, phone: { in: buildPhoneLookupCandidates(phone) } };
-    let contact = await prisma.contact.findFirst({ where, orderBy: { updatedAt: "desc" } });
+    let contact = await database.contact.findFirst({ where, orderBy: { updatedAt: "desc" } });
 
     if (!contact) {
       try {
-        contact = await prisma.contact.create({
+        contact = await database.contact.create({
           data: {
             workspaceId: input.workspaceId,
             phone,
@@ -315,7 +304,7 @@ export function createAutomationWebhookService(options: {
         if (!isUniqueConstraintError(error)) {
           throw error;
         }
-        contact = await prisma.contact.findFirst({ where, orderBy: { updatedAt: "desc" } });
+        contact = await database.contact.findFirst({ where, orderBy: { updatedAt: "desc" } });
         if (!contact) {
           throw error;
         }
@@ -324,7 +313,7 @@ export function createAutomationWebhookService(options: {
 
     if (input.name && !contact.name?.trim()) {
       // Conditional update: a name typed by the team in the meantime wins.
-      await prisma.contact.updateMany({
+      await database.contact.updateMany({
         where: { workspaceId: input.workspaceId, id: contact.id, OR: [{ name: null }, { name: "" }] },
         data: { name: input.name }
       });
@@ -333,7 +322,17 @@ export function createAutomationWebhookService(options: {
     return contact;
   }
 
-  return {
+  async function failRecoverableRun(database: AutomationWebhookPrismaLike, run: WebhookRunRecord, error: string) {
+    const prior = isRecord(run.result) ? run.result : {};
+    const fence = run.status === 'queued' ? { status: 'queued', executionToken: null }
+      : { status: 'running', executionToken: run.executionToken, leaseUntil: { lte: now() } };
+    await database.automationRun.updateMany({ where: { id: run.id, workspaceId: run.workspaceId, ...fence }, data: {
+      status: 'failed', executionToken: null, leaseUntil: null,
+      result: { ...prior, mode: 'real', runner: 'graph', needsReview: run.status === 'running', error, ...(Array.isArray(prior.actionResults) ? {} : { actionResults: [] }) }
+    } });
+  }
+
+  const service = {
     async getOrCreateWebhook(input: { workspaceId: string; automationId: string }) {
       const rule = await findWebhookRule(input);
       const existing = await prisma.automationWebhookToken.findUnique({
@@ -428,12 +427,15 @@ export function createAutomationWebhookService(options: {
             workspaceId: input.rule.workspaceId,
             ruleId: input.rule.id,
             eventKey,
-            status: "running",
+            status: "queued",
             input: {
               source: "automation_webhook",
               trigger: "webhook.received",
               phone: input.submission.phone,
-              payload: input.submission.payload
+              payload: input.submission.payload,
+              submission: input.submission,
+              teamNoteBody: formatAutomationVariablesForTeam(FORM_NOTE_TITLE, input.submission.variables),
+              channelId: readWebhookTriggerChannelId(webhookTriggerFor(input.rule)!)
             },
             result: { mode: "real", runner: "graph", actionResults: [] }
           }
@@ -453,92 +455,97 @@ export function createAutomationWebhookService(options: {
       eventKey: string;
       submission: Extract<ParsedWebhookSubmission, { ok: true }>;
     }) {
-      const { rule, eventKey, submission } = input;
-      const workspaceId = rule.workspaceId;
-
-      try {
+      const { rule, eventKey } = input, workspaceId = rule.workspaceId;
+      // Only local writes happen under this lock. A crash before commit rolls back the
+      // anchor; after commit every process resumes the same message UUID.
+      const prepared = await prisma.$transaction(async tx => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`automation-webhook:${workspaceId}:${rule.id}:${eventKey}`}, 0))`;
+        const run = await tx.automationRun.findFirst({ where: { workspaceId, ruleId: rule.id, eventKey } });
+        if (!run) throw new Error('Durable webhook submission missing.');
+        if (['completed', 'failed', 'skipped'].includes(run.status)) return { terminal: run };
+        if (run.status === 'running' && (!run.executionToken || !run.leaseUntil || new Date(run.leaseUntil).getTime() > now().getTime())) return { terminal: run };
+        const stored = isRecord(run.input) ? run.input : {};
+        const saved = isRecord(stored.submission) ? stored.submission : null;
+        const submission = saved && saved.ok === true && typeof saved.phone === 'string' && isRecord(saved.payload) && isRecord(saved.variables)
+          ? saved as Extract<ParsedWebhookSubmission, { ok: true }> : input.submission;
         const trigger = webhookTriggerFor(rule);
-        const channelId = trigger ? readWebhookTriggerChannelId(trigger) : null;
-        const channel = channelId
-          ? await prisma.channel.findFirst({ where: { workspaceId, id: channelId } })
-          : null;
-
+        const channelId = typeof stored.channelId === 'string' ? stored.channelId : trigger ? readWebhookTriggerChannelId(trigger) : null;
+        const channel = channelId ? await tx.channel.findFirst({ where: { workspaceId, id: channelId } }) : null;
         if (!channel) {
-          await failRun({
-            workspaceId,
-            ruleId: rule.id,
-            eventKey,
-            error: "Canal do WhatsApp não encontrado. Escolha o canal no gatilho Webhook externo."
-          });
-          return null;
+          await failRecoverableRun(tx, run, 'Canal do WhatsApp não encontrado. Escolha o canal no gatilho Webhook externo.');
+          return { terminal: run };
         }
-
-        const contact = await upsertContact({ workspaceId, phone: submission.phone, name: submission.name });
-        const body = formatAutomationVariablesForTeam(FORM_NOTE_TITLE, submission.variables);
+        if (typeof stored.messageId === 'string') return { messageId: stored.messageId, channel, submission, runInput: stored };
+        const contact = await upsertContact({ workspaceId, phone: submission.phone, name: submission.name }, tx);
         const receivedAt = now();
-        const conversation = await prisma.conversation.upsert({
-          where: {
-            workspaceId_channelId_contactId: { workspaceId, channelId: channel.id, contactId: contact.id }
-          },
-          create: {
-            workspaceId,
-            channelId: channel.id,
-            contactId: contact.id,
-            status: "open",
-            lastMessageAt: receivedAt,
-            lastMessagePreview: FORM_NOTE_TITLE,
-            unreadCount: 1
-          },
-          update: {
-            status: "open",
-            lastMessageAt: receivedAt,
-            lastMessagePreview: FORM_NOTE_TITLE,
-            unreadCount: { increment: 1 }
-          },
+        const conversation = await tx.conversation.upsert({
+          where: { workspaceId_channelId_contactId: { workspaceId, channelId: channel.id, contactId: contact.id } },
+          create: { workspaceId, channelId: channel.id, contactId: contact.id, status: 'open', lastMessageAt: receivedAt, lastMessagePreview: FORM_NOTE_TITLE, unreadCount: 1 },
+          update: { status: 'open', lastMessageAt: receivedAt, lastMessagePreview: FORM_NOTE_TITLE, unreadCount: { increment: 1 } },
           include: { contact: true, channel: true, department: true, assignedUser: true }
         });
-        // System message (not a WhatsApp message): visible to the team and the
-        // anchor the automation runner and agent work from.
-        const message = await prisma.message.create({
-          data: {
-            workspaceId,
-            conversationId: conversation.id,
-            providerEventId: `automation-webhook:${rule.id}:${eventKey}`,
-            direction: "inbound",
-            type: "system",
-            body,
-            status: "delivered",
-            metadata: { source: "automation_webhook", automationId: rule.id, eventKey }
-          }
-        });
-
-        options.realtime?.publish({ type: "message.created", workspaceId, payload: toMessageDto(message) });
-        options.realtime?.publish({
-          type: "conversation.updated",
-          workspaceId,
-          payload: toConversationDto(conversation)
-        });
-
-        const run = await options.runner.runForWebhookEvent({
-          workspaceId,
-          rule,
-          messageId: message.id,
-          eventKey,
-          variables: submission.variables,
-          outboundBlockedReason: channel.provider === "meta_cloud" ? META_FIRST_MESSAGE_BLOCKED_REASON : null,
-          runInput: { phone: submission.phone, payload: submission.payload }
-        });
-        if (!run) {
-          await failRun({ workspaceId, ruleId: rule.id, eventKey, error: "O fluxo não pôde ser iniciado." });
-        }
-
-        return run;
-      } catch (error) {
-        await failRun({ workspaceId, ruleId: rule.id, eventKey, error: sanitizeError(error) }).catch(() => undefined);
-        throw error;
+        const message = await tx.message.create({ data: { workspaceId, conversationId: conversation.id,
+          providerEventId: `automation-webhook:${rule.id}:${eventKey}`, direction: 'inbound', type: 'system',
+          body: typeof stored.teamNoteBody === 'string' ? stored.teamNoteBody : formatAutomationVariablesForTeam(FORM_NOTE_TITLE, submission.variables), status: 'delivered',
+          metadata: { source: 'automation_webhook', automationId: rule.id, eventKey } } });
+        const runInput = { ...stored, source: 'automation_webhook', trigger: 'webhook.received', phone: submission.phone, payload: submission.payload,
+          submission, channelId: channel.id, messageId: message.id, conversationId: conversation.id, contactId: contact.id };
+        await tx.automationRun.update({ where: { id: run.id }, data: { input: runInput } });
+        return { messageId: message.id, channel, submission, runInput, created: { message, conversation } };
+      }, { isolationLevel: 'ReadCommitted', timeout: 15000 });
+      if ('terminal' in prepared) return prepared.terminal;
+      if (prepared.created) {
+        options.realtime?.publish({ type: 'message.created', workspaceId, payload: toMessageDto(prepared.created.message) });
+        options.realtime?.publish({ type: 'conversation.updated', workspaceId, payload: toConversationDto(prepared.created.conversation) });
       }
+      // The runner owns the execution lease and action checkpoints. BUSY, LOST and
+      // uncertain results must never be overwritten by a preparation error handler.
+      return options.runner.runForWebhookEvent({ workspaceId, rule, messageId: prepared.messageId, eventKey,
+        variables: prepared.submission.variables, outboundBlockedReason: prepared.channel.provider === 'meta_cloud' ? META_FIRST_MESSAGE_BLOCKED_REASON : null,
+        runInput: prepared.runInput });
+    },
+
+    async processDueSubmissions(input: { limit?: number; workspaceIds?: readonly string[] } = {}) {
+      const at = now(), staleBefore = new Date(at.getTime() - 10 * 60_000), limit = Math.max(1, Math.min(100, input.limit ?? 25));
+      const rows = await prisma.automationRun.findMany({ where: {
+        input: { path: ['source'], equals: 'automation_webhook' },
+        ...(input.workspaceIds ? { workspaceId: { in: [...input.workspaceIds] } } : {}),
+        OR: [{ status: 'queued', executionToken: null, OR: [{ leaseUntil: null }, { leaseUntil: { lte: at } }] }, { status: 'running', executionToken: { not: null }, leaseUntil: { lte: at } }, { status: 'running', executionToken: null, updatedAt: { lte: staleBefore } }]
+      }, orderBy: { createdAt: 'asc' }, take: limit });
+      let processed = 0;
+      for (const row of rows) {
+        if (row.status === 'running' && !row.executionToken) {
+          await prisma.automationRun.updateMany({ where: { id: row.id, workspaceId: row.workspaceId, status: 'running', executionToken: null, updatedAt: { lte: staleBefore } }, data: { status: 'failed', result: { mode: 'real', runner: 'graph', needsReview: true, error: 'Legacy webhook execution requires human review; no action was replayed.', actionResults: [] } } });
+          continue;
+        }
+        const rule = await prisma.automationRule.findFirst({ where: { workspaceId: row.workspaceId, id: row.ruleId } });
+        if (!rule || rule.status !== 'enabled' || !webhookTriggerFor(rule)) {
+          await failRecoverableRun(prisma, row, 'Accepted webhook automation is no longer available.');
+          continue;
+        }
+        const stored = isRecord(row.input) ? row.input : {};
+        const parsed = parseWebhookSubmission(stored.payload);
+        if (!parsed.ok) {
+          await failRecoverableRun(prisma, row, 'Durable webhook payload is invalid.');
+          continue;
+        }
+        try { await service.processSubmission({ rule, eventKey: row.eventKey, submission: parsed }); processed++; }
+        catch (error) {
+          options.onRecoveryError?.(error);
+          // Only a queued run can have its preparation retried. Never overwrite a
+          // runner lease or its action checkpoint after execution began.
+          const prior = isRecord(row.result) ? row.result : {}, attempts = Number(prior.preparationAttempts ?? 0) + 1;
+          await prisma.automationRun.updateMany({ where: { id: row.id, workspaceId: row.workspaceId, status: 'queued', executionToken: null }, data: {
+            status: attempts >= 6 ? 'failed' : 'queued', leaseUntil: attempts >= 6 ? null : new Date(at.getTime() + Math.min(15 * 60_000, 30_000 * 2 ** (attempts - 1))),
+            result: { ...prior, preparationAttempts: attempts, needsReview: attempts >= 6, error: 'WEBHOOK_PREPARATION_RETRY', actionResults: [] }
+          } }).catch(() => undefined);
+        }
+      }
+      return { processed };
     }
+
   };
+  return service;
 }
 
 export type AutomationWebhookService = ReturnType<typeof createAutomationWebhookService>;

@@ -19,7 +19,7 @@ describe.skipIf(!databaseUrl)('conversation authority resolution on PostgreSQL',
   const store = createCanonicalStore();
   beforeAll(() => {
     const target = new URL(databaseUrl!);
-    if (target.hostname !== '127.0.0.1' || target.port !== '55439' || target.pathname !== '/messaging_test') throw new Error('Only the owned local messaging_test database is permitted');
+    if (target.hostname !== '127.0.0.1' || target.port !== (process.env.TALK_TEST_POSTGRES_PORT ?? '55439') || target.pathname !== '/messaging_test') throw new Error('Only the owned local messaging_test database is permitted');
     db = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
   });
   afterAll(async () => {

@@ -4,7 +4,7 @@ import { createChannelWatchdog } from "./channel-watchdog.js";
 const NOON = new Date("2026-10-02T15:00:00.000Z");
 const row = (id: string, status = "connected") => ({
   id, workspaceId: "w1", provider: "evolution", providerKey: `inst-${id}`, phoneNumber: null,
-  displayName: `Canal ${id}`, status, createdAt: NOON, updatedAt: NOON
+  displayName: `Canal ${id}`, providerInstanceClaim: `inst-${id}` as string | null, status, createdAt: NOON, updatedAt: NOON
 });
 
 function setup(options: {
@@ -14,19 +14,22 @@ function setup(options: {
   qr?: string | null;
   activity?: boolean;
   dryRun?: boolean;
+  connections?: any[];
+  refreshPrimary?: (channel: any) => Promise<void>;
 } = {}) {
   const channels = options.channels ?? [row("a")];
   const events: unknown[] = [];
   let clock = NOON.getTime();
   const prisma = {
     channel: {
-      findMany: vi.fn(async () => channels),
+      findMany: vi.fn(async ({ where }: any) => channels.filter(channel => !where.providerKey || channel.providerKey === where.providerKey)),
       update: vi.fn(async (args: { where: { workspaceId_id: { id: string } }; data: { status: string } }) => {
         const found = channels.find((c) => c.id === args.where.workspaceId_id.id)!;
         found.status = args.data.status;
         return { ...found };
       })
     },
+    channelConnection: { findMany: vi.fn(async ({ where }: any) => (options.connections ?? []).filter(connection => Object.entries(where).every(([key, value]) => connection[key] === value))) },
     message: {
       findFirst: vi.fn(async (args: { select: { id?: true; createdAt?: true } }) => {
         if (args.select.id) return options.activity === false ? null : { id: "m1" };
@@ -49,6 +52,7 @@ function setup(options: {
     evolution: { client: client as never, webhookSecret: "secret", publicWebhookUrl: (w: string) => `https://talk.test/webhooks/evolution/${w}` },
     publish: (event) => { events.push(event); },
     now: () => new Date(clock),
+    refreshPrimary: options.refreshPrimary,
     dryRun: options.dryRun,
     log
   });
@@ -68,13 +72,59 @@ describe("channel watchdog", () => {
     expect(client.setWebhook).toHaveBeenCalledTimes(2);
   });
 
+  it('uses the fenced primary refresh when the health monitor is off, but never writes during dry-run', async () => {
+    const refreshPrimary = vi.fn(async () => {});
+    const live = setup({ refreshPrimary });
+    await live.watchdog.tick();
+    expect(refreshPrimary).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: 'a', workspaceId: 'w1' }));
+    refreshPrimary.mockClear();
+    const dry = setup({ refreshPrimary, dryRun: true });
+    await dry.watchdog.tick();
+    expect(refreshPrimary).not.toHaveBeenCalled();
+  });
+  it('never repairs or replaces the webhook of an unattested existing Evolution session', async () => {
+    const { watchdog, client } = setup({ channels: [{ ...row('a'), providerInstanceClaim: null }], states: { a: 'close' } });
+    await watchdog.tick();
+    expect(client.getConnectionState).toHaveBeenCalledOnce();
+    expect(client.connectInstance).not.toHaveBeenCalled();
+    expect(client.setWebhook).not.toHaveBeenCalled();
+    expect(watchdog.getHealth('w1')).toEqual([expect.objectContaining({ state: 'disconnected', attempts: 0 })]);
+    const opened = setup({ channels: [{ ...row('a'), providerInstanceClaim: null }] });
+    await opened.watchdog.tick();
+    expect(opened.client.setWebhook).not.toHaveBeenCalled();
+  });
+  it('rejects ambiguous primary names before background provider I/O', async () => {
+    const channels = [row('a'), { ...row('b'), workspaceId: 'other', providerKey: 'inst-a' }];
+    const { watchdog, client } = setup({ channels });
+    await watchdog.tick();
+    expect(client.getConnectionState).not.toHaveBeenCalled();
+    expect(client.connectInstance).not.toHaveBeenCalled();
+    expect(client.setWebhook).not.toHaveBeenCalled();
+  });
+  it('keeps WAHA-only logical status and health stable through Evolution QR/reconnect failure', async () => {
+    const connections = [
+      { id: 'ev', workspaceId: 'w1', channelId: 'a', sessionName: 'inst-a', provider: 'evolution', status: 'disconnected', health: 'unknown', eligible: false, verifiedPhoneNumber: '5547999990000' },
+      { id: 'wa', workspaceId: 'w1', channelId: 'a', sessionName: 'wa-a', provider: 'waha', status: 'connected', health: 'healthy', eligible: true, verifiedPhoneNumber: '5547999990000', lastHealthyAt: NOON }
+    ];
+    const channels = [{ ...row('a'), redundancyEnabled: true }];
+    const { watchdog, prisma, client, events, advance } = setup({ channels, connections, states: { a: 'close' }, qr: 'QR' });
+    await watchdog.tick();
+    expect(channels[0]!.status).toBe('connected');
+    expect(prisma.channel.update).not.toHaveBeenCalled();
+    expect(watchdog.getHealth('w1')).toEqual([expect.objectContaining({ state: 'ok' })]);
+    advance(61 * 60_000);
+    client.connectInstance.mockRejectedValue(new Error('reconnect failed'));
+    await watchdog.tick();
+    expect(channels[0]!.status).toBe('connected');
+    expect(events).not.toContainEqual(expect.objectContaining({ type: 'channel.updated', payload: expect.objectContaining({ status: 'disconnected' }) }));
+  });
   it("corrige o status velho de 'conectado' quando a Evolution diz que fechou, e tenta reconectar", async () => {
     const { watchdog, prisma, client, events } = setup({ states: { a: "close" } });
     await watchdog.tick();
     expect(prisma.channel.update).toHaveBeenCalledWith(expect.objectContaining({ data: { status: "disconnected" } }));
     expect(client.connectInstance).toHaveBeenCalledWith({ instanceName: "inst-a" });
     expect(events).toEqual(expect.arrayContaining([
-      expect.objectContaining({ type: "channel.updated", workspaceId: "w1" }),
+      expect.objectContaining({ type: "channel.updated", workspaceId: "w1", payload: expect.objectContaining({ connections: [], connectedCount: 0, activeConnectionId: null, connectionTotal: 2 }) }),
       expect.objectContaining({ type: "channel.health", workspaceId: "w1", payload: expect.objectContaining({ channelId: "a", state: "reconnecting", attempts: 1 }) })
     ]));
   });
@@ -288,7 +338,7 @@ describe("channel watchdog dry run", () => {
     expect(log.info.mock.calls.filter(([m]) => (m as { action?: string }).action === "reassert_webhook")).toHaveLength(1);
   });
 
-  it("reconnect: só registra, sem connectInstance nem publish, mas a memória avança e getHealth reflete", async () => {
+  it("reconnect: só registra, sem connectInstance nem publish, mas a simulação fica fora de getHealth", async () => {
     const { watchdog, client, prisma, events, log, advance } = setup({ states: { a: "close" }, dryRun: true });
     await watchdog.tick();
     expect(client.connectInstance).not.toHaveBeenCalled();
@@ -298,7 +348,7 @@ describe("channel watchdog dry run", () => {
       { event: "channel_watchdog_dry_run", action: "reconnect", channelId: "a", attempt: 1 },
       "Channel watchdog dry run: would attempt a reconnect."
     );
-    expect(watchdog.getHealth("w1")).toEqual([expect.objectContaining({ state: "reconnecting", attempts: 1 })]);
+    expect(watchdog.getHealth("w1")).toEqual([]);
     advance(3 * 60_000);
     await watchdog.tick();
     expect(log.info).toHaveBeenCalledWith(expect.objectContaining({ action: "reconnect", attempt: 2 }), expect.any(String));

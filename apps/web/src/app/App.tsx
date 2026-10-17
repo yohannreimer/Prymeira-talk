@@ -9,6 +9,7 @@ const moduleLoaders = {
   followups: () => import('../features/followups/FollowupsPage').then(module => ({ default: module.FollowupsPage })),
   contatos: () => import('../features/contacts/ContactsPage').then(module => ({ default: module.ContactsPage })),
   leads: () => import('../features/leads/LeadsPage').then(module => ({ default: module.LeadsPage })),
+  orcamentos: () => import('../features/purchasing/PurchasingPage').then(module => ({ default: module.PurchasingPage })),
   canais: () => import('../features/channels/ChannelsPage').then(module => ({ default: module.ChannelsPage })),
   automacoes: () => import('../features/automations/AutomationsPage').then(module => ({ default: module.AutomationsPage })),
   disparos: () => import('../features/campaigns/CampaignsPage').then(module => ({ default: module.CampaignsPage })),
@@ -23,6 +24,7 @@ const modules = {
   followups: lazy(moduleLoaders.followups),
   contatos: lazy(moduleLoaders.contatos),
   leads: lazy(moduleLoaders.leads),
+  orcamentos: lazy(moduleLoaders.orcamentos),
   canais: lazy(moduleLoaders.canais),
   automacoes: lazy(moduleLoaders.automacoes),
   disparos: lazy(moduleLoaders.disparos),
@@ -34,10 +36,11 @@ const modules = {
 };
 const SupervisionPage = lazy(() => import('../features/supervision/SupervisionPage').then(module => ({ default: module.SupervisionPage })));
 const PlatformHealthPage = lazy(() => import('../features/platform-health/PlatformHealthPage').then(module => ({ default: module.PlatformHealthPage })));
-/** Standalone pages outside the workspace shell: a manager's supervision and the product owner's health board. */
+const AgentEvaluationPage = lazy(() => import('../features/platform-health/AgentEvaluationPage').then(module => ({ default: module.AgentEvaluationPage })));
+/** Standalone pages outside the workspace shell: a manager's supervision and the product owner's health board and agent evaluation. */
 function standaloneRoute() {
   const module = new URLSearchParams(window.location.search).get("module");
-  return module === "supervisao" || module === "saude" ? module : null;
+  return module === "supervisao" || module === "saude" || module === "avaliacao" ? module : null;
 }
 
 function renderModule(moduleKey: TalkModuleKey) {
@@ -55,7 +58,8 @@ export function App() {
   }, []);
   return (
     <AuthGate>
-      {standalone === "saude" ? <Suspense fallback={<div className="center-state">Carregando saúde dos números…</div>}><PlatformHealthPage /></Suspense>
+      {standalone === "avaliacao" ? <Suspense fallback={<div className="center-state">Carregando avaliação dos agentes…</div>}><AgentEvaluationPage /></Suspense>
+        : standalone === "saude" ? <Suspense fallback={<div className="center-state">Carregando saúde dos números…</div>}><PlatformHealthPage /></Suspense>
         : standalone === "supervisao" ? <Suspense fallback={<div className="center-state">Carregando supervisão…</div>}><SupervisionPage /></Suspense> : <TalkSessionProvider><TalkSuiteShell renderModule={renderModule} prefetchModule={prefetchModule} /></TalkSessionProvider>}
     </AuthGate>
   );

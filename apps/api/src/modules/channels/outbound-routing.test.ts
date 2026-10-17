@@ -16,6 +16,12 @@ describe('canWrite', () => {
     expect(canWrite({ ...c.connections[0]!, status: 'disconnected' }, c)).toBe(false);
   });
 
+  it('uses a trusted immutable WAHA-only anchor while refusing a primary on another number', () => {
+    const c = channel({ verifiedMessagingPhoneNumber: '5547999990000' }, [conn({ id: 'evo', provider: 'evolution', verifiedPhoneNumber: '5511888882222' }), conn({ id: 'waha', provider: 'waha' })]);
+    expect(writerCandidates(c).map(row => row.id)).toEqual(['waha']);
+    expect(canWrite({ ...c.connections[1]!, verifiedPhoneNumber: '5511888882222' }, c)).toBe(false);
+    expect(canWrite({ ...c.connections[1]!, lastHealthyAt: null }, c)).toBe(false);
+  });
   it('lets WAHA write only with redundancy on, eligible, and the same verified number as Evolution', () => {
     const c = channel();
     const waha = c.connections[1]!;
@@ -28,10 +34,10 @@ describe('canWrite', () => {
 });
 
 describe('writerCandidates', () => {
-  it('without redundancy the legacy Evolution connection is the only candidate, even if its record is stale', () => {
+  it('without redundancy returns only a usable Evolution connection', () => {
     expect(ids(channel({ redundancyEnabled: false }))).toEqual(['evo']);
     const stale = channel({ redundancyEnabled: false }, [conn({ id: 'evo', provider: 'evolution', status: 'disconnected', health: 'unhealthy' }), conn({ id: 'waha', provider: 'waha' })]);
-    expect(ids(stale)).toEqual(['evo']);
+    expect(ids(stale)).toEqual([]);
   });
 
   it('puts the active writer first and the other connection second', () => {
@@ -46,6 +52,12 @@ describe('writerCandidates', () => {
     expect(ids(wahaDown)).toEqual(['evo']);
   });
 
+  it('fences physical maintenance without revoking the same-number secondary writer', () => {
+    const c = channel({}, [conn({ id: 'evo', provider: 'evolution', lifecycleGeneration: 1 }), conn({ id: 'waha', provider: 'waha', lifecycleGeneration: 0 })]);
+    expect(ids(c)).toEqual(['waha']);
+    c.connections[1]!.lifecycleGeneration = 3;
+    expect(ids(c)).toEqual([]);
+  });
   it('is empty when nothing may write, and never offers a WAHA that is not the same number', () => {
     expect(ids(channel({}, [conn({ id: 'evo', provider: 'evolution', status: 'disconnected' }), conn({ id: 'waha', provider: 'waha', status: 'disconnected' })]))).toEqual([]);
     expect(ids(channel({}, [conn({ id: 'evo', provider: 'evolution', status: 'disconnected' }), conn({ id: 'waha', provider: 'waha', verifiedPhoneNumber: '5547000000000' })]))).toEqual([]);

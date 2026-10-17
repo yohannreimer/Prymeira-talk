@@ -207,3 +207,26 @@ describe('private read-only generation', () => {
     await run({ ...context, messages: [m] }); expect(mediaPreparer).not.toHaveBeenCalled();
   });
 });
+
+describe('suggestion from the new attendance agent', () => {
+  it('drafts with the harness on the turned-on channel, lists the approved PDF to send and never calls the old provider', async () => {
+    const { createScriptedModel, toolCall } = await import('../harness/core/model.js');
+    const model = createScriptedModel('luna-test', request => request.tools?.some(tool => tool.name === 'responder')
+      ? { content: null, toolCalls: [toolCall('responder', { texto: 'Claro! Segue o catálogo da Villefer em PDF. Qual produto você procura?' })] }
+      : request.messages.some(entry => entry.role === 'tool') ? { content: null, toolCalls: [] } : { content: null, toolCalls: [toolCall('enviar_anexo', { anexoId: 'catalogo' })] });
+    const base = setup();
+    const run = createAssistantGeneration(base.db, { providerFactory: () => ({ generate: base.generate }), harness: { modelFactory: () => model } });
+    const harnessContext = {
+      ...context,
+      conversation: { ...context.conversation, channelId: 'canal-205' },
+      agent: { ...context.agent, behaviorConfig: { harness: { agente: 'atendimento', canais: ['canal-205'] } } },
+      knowledge: [{ id: 'k', title: 'Catálogo Villefer', content: 'Catálogo.', fileUrl: 'https://villefer.com.br/catalogo.pdf', fileName: 'catalogo.pdf', mimeType: 'application/pdf' }],
+      messages: [{ ...context.messages[0], body: 'me manda o catálogo', createdAt: new Date('2026-10-16T12:00:00Z') }]
+    } as unknown as AssistantContext;
+    const result = await run(harnessContext);
+    expect(base.generate).not.toHaveBeenCalled();
+    expect(result.body).toMatch(/catálogo/);
+    expect(result.warnings).toEqual(['Envie junto o arquivo aprovado: Catálogo Villefer.']);
+    expect(result.proposedActions).toMatchObject({ actions: [{ type: 'send_attachment', attachmentUrl: 'https://villefer.com.br/catalogo.pdf' }] });
+  });
+});

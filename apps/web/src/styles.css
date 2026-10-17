@@ -304,6 +304,29 @@ select:disabled {
   flex-shrink: 0;
 }
 
+.rail-icon {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
+}
+
+.rail-badge {
+  position: absolute;
+  top: -7px;
+  right: -9px;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: #e5484d;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 17px;
+  text-align: center;
+  box-shadow: 0 0 0 2px var(--color-surface-rail);
+}
+
 .rail-label {
   font-size: 13px;
   font-weight: 500;

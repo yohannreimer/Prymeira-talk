@@ -24,7 +24,11 @@ try {
       if (disposition === 'eligible') {
         const connection = await db.channelConnection.findFirst({ where: { workspaceId, channelId: row.channelId, provider: source.provider as 'waha' | 'evolution', sessionName: source.sessionName as string, status: 'connected', eligible: true, channel: { archivedAt: null } } });
         if (!connection || connection.lifecycleGeneration % 2 !== 0) disposition = 'source_unavailable';
-        else {
+        else if (!row.receiptId) {
+          // History has no authenticated receipt phone proof. Keep failed work visible
+          // for source-aware review rather than treating a null receipt as live evidence.
+          disposition = 'history_source_requires_review';
+        } else {
           const receipt = await db.ingressReceipt.findFirst({ where: { id: row.receiptId, workspaceId, channelId: row.channelId }, select: { source: true } });
           const original = record(receipt?.source), accepted = normalizeWhatsappPhone(record(original.acceptedFacts).verifiedPhoneNumber as string | null | undefined);
           if (!accepted || accepted !== normalizeWhatsappPhone(connection.verifiedPhoneNumber) || original.sessionName !== connection.sessionName || original.provider !== connection.provider) disposition = 'number_or_session_unproven';

@@ -4,6 +4,7 @@ import { createWahaClient } from '../waha/waha.client.js';
 import { normalizeEvolutionWebhook } from '../evolution/evolution-event-normalizer.js';
 import { parseWahaMessageKey } from './whatsapp-identity.js';
 import type { TrustedMessagingContext } from './normalized-event.js';
+import { evolutionExactPage } from '../../test/evolution-exact-page.js';
 const PN = '15550001111@s.whatsapp.net', GROUP = '120000-100@g.us';
 const context: TrustedMessagingContext = { workspaceId: 'workspace', channelId: 'channel', provider: 'evolution', channelProvider: 'evolution', connectionId: 'physical', sessionName: 'fixture', lifecycleGeneration: 0, mode: 'history', observedAt: '2026-09-30T12:00:00Z' };
 const raw = { key: { id: 'A', remoteJid: GROUP, fromMe: false, participant: PN, participantAlt: '700001@lid' }, messageTimestamp: 1700000000, message: { conversation: 'hello' } };
@@ -13,7 +14,7 @@ function key() {
   return normalized.event.key;
 }
 function evo(records: unknown[]) {
-  const fetch = vi.fn(async (_url: unknown, _init?: RequestInit) => new Response(JSON.stringify({ messages: { records, pages: 1 } })));
+  const fetch = vi.fn(async (_url: unknown, init?: RequestInit) => Response.json(evolutionExactPage(records, JSON.parse(String(init?.body)))));
   return { fetch, source: createEvolutionHistorySource({ baseUrl: 'https://evolution.invalid', apiKey: 'fixture', fetch }) };
 }
 describe('exact provider I/O contracts', () => {
@@ -24,13 +25,13 @@ describe('exact provider I/O contracts', () => {
     const normalized = normalizeEvolutionWebhook(context, { event: 'messages.upsert', data: record });
     expect(normalized.kind === 'accepted' && normalized.event.kind === 'message' && normalized.event.key.senderParticipant).toBe(PN);
   });
-  it('queries Evolution using the full native key and validates response identity', async () => {
+  it('queries Evolution candidates by ID and validates the full native response identity', async () => {
     const { source, fetch } = evo([raw]);
     expect(await source.findMessageExact({ instanceName: 'fixture', key: key() })).toMatchObject({ kind: 'resolved', record: raw });
-    expect(JSON.parse(String(fetch.mock.calls[0]?.[1]?.body)).where.key).toMatchObject({ id: 'A', remoteJid: GROUP, fromMe: false, participant: PN });
+    expect(JSON.parse(String(fetch.mock.calls[0]?.[1]?.body)).where.key).toEqual({ id: 'A' });
     const wrong = evo([{ ...raw, key: { ...raw.key, participant: '15550002222@s.whatsapp.net' } }]);
     expect(await wrong.source.findMessageExact({ instanceName: 'fixture', key: key() })).toMatchObject({ kind: 'missing' });
-    expect(await evo([raw, raw]).source.findMessageExact({ instanceName: 'fixture', key: key() })).toMatchObject({ kind: 'ambiguous' });
+    expect(await evo([raw, { ...raw, message: { conversation: 'conflicting payload' } }]).source.findMessageExact({ instanceName: 'fixture', key: key() })).toMatchObject({ kind: 'ambiguous' });
   });
   it('accepts alternate mapping only when explicitly present in the exact response', async () => {
     const expected = { ...key(), nativeChatAddress: '700001@lid', chatAddress: PN, nativeSenderParticipant: null, senderParticipant: '' };
@@ -39,10 +40,11 @@ describe('exact provider I/O contracts', () => {
     expect(await evo([{ ...item, key: { ...item.key, remoteJidAlt: undefined } }]).source.findMessageExact({ instanceName: 'fixture', key: expected })).toMatchObject({ kind: 'missing' });
   });
   it('exact Evolution media first proves the full key and passes it to media I/O', async () => {
-    const fetch = vi.fn(async (_url: unknown, _init?: RequestInit) => new Response(JSON.stringify(fetch.mock.calls.length === 1 ? { messages: { records: [raw], pages: 1 } } : { base64: 'YQ==', mimetype: 'image/png' })));
+    const fetch = vi.fn(async (url: unknown, init?: RequestInit) => Response.json(String(url).includes('findMessages') ? evolutionExactPage([raw], JSON.parse(String(init?.body))) : { base64: 'YQ==', mimetype: 'image/png' }));
     const source = createEvolutionHistorySource({ baseUrl: 'https://evolution.invalid', apiKey: 'fixture', fetch });
     expect(await source.mediaExact({ instanceName: 'fixture', key: key(), purpose: 'process' })).toMatchObject({ kind: 'resolved', mediaUrl: 'data:image/png;base64,YQ==' });
-    expect(JSON.parse(String(fetch.mock.calls[1]?.[1]?.body)).message.key).toEqual(raw.key);
+    expect(JSON.parse(String(fetch.mock.calls.at(-1)?.[1]?.body)).message.key).toEqual(raw.key);
+    expect(fetch).toHaveBeenCalledTimes(5);
   });
   it('WAHA validates returned structured identity without guessing serialized suffixes', async () => {
     const id = `false_${GROUP}_A_${PN}`;
@@ -74,12 +76,15 @@ describe('exact provider I/O contracts', () => {
   it('does not request media when the exact provider identity is absent', async () => {
     const { source, fetch } = evo([]);
     expect(await source.mediaExact({ instanceName: 'fixture', key: key(), purpose: 'serve' })).toMatchObject({ kind: 'missing' });
-    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch.mock.calls.every(([url]) => String(url).includes('findMessages'))).toBe(true);
   });
   it('exact anchor validates full identity and retains group sender collisions in history', async () => {
     const other = { ...raw, key: { ...raw.key, participant: '15550002222@s.whatsapp.net', participantAlt: undefined } };
-    const fetch = vi.fn(async (_url: unknown, init?: RequestInit) => new Response(JSON.stringify({ messages: { pages: 1,
-      records: JSON.parse(String(init?.body)).where.key.id ? [raw] : [raw, other] } })));
+    const fetch = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      const query = JSON.parse(String(init?.body));
+      return Response.json(query.where.key.id ? evolutionExactPage([raw], query) : { messages: { pages: 1, records: [raw, other] } });
+    });
     const source = createEvolutionHistorySource({ baseUrl: 'https://evolution.invalid', apiKey: 'fixture', fetch });
     expect(await source.loadExact({ instanceName: 'fixture', key: key(), from: new Date(1699999999000), to: new Date(1700000001000) })).toMatchObject({ kind: 'resolved', records: [expect.objectContaining({ key: expect.objectContaining({ participant: PN }) }), expect.objectContaining({ key: expect.objectContaining({ participant: '15550002222@s.whatsapp.net' }) })] });
     expect(await source.loadExact({ instanceName: 'fixture', key: { ...key(), direction: 'outbound' }, from: new Date(1699999999000), to: new Date(1700000001000) })).toMatchObject({ kind: 'missing' });
@@ -97,7 +102,7 @@ describe('exact provider I/O contracts', () => {
 
   it('Evolution exact media retains separate 8 MiB processing and 25 MiB serving budgets', async () => {
     const base64 = Buffer.alloc(9 * 1024 * 1024).toString('base64');
-    const fetch = vi.fn(async (url: unknown) => new Response(JSON.stringify(String(url).includes('getBase64') ? { base64, mimetype: 'image/png' } : { messages: { records: [raw], pages: 1 } })));
+    const fetch = vi.fn(async (url: unknown, init?: RequestInit) => Response.json(String(url).includes('getBase64') ? { base64, mimetype: 'image/png' } : evolutionExactPage([raw], JSON.parse(String(init?.body)))));
     const source = createEvolutionHistorySource({ baseUrl: 'https://evolution.invalid', apiKey: 'fixture', fetch });
     await expect(source.mediaExact({ instanceName: 'fixture', key: key(), purpose: 'process' })).rejects.toThrow(/LIMIT/);
     const result = await source.mediaExact({ instanceName: 'fixture', key: key(), purpose: 'serve' });
@@ -148,7 +153,7 @@ describe('exact provider I/O contracts', () => {
     let pass = 0;
     const fetch = vi.fn(async (_url: unknown, init?: RequestInit) => {
       const query = JSON.parse(String(init?.body));
-      if (query.where.key.id) return new Response(JSON.stringify({ messages: { pages: 1, records: [raw] } }));
+      if (query.where.key.id) return Response.json(evolutionExactPage([raw], query));
       if (query.page === 1) pass++;
       const records = query.page === 1 ? [raw] : [pass === badPass ? conflicting : { ...conflicting, participant: PN }];
       return new Response(JSON.stringify({ messages: { pages: 2, records } }));
@@ -166,8 +171,10 @@ describe('exact provider I/O contracts', () => {
     const { source } = evo([item]);
     expect(await source.findMessageExact({ instanceName: 'fixture', key: expected })).toMatchObject({ kind: proven ? 'resolved' : 'ambiguous' });
     // A clean anchor permits exercising page validation even when the item is invalid.
-    const fetch = vi.fn(async (_url: unknown, init?: RequestInit) => new Response(JSON.stringify({ messages: { pages: 1,
-      records: JSON.parse(String(init?.body)).where.key.id ? [raw] : [item] } })));
+    const fetch = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      const query = JSON.parse(String(init?.body));
+      return Response.json(query.where.key.id ? evolutionExactPage([raw], query) : { messages: { pages: 1, records: [item] } });
+    });
     const history = createEvolutionHistorySource({ baseUrl: 'https://evolution.invalid', apiKey: 'fixture', fetch });
     const loaded = await history.loadExact({ instanceName: 'fixture', key: key(), from: new Date(1699999999000), to: new Date(1700000002000) });
     expect(loaded.kind).toBe(proven ? 'resolved' : 'ambiguous');
@@ -177,14 +184,14 @@ describe('exact provider I/O contracts', () => {
     const incoming = { ...raw, participant: PN }, outgoing = { ...incoming, key: { ...raw.key, fromMe: true } };
     const fetch = vi.fn(async (_url: unknown, init?: RequestInit) => {
       const query = JSON.parse(String(init?.body));
-      return new Response(JSON.stringify({ messages: { pages: query.where.key.id ? 1 : 2,
-        records: query.where.key.id || query.page === 1 ? [incoming] : [incoming, outgoing] } }));
+      return Response.json(query.where.key.id ? evolutionExactPage([incoming], query)
+        : { messages: { pages: 2, records: query.page === 1 ? [incoming] : [incoming, outgoing] } });
     });
     const source = createEvolutionHistorySource({ baseUrl: 'https://evolution.invalid', apiKey: 'fixture', fetch });
     const result = await source.loadExact({ instanceName: 'fixture', key: key(), from: new Date(1699999999000), to: new Date(1700000002000) });
     expect(result.kind).toBe('resolved');
     if (result.kind === 'resolved') expect(result.records).toEqual(expect.arrayContaining([incoming, outgoing]));
-    expect(fetch).toHaveBeenCalledTimes(5);
+    expect(fetch).toHaveBeenCalledTimes(8);
   });
   it('rejects invalid exact history parameters before provider I/O', async () => {
     const { source, fetch } = evo([raw]);
@@ -201,7 +208,7 @@ describe('exact provider I/O contracts', () => {
     for (const records of [[clean, corrupt], [corrupt, clean], [corrupt]]) {
       const fetch = vi.fn(async (_url: unknown, init?: RequestInit) => {
         const query = JSON.parse(String(init?.body));
-        return new Response(JSON.stringify({ messages: { pages: 1, records: query.where?.key.id ? records : [clean] } }));
+        return Response.json(query.where?.key.id ? evolutionExactPage(records, query) : { messages: { pages: 1, records: [clean] } });
       });
       const source = createEvolutionHistorySource({ baseUrl: 'https://evolution.invalid', apiKey: 'fixture', fetch });
       const input = { instanceName: 'fixture', key: key(), from: new Date(1699999999000), to: new Date(1700000002000), purpose: 'serve' as const };

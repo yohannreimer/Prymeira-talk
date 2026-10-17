@@ -17,6 +17,7 @@ import { IngressJournal } from './journal.js';
 import { IngressPrivateStore } from './private-store.js';
 import { ConfirmedIngressPublisher, transportTopology } from './broker.js';
 import { createIngressHttp } from './http.js';
+import { createExactEvolutionMediaFixture } from '../../test/evolution-media-fixture.js';
 import { readIngressEnvironment } from './runtime.js';
 import { IngressTransportConsumer } from './consumer.js';
 import { createEffectRunner } from './effect-runner.js';
@@ -44,7 +45,7 @@ describe.skipIf(!databaseUrl || !brokerUrl)('stage 1B canonical application with
     const workspaces: string[] = [], namespaces: string[] = [], publishers: ConfirmedIngressPublisher[] = [], consumers: IngressTransportConsumer[] = [], children: ChildProcess[] = [];
     const apps: ReturnType<typeof createIngressHttp>[] = [];
     beforeAll(async () => {
-        readIngressEnvironment({ INGRESS_TRANSPORT_STAGE: 'isolated-1b', DATABASE_URL: databaseUrl, INGRESS_AMQP_URL: brokerUrl, INGRESS_NAMESPACE: 'talk.isolated.application_test', INGRESS_WORKSPACE_ALLOWLIST: 'fixture', INGRESS_PRIVATE_ROOT: '/private/tmp/unused' });
+        readIngressEnvironment({ TALK_TEST_POSTGRES_PORT: process.env.TALK_TEST_POSTGRES_PORT, TALK_TEST_AMQP_PORT: process.env.TALK_TEST_AMQP_PORT, INGRESS_TRANSPORT_STAGE: 'isolated-1b', DATABASE_URL: databaseUrl, INGRESS_AMQP_URL: brokerUrl, INGRESS_NAMESPACE: 'talk.isolated.application_test', INGRESS_WORKSPACE_ALLOWLIST: 'fixture', INGRESS_PRIVATE_ROOT: '/private/tmp/unused' });
         db = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
         root = await mkdtemp('/private/tmp/talk-application-');
         const files = new IngressPrivateStore(root);
@@ -184,11 +185,12 @@ describe.skipIf(!databaseUrl || !brokerUrl)('stage 1B canonical application with
         const ch = await admin.createChannel();
         await ch.purgeQueue(transportTopology(f.namespace).incoming);
         await db.ingressReceipt.delete({ where: { id: seedId } });
-        await journal.publish(receipt.id, f.publisher);
         const consumer = await IngressTransportConsumer.start({ url: brokerUrl!, namespace: f.namespace, journal, publisher: () => f.publisher, application: service });
+        const ack = vi.spyOn(consumer.channel, 'ack');
         consumers.push(consumer);
+        await journal.publish(receipt.id, f.publisher);
         await until(() => db.ingressApplication.findUnique({ where: { receiptId: receipt.id } }), v => v?.state === 'held');
-        await until(() => ch.checkQueue(transportTopology(f.namespace).incoming), v => v.messageCount === 0);
+        await until(async () => ack.mock.calls.length, count => count === 1);
         await consumer.close();
         await ch.close();
         await service.apply(receipt.id);
@@ -235,11 +237,19 @@ describe.skipIf(!databaseUrl || !brokerUrl)('stage 1B canonical application with
         const ch = await admin.createChannel();
         await ch.purgeQueue(transportTopology(f.namespace).incoming);
         await db.ingressReceipt.delete({ where: { id: seed } });
-        await journal.publish(receipt.id, f.publisher);
-        const consumer = await IngressTransportConsumer.start({ url: brokerUrl!, namespace: f.namespace, journal, publisher: () => f.publisher, application: service });
+        let releaseApplication!: () => void;
+        const applicationCommitted = new Promise<void>(resolve => { releaseApplication = resolve; });
+        const consumer = await IngressTransportConsumer.start({ url: brokerUrl!, namespace: f.namespace, journal, publisher: () => f.publisher,
+            application: { async apply(id) { const result = await service.apply(id); await applicationCommitted; return result; } } });
+        const ack = vi.spyOn(consumer.channel, 'ack');
         consumers.push(consumer);
+        await journal.publish(receipt.id, f.publisher);
         const applied = variant === 'verified-pn-lid';
         await until(() => db.ingressApplication.findUnique({ where: { receiptId: receipt.id } }), v => v?.state === (applied ? 'applied' : 'held'));
+        // The SQL milestone is visible before apply returns and the original channel ACKs.
+        // Force that scheduling gap: retiring here would correctly requeue the reference.
+        releaseApplication();
+        await until(async () => ack.mock.calls.length, count => count === 1);
         await consumer.close();
         for (const queue of [transportTopology(f.namespace).incoming, transportTopology(f.namespace).retry, transportTopology(f.namespace).dead])
             expect((await ch.checkQueue(queue)).messageCount).toBe(0);
@@ -895,14 +905,12 @@ describe.skipIf(!databaseUrl || !brokerUrl)('stage 1B canonical application with
             const message = await db.message.findFirstOrThrow({ where: { workspaceId: f.workspaceId } });
             expect((await media.read({ workspaceId: f.workspaceId, conversationId: message.conversationId, messageId: message.id }))?.bytes.equals(PNG)).toBe(true);
         });
-        it('the compiled worker executes media.prepare by itself: webhook -> Message -> effect -> stored original', async () => {
+        it('the compiled worker prepares original media when Evolution stores the webhook PN as an explicit native LID', async () => {
             const f = await fixture();
-            const requests: string[] = [];
-            const evolutionApi = http.createServer((req, res) => {
-                requests.push(`${req.method} ${req.url}`);
-                req.resume();
-                req.on('end', () => { res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ base64: PNG.toString('base64'), mimetype: 'image/png' })); });
-            });
+            const expectedKey = { id: 'worker-media', remoteJid: peer, fromMe: false };
+            const nativeKey = { ...expectedKey, remoteJid: '700001@lid', remoteJidAlt: peer };
+            const provider = createExactEvolutionMediaFixture({ sessionName: f.evo.sessionName, key: nativeKey, bytes: PNG });
+            const { server: evolutionApi, requests } = provider;
             await new Promise<void>(resolve => evolutionApi.listen(0, '127.0.0.1', resolve));
             const mediaRoot = join(root, `worker-media-${randomUUID()}`);
             const child = spawn(process.execPath, ['dist/ingress-worker.js'], { cwd: process.cwd(), stdio: 'pipe', env: { ...process.env, DATABASE_URL: databaseUrl, INGRESS_TRANSPORT_STAGE: 'isolated-1b', INGRESS_AMQP_URL: brokerUrl, INGRESS_NAMESPACE: f.namespace,
@@ -914,7 +922,9 @@ describe.skipIf(!databaseUrl || !brokerUrl)('stage 1B canonical application with
                 const stored = await until(() => db.messageMedia.findFirst({ where: { workspaceId: f.workspaceId } }), v => v?.state === 'stored');
                 expect(stored).toMatchObject({ mimeType: 'image/png', sourceKind: 'evolution', sizeBytes: PNG.length });
                 expect(await until(() => db.ingressEffect.findFirstOrThrow({ where: { workspaceId: f.workspaceId, kind: 'media.prepare' } }), v => v.state === 'done')).toMatchObject({ attempts: 1 });
-                expect(requests).toEqual([expect.stringMatching(/^POST \/chat\/getBase64FromMediaMessage\//)]);
+                expect(requests).toEqual([...Array(4).fill(`POST /chat/findMessages/${encodeURIComponent(f.evo.sessionName)}`), `POST /chat/getBase64FromMediaMessage/${encodeURIComponent(f.evo.sessionName)}`]);
+                expect(provider.queries).toEqual([1, 2, 1, 2].map(page => ({ where: { key: { id: expectedKey.id } }, page, offset: 100 })));
+                expect(provider.keys).toEqual([...Array(4).fill({ id: expectedKey.id }), nativeKey]);
                 // Effects without a handler yet stay pending obligations, untouched.
                 expect(await db.ingressEffect.count({ where: { workspaceId: f.workspaceId, state: 'pending' } })).toBeGreaterThan(0);
             } finally {

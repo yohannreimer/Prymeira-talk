@@ -1,3 +1,4 @@
+import { setTimeout as delay } from 'node:timers/promises';
 import { refreshOwnedConversationPreviewInTransaction, selectConversationPreviewInTransaction } from '../messaging/conversation-preview.js';
 import { wellFormedPresentation } from '../messaging/well-formed-presentation.js';
 import { reportFailure } from '../../observability/glitchtip.js';
@@ -51,7 +52,7 @@ export class IngressApplicationService {
         // Chats that two existing conversations claim: decided by the phone-number default once this receipt is stored.
         const contested = new Map<string, { workspaceId: string; channelId: string; chatId: string }>();
         for (const [eventIndex, item] of payload.events.entries()) {
-            await this.journal.db.$transaction(async (tx) => {
+            await this.withContentionRetry(() => this.journal.db.$transaction(async (tx) => {
                 await enterCanonicalWorkspaceTransaction(tx, receipt.workspaceId);
                 const persisted = await tx.ingressReceipt.findUniqueOrThrow({ where: { id: receiptId } });
                 if (!equal(persisted.source, receipt.source) || persisted.eventDigest !== receipt.eventDigest || persisted.rawDigest !== receipt.rawDigest)
@@ -119,6 +120,18 @@ export class IngressApplicationService {
                         return;
                     }
                 }
+                if (source.provider === 'evolution' && source.connectionId) {
+                    const channel = await tx.channel.findUniqueOrThrow({ where: { id: source.channelId } });
+                    const anchor = normalizeWhatsappPhone(channel.verifiedMessagingPhoneNumber);
+                    if (anchor) {
+                        const physical = await tx.channelConnection.findUniqueOrThrow({ where: { id: source.connectionId } });
+                        const acceptedPhone = normalizeWhatsappPhone(record(record(receipt.source).acceptedFacts).verifiedPhoneNumber as string | null | undefined);
+                        if (normalizeWhatsappPhone(physical.verifiedPhoneNumber) !== anchor || acceptedPhone !== anchor) {
+                            await tx.ingressEventProgress.create({ data: { ...scope, state: 'held', reason: 'evolution_identity_mismatch', result: json({ kind: event.kind, reason: 'evolution_identity_mismatch' }) } });
+                            return;
+                        }
+                    }
+                }
                 const result = await this.store.persistInTransaction(tx, event, { receiptKey: `${receiptId}:${eventIndex}` });
                 await tx.ingressEventProgress.create({ data: { ...scope, state: result.outcome === 'held' ? 'held' : 'applied', reason: result.reconciliationReasons[0] ?? null,
                         observationId: result.observationId, actionId: result.actionId ?? null, messageId: result.messageId, conversationId: result.conversationId, result: json(result) } });
@@ -126,13 +139,13 @@ export class IngressApplicationService {
                     contested.set(result.chatId, { workspaceId: receipt.workspaceId, channelId: receipt.channelId, chatId: result.chatId });
                 await this.afterPersist(tx, receipt, eventIndex, event, result, source);
                 if (recovered && source.mode === 'recovered_live') await this.recoveredPresentation(tx, receipt, event, result, source);
-            }, { isolationLevel: 'ReadCommitted', timeout: 15000 });
+            }, { isolationLevel: 'ReadCommitted', timeout: 15000, maxWait: 5000 }));
         }
         for (const chat of contested.values())
             await autoResolveAuthority(this.journal.db, chat).catch(() => undefined); // The sweep retries; a failure never fails the receipt.
         // No application completion at the start or at timer scheduling. Finalize only
         // after every conserved event position exists, including explicit held decisions.
-        return this.journal.db.$transaction(async (tx) => {
+        return this.withContentionRetry(() => this.journal.db.$transaction(async (tx) => {
             await enterCanonicalWorkspaceTransaction(tx, receipt.workspaceId);
             const rows = await tx.ingressEventProgress.findMany({ where: { receiptId } });
             if (rows.length !== receipt.eventCount || rows.some(r => r.eventIndex < 0 || r.eventIndex >= receipt.eventCount))
@@ -145,7 +158,19 @@ export class IngressApplicationService {
             // canonical applied from conserved held. ACK may now follow this commit.
             await tx.ingressDelivery.update({ where: { receiptId }, data: { state: 'pending_application', consumedAt: delivery.consumedAt ?? new Date(), leaseToken: null, leaseUntil: null, lastError: held ? 'application_held' : null } });
             return application;
-        }, { isolationLevel: 'ReadCommitted' });
+        }, { isolationLevel: 'ReadCommitted', timeout: 15000, maxWait: 5000 }));
+    }
+    /** Only database transactions are retried: progress and effects commit atomically,
+     * and their durable uniqueness prevents replaying any external handler. */
+    private async withContentionRetry<T>(work: () => Promise<T>): Promise<T> {
+        for (let attempt = 0; ; attempt++) {
+            try { return await work(); }
+            catch (error) {
+                const code = typeof error === 'object' && error !== null && 'code' in error ? String(error.code) : '';
+                if (attempt >= 2 || !['P2028', 'P2034'].includes(code)) throw error;
+                await delay(100 * 2 ** attempt);
+            }
+        }
     }
     /**
      * Certifies, under the connection's current source, an event that was held as `stale_source` because it arrived while
@@ -218,6 +243,11 @@ export class IngressApplicationService {
                 return { state: 'still_stale' as const };
             if (currentNumber !== acceptedNumber)
                 return record_('held', 'number_changed', {}, { reason: 'number_changed' });
+            if (original.provider === 'evolution') {
+                const channel = await tx.channel.findUniqueOrThrow({ where: { id: receipt.channelId } });
+                const anchor = normalizeWhatsappPhone(channel.verifiedMessagingPhoneNumber);
+                if (anchor && (currentNumber !== anchor || acceptedNumber !== anchor)) return record_('held', 'number_changed', {}, { reason: 'channel_identity_mismatch' });
+            }
             if (identityHeld) {
                 // The stored adapter output is the old verdict: read the authenticated raw again with today's rules.
                 const again = original.provider === 'evolution' ? validateEvolutionIdentityDeclarations(raw) : validateWahaIdentityDeclarations(raw, []);
@@ -235,7 +265,12 @@ export class IngressApplicationService {
                 const primary = await tx.channelConnection.findFirst({ where: { workspaceId: receipt.workspaceId, channelId: receipt.channelId, provider: 'evolution' } });
                 const secondary = await tx.channelConnection.findUnique({ where: { id: original.connectionId } });
                 const a = normalizeWhatsappPhone(primary?.verifiedPhoneNumber), b = normalizeWhatsappPhone(secondary?.verifiedPhoneNumber);
-                if (!a || !b || a !== b || !secondary?.lastHealthyAt || !primary || primary.lifecycleGeneration % 2 !== 0)
+                const channel = await tx.channel.findUniqueOrThrow({ where: { id: receipt.channelId } });
+                const anchor = normalizeWhatsappPhone(channel.verifiedMessagingPhoneNumber);
+                const acceptedAnchor = normalizeWhatsappPhone(record(record(receipt.source).acceptedFacts).verifiedMessagingPhoneNumber as string | null | undefined);
+                if (acceptedAnchor && acceptedAnchor !== anchor) return record_('held', 'number_changed', {}, { reason: 'channel_anchor_changed' });
+                const anchored = !!anchor && anchor === b && !!secondary?.eligible;
+                if ((!anchored && (!a || !b || a !== b || !primary)) || !secondary?.lastHealthyAt)
                     return { state: 'still_stale' as const };
             }
             const event = wellFormedPresentation({ ...item.event, context: current });
@@ -330,12 +365,23 @@ export class IngressApplicationService {
         const primary = await tx.channelConnection.findFirst({ where: { workspaceId: source.workspaceId, channelId: source.channelId, provider: 'evolution' } });
         const secondary = await tx.channelConnection.findUniqueOrThrow({ where: { id: source.connectionId! } });
         const accepted = record(record(receipt.source).acceptedFacts), pairing = record(accepted.pairing);
+        const acceptedAnchor = normalizeWhatsappPhone(accepted.verifiedMessagingPhoneNumber as string | null | undefined);
+        if (acceptedAnchor) {
+            const channel = await tx.channel.findUniqueOrThrow({ where: { id: source.channelId } });
+            const currentAnchor = normalizeWhatsappPhone(channel.verifiedMessagingPhoneNumber);
+            const currentPhone = normalizeWhatsappPhone(secondary.verifiedPhoneNumber);
+            if (acceptedAnchor !== currentAnchor) return 'waha_pairing_changed';
+            const primaryPhone = normalizeWhatsappPhone(primary?.verifiedPhoneNumber);
+            if (currentPhone !== acceptedAnchor || (primaryPhone && primaryPhone !== acceptedAnchor)) return 'waha_identity_mismatch';
+            if (!secondary.eligible || !secondary.lastHealthyAt || secondary.status !== 'connected' || accepted.connectionEligible !== true || accepted.connectionStatus !== 'connected') return 'waha_identity_unverified';
+            return null;
+        }
         if (!Object.keys(pairing).length)
             return 'waha_pairing_changed'; // Older accepted receipts require explicit recertification.
         const primaryPhone = normalizeWhatsappPhone(primary?.verifiedPhoneNumber), secondaryPhone = normalizeWhatsappPhone(secondary.verifiedPhoneNumber);
         if (pairing.primaryConnectionId !== primary?.id || pairing.primaryLifecycleGeneration !== primary?.lifecycleGeneration || pairing.primaryPhoneNumber !== primaryPhone || pairing.secondaryPhoneNumber !== secondaryPhone)
             return 'waha_pairing_changed';
-        if (!primaryPhone || !secondaryPhone || !pairing.pairedAt || !secondary.lastHealthyAt || !primary || primary.lifecycleGeneration % 2 !== 0)
+        if (!primaryPhone || !secondaryPhone || !pairing.pairedAt || !secondary.lastHealthyAt || !primary)
             return 'waha_identity_unverified';
         if (primaryPhone !== secondaryPhone)
             return 'waha_identity_mismatch';

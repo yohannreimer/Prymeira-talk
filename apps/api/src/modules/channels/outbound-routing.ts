@@ -19,22 +19,24 @@ export interface RoutableConnection {
   /** Same-number proof (verified phone equals the channel's other connection). */
   verifiedPhoneNumber: string | null;
   lastHealthyAt: Date | null;
+  lifecycleGeneration?: number;
 }
 
 export interface RoutableChannel {
   redundancyEnabled: boolean;
   activeConnectionId: string | null;
+  verifiedMessagingPhoneNumber?: string | null;
   connections: RoutableConnection[];
 }
 
 /** A connection may carry a new send only if it is connected, not unhealthy and (for the secondary) proven to
  * belong to the same number. */
 export function canWrite(connection: RoutableConnection, channel: RoutableChannel) {
-  if (connection.status !== 'connected' || connection.health === 'unhealthy') return false;
-  if (connection.provider === 'evolution') return true;
+  if (connection.status !== 'connected' || connection.health === 'unhealthy' || !connection.eligible || (connection.lifecycleGeneration ?? 0) % 2 !== 0) return false;
+  if (connection.provider === 'evolution') return !channel.verifiedMessagingPhoneNumber || connection.verifiedPhoneNumber === channel.verifiedMessagingPhoneNumber;
   if (!channel.redundancyEnabled || !connection.eligible) return false;
   const primary = channel.connections.find(candidate => candidate.provider === 'evolution');
-  return !!connection.verifiedPhoneNumber && connection.verifiedPhoneNumber === primary?.verifiedPhoneNumber;
+  return !!connection.lastHealthyAt && !!connection.verifiedPhoneNumber && connection.verifiedPhoneNumber === (channel.verifiedMessagingPhoneNumber ?? primary?.verifiedPhoneNumber);
 }
 
 /** Writer for a NEW send. Prefers the channel's active writer; falls over to the other connection only if the
@@ -43,13 +45,17 @@ export function writerCandidates(channel: RoutableChannel): RoutableConnection[]
   const writable = channel.connections.filter(connection => canWrite(connection, channel));
   const active = writable.find(connection => connection.id === channel.activeConnectionId);
   const others = writable.filter(connection => connection !== active);
-  // Without redundancy the legacy behaviour is untouched: the Evolution connection is the only candidate,
-  // even when its recorded status is stale, so enabling this layer can never silence a working channel.
-  if (!channel.redundancyEnabled) {
-    const evolution = channel.connections.find(connection => connection.provider === 'evolution');
-    return evolution ? [evolution] : [];
-  }
   return [...(active ? [active] : []), ...others];
+}
+
+/** Logical availability uses the same identity and lifecycle fences as outbound routing.
+ * A physical connected state without a writable session is never a connected channel. */
+export function logicalChannelStatus(connections: RoutableConnection[], redundancyEnabled = true, verifiedMessagingPhoneNumber?: string | null) {
+  if (!connections.length) return null;
+  if (writerCandidates({ redundancyEnabled, activeConnectionId: null, verifiedMessagingPhoneNumber, connections }).length) return 'connected' as const;
+  const primary = connections.find(connection => connection.provider === 'evolution');
+  return primary && ['connecting', 'disconnected', 'failed'].includes(primary.status)
+    ? primary.status as 'connecting' | 'disconnected' | 'failed' : 'disconnected' as const;
 }
 
 export type SendFailureClass =
@@ -59,7 +65,7 @@ export type SendFailureClass =
   /** The request may have reached WhatsApp (timeout, reset, 5xx, unreadable answer). Never resend. */
   | 'uncertain';
 
-const NOT_DELIVERED_CODES = new Set(['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'EHOSTUNREACH', 'ENETUNREACH']);
+const NOT_DELIVERED_CODES = new Set(['EVOLUTION_UNAVAILABLE', 'ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'EHOSTUNREACH', 'ENETUNREACH']);
 /** Provider texts that prove nothing could have been sent: the session/socket was not open. */
 const NOT_SENT_TEXT = /connection closed|not connected|instance .*(does not exist|not found)|session .*(not found|stopped|failed|starting|scan_qr)|status is not as expected|logged out|not logged in/i;
 

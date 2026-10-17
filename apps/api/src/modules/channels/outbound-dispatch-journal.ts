@@ -3,9 +3,9 @@ import type { PrismaClient } from '@prisma/client';
 /** Persistent record of every send routed through the outbound router. It exists for two things: knowing which
  * physical connection carried a message, and never losing track of a send whose outcome is uncertain. */
 
-export type DispatchKind = 'text' | 'media' | 'audio' | 'contact' | 'template';
+export type DispatchKind = 'text' | 'media' | 'audio' | 'contact' | 'template' | 'edit' | 'delete';
 export type AttemptOutcome = 'accepted' | 'not_delivered' | 'uncertain';
-export interface DispatchAttempt { connectionId: string; provider: string; outcome: AttemptOutcome; code: string | null; at: string }
+export interface DispatchAttempt { connectionId: string | null; provider: string; outcome: AttemptOutcome; code: string | null; at: string }
 
 type Db = Pick<PrismaClient, 'outboundDispatch' | '$executeRaw'>;
 
@@ -21,16 +21,20 @@ export function createOutboundDispatchJournal(db: Db, options: { now?: () => Dat
     },
     async recordAttempt(id: string, attempt: Omit<DispatchAttempt, 'at'>) {
       const entry = JSON.stringify([{ ...attempt, at: now().toISOString() }]);
-      await db.$executeRaw`UPDATE outbound_dispatches SET attempts = attempts || ${entry}::jsonb, connection_id = ${attempt.connectionId}::uuid, updated_at = ${now()} WHERE id = ${id}::uuid`;
+      const count = await db.$executeRaw`UPDATE outbound_dispatches SET attempts = attempts || ${entry}::jsonb, connection_id = ${attempt.connectionId}::uuid, updated_at = ${now()} WHERE id = ${id}::uuid AND state = 'sending'`;
+      if (count !== 1) throw new Error('OUTBOUND_JOURNAL_FENCE_LOST');
     },
-    async accept(id: string, input: { connectionId: string; providerMessageId: string | null }) {
-      await db.outboundDispatch.updateMany({ where: { id, state: 'sending' }, data: { state: 'accepted', connectionId: input.connectionId, providerMessageId: input.providerMessageId, errorCode: null, updatedAt: now() } });
+    async accept(id: string, input: { connectionId: string | null; providerMessageId: string | null }) {
+      const changed = await db.outboundDispatch.updateMany({ where: { id, state: 'sending' }, data: { state: 'accepted', connectionId: input.connectionId, providerMessageId: input.providerMessageId, errorCode: null, updatedAt: now() } });
+      if (changed.count !== 1) throw new Error('OUTBOUND_JOURNAL_FENCE_LOST');
     },
     async fail(id: string, errorCode: string) {
-      await db.outboundDispatch.updateMany({ where: { id, state: 'sending' }, data: { state: 'failed', errorCode, updatedAt: now() } });
+      const changed = await db.outboundDispatch.updateMany({ where: { id, state: 'sending' }, data: { state: 'failed', errorCode, updatedAt: now() } });
+      if (changed.count !== 1) throw new Error('OUTBOUND_JOURNAL_FENCE_LOST');
     },
     async markUncertain(id: string, errorCode: string) {
-      await db.outboundDispatch.updateMany({ where: { id, state: 'sending' }, data: { state: 'uncertain', errorCode, updatedAt: now() } });
+      const changed = await db.outboundDispatch.updateMany({ where: { id, state: 'sending' }, data: { state: 'uncertain', errorCode, updatedAt: now() } });
+      if (changed.count !== 1) throw new Error('OUTBOUND_JOURNAL_FENCE_LOST');
     },
     /** Sends still `sending` after the process that owned them is gone cannot be assumed delivered or not. */
     async sweepStale(olderThanMs = 5 * 60_000) {

@@ -8,14 +8,14 @@ const conn = (provider: 'evolution' | 'waha'): ConnectionRef => ({ id: provider,
 const input = (provider: 'evolution' | 'waha', over: Record<string, unknown> = {}) => ({ connection: conn(provider), destination: '5547888880000', kind: 'text' as const, text: 'olá,  tudo bem?', since, ...over });
 
 describe('delivery probe', () => {
-  it('finds our own text in a WAHA chat by exact body (whitespace-insensitive), after the send began', async () => {
+  it('confirms a correlated WAHA message ID with matching text after the send began', async () => {
     const getMessages = vi.fn(async () => [
       { id: 'true_5547888880000@c.us_OLD', fromMe: true, body: 'olá, tudo bem?', timestamp: sec('2026-10-02T11:00:00Z') },
       { id: 'false_5547888880000@c.us_THEIRS', fromMe: false, body: 'olá, tudo bem?', timestamp: sec('2026-10-02T12:00:03Z') },
       { id: 'true_5547888880000@c.us_3EB0MINE', fromMe: true, body: 'olá, tudo bem?', timestamp: sec('2026-10-02T12:00:02Z') }
     ]);
     const probe = createDeliveryProbe({ waha: { getMessages } as never, history: null });
-    expect(await probe(input('waha'))).toEqual({ found: true, providerMessageId: '3EB0MINE' });
+    expect(await probe(input('waha', { providerMessageId: '3EB0MINE' }))).toEqual({ found: true, providerMessageId: '3EB0MINE' });
     expect(getMessages).toHaveBeenCalledWith({ session: 'waha-session', chatId: '5547888880000@c.us', limit: 20 });
   });
 
@@ -25,17 +25,29 @@ describe('delivery probe', () => {
       { id: 'false_x@c.us_THEIRS', fromMe: false, body: 'olá, tudo bem?', timestamp: sec('2026-10-02T12:00:03Z') },
       { id: 'true_x@c.us_OTHER', fromMe: true, body: 'outra coisa', timestamp: sec('2026-10-02T12:00:03Z') }
     ]) } as never, history: null });
-    expect(await probe(input('waha'))).toEqual({ found: false, providerMessageId: null });
+    expect(await probe(input('waha', { providerMessageId: 'MISSING' }))).toEqual({ found: false, providerMessageId: null });
   });
 
-  it('finds our text in the Evolution history of a direct chat, including extended text', async () => {
+  it('confirms a correlated Evolution message ID, including extended text', async () => {
     const recentMessages = vi.fn(async () => [
       { key: { id: 'EVO-OLD', remoteJid: '5547888880000@s.whatsapp.net', fromMe: true }, messageTimestamp: sec('2026-10-02T11:00:00Z'), message: { conversation: 'olá, tudo bem?' } },
       { key: { id: 'EVO-MINE', remoteJid: '5547888880000@s.whatsapp.net', fromMe: true }, messageTimestamp: sec('2026-10-02T12:00:01Z'), message: { extendedTextMessage: { text: 'olá, tudo bem?' } } }
     ]);
     const probe = createDeliveryProbe({ waha: null, history: { recentMessages } as never });
-    expect(await probe(input('evolution'))).toEqual({ found: true, providerMessageId: 'EVO-MINE' });
+    expect(await probe(input('evolution', { providerMessageId: 'EVO-MINE' }))).toEqual({ found: true, providerMessageId: 'EVO-MINE' });
     expect(recentMessages).toHaveBeenCalledWith({ instanceName: 'evolution-session', remoteJid: '5547888880000@s.whatsapp.net', limit: 20 });
+  });
+
+  it.each(['waha', 'evolution'] as const)('keeps repeated %s text unknown without a dispatch-correlated provider ID', async provider => {
+    const getMessages = vi.fn(async () => [{ id: 'true_x@c.us_CONCURRENT', fromMe: true, body: 'olá, tudo bem?', timestamp: sec('2026-10-02T12:00:02Z') }]);
+    const recentMessages = vi.fn(async () => [{ key: { id: 'CONCURRENT', fromMe: true }, messageTimestamp: sec('2026-10-02T12:00:02Z'), message: { conversation: 'olá, tudo bem?' } }]);
+    expect(await createDeliveryProbe({ waha: { getMessages } as never, history: { recentMessages } as never })(input(provider))).toBe('unknown');
+    expect(getMessages).not.toHaveBeenCalled(); expect(recentMessages).not.toHaveBeenCalled();
+  });
+
+  it.each([-4, 0])('does not certify a correlated ID at %s seconds from dispatch start', async offset => {
+    const probe = createDeliveryProbe({ waha: { getMessages: vi.fn(async () => [{ id: 'true_x@c.us_PREVIOUS', fromMe: true, body: 'olá, tudo bem?', timestamp: since.getTime() / 1000 + offset }]) } as never, history: null });
+    expect(await probe(input('waha', { providerMessageId: 'PREVIOUS' }))).toEqual({ found: false, providerMessageId: null });
   });
 
   it.each([

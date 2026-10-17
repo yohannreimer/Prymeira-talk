@@ -202,7 +202,7 @@ describe("app", () => {
       });
 
       expect(response.statusCode).toBe(200);
-      expect(response.json()).toEqual({ workspaceId: "local_test_workspace", role: "owner" });
+      expect(response.json()).toEqual({ workspaceId: "local_test_workspace", role: "owner", addons: { orcamentos: false } });
       expect(requireProductAccess).not.toHaveBeenCalled();
       expect(fetchProducts).not.toHaveBeenCalled();
     } finally {
@@ -336,6 +336,22 @@ describe("app", () => {
     }
   });
 
+  it("exposes the Orçamentos add-on when the Hub releases it in limits.modules", async () => {
+    const app = await buildApp({}, {
+      authEnabled: true,
+      requireProductAccess: vi.fn(async () => ({
+        allowed: true, product_key: "talk", workspace_id: "workspace_1", product_role: "owner", status: "active", reason: "allowed",
+        limits: { modules: { orcamentos: true } }
+      }))
+    });
+    try {
+      const response = await app.inject({ method: "GET", url: "/me", headers: { authorization: "Bearer clerk-token" } });
+      expect(response.json()).toEqual({ workspaceId: "workspace_1", role: "owner", addons: { orcamentos: true } });
+    } finally {
+      await app.close();
+    }
+  });
+
   it("returns workspace id and role from an allowed access decision", async () => {
     const fetchAccess = vi.fn();
     const app = await buildApp(
@@ -362,7 +378,7 @@ describe("app", () => {
       });
 
       expect(response.statusCode).toBe(200);
-      expect(response.json()).toEqual({ workspaceId: "workspace_1", role: "manager" });
+      expect(response.json()).toEqual({ workspaceId: "workspace_1", role: "manager", addons: { orcamentos: false } });
       expect(fetchAccess).not.toHaveBeenCalled();
     } finally {
       await app.close();
@@ -399,7 +415,7 @@ describe("app", () => {
       });
 
       expect(response.statusCode).toBe(200);
-      expect(response.json()).toEqual({ workspaceId: "workspace_1", role: "owner" });
+      expect(response.json()).toEqual({ workspaceId: "workspace_1", role: "owner", addons: { orcamentos: false } });
       expect(fetchAccess).toHaveBeenCalledWith("http://localhost:3001/access-check?product_key=talk", {
         signal: expect.any(AbortSignal),
         headers: { Authorization: "Bearer clerk-token" }

@@ -37,6 +37,9 @@ import {
   type AgentProvider
 } from "./provider-gateway.js";
 import { resolveFollowupStepInstruction } from "./followup-step-instruction.js";
+import { autorDaMensagem, harnessNoCanal, metadataComFicha, modeloDoAnalista, modeloDoHarness, readHarnessConfig, seguirComHarness, type HarnessConfig } from "../harness/agentes/atendimento/producao.js";
+import type { JevClient } from "../harness/core/jev.js";
+import type { ModelClient } from "../harness/core/model.js";
 import {
   resolveOpenAiCompatibleSettings,
   type AiProviderSettingsPrismaLike,
@@ -103,6 +106,13 @@ export type AgentFollowupRuntimePrismaLike = ConversationContextBuilderPrismaLik
     updateMany(args: unknown): Promise<{ count: number }>;
   };
   contact?: Parameters<typeof saveAiFollowupAudience>[0]["contact"];
+  /** Read only on channels where the new attendance agent runs: its record lives in the session metadata. */
+  aiAgentSession?: {
+    findFirst(args: unknown): Promise<{ id: string; metadata?: unknown } | null>;
+    update(args: unknown): Promise<unknown>;
+  };
+  /** Who sent each message, for the new agent's reading of the conversation. */
+  message: ConversationContextBuilderPrismaLike["message"];
 };
 
 type FollowupLifecycle = {
@@ -160,6 +170,11 @@ export function createAgentFollowupRuntime(input: {
   publisher?: ConversationFollowupPublisher;
   /** Single-call analysis for follow-ups created in brain mode (decision.mode === "brain"). */
   followupBrain?: FollowupBrain;
+  /** The new attendance agent's follow-up, on the channels its config lists (harness/agentes/atendimento/producao.ts). */
+  harness?: {
+    jev?: JevClient;
+    modelFactory?: (settings: OpenAiCompatibleSettings, modelo?: string) => { model: ModelClient; analista: ModelClient } | null;
+  };
   now?: () => Date;
 }) {
   const { prisma } = input;
@@ -340,6 +355,111 @@ export function createAgentFollowupRuntime(input: {
     });
   }
 
+  /**
+   * The new attendance agent on a quiet conversation: its analyst subagent reads the whole conversation into
+   * the record and code picks the move. A message to the contact follows the channel's delivery setting
+   * (automatic or seller review); a seller-owned item becomes a reminder; anything else is skipped.
+   */
+  async function runHarnessFollowup(d: {
+    runInput: { workspaceId: string; followupId: string };
+    followup: ConversationFollowupRecord;
+    agent: AgentFollowupAgent;
+    conversation: FollowupConversation;
+    claimToken: { lockedAt: Date };
+    config: HarnessConfig;
+    plan: NonNullable<ReturnType<typeof resolveFollowupPlan>>;
+    onConfirmed: () => void;
+  }): Promise<AgentFollowupRuntimeResult> {
+    const { runInput, followup, agent, claimToken } = d;
+    const now = clock();
+    // The quiet-wait check of brain mode comes early; the agent reads the conversation only when the step is due.
+    if (followup.reason === BRAIN_QUIET_REASON) {
+      const firstStep = d.plan.steps[followup.stepIndex - 1];
+      const dueAt = firstStep ? calculateFollowupDueAt(new Date(followup.anchorMessageAt), firstStep.afterMinutes, d.plan) : now;
+      if (dueAt > now) {
+        const updated = await prisma.conversationFollowup.updateMany({
+          where: { workspaceId: followup.workspaceId, id: followup.id, activeKey: "active", status: "processing", lockedAt: claimToken.lockedAt },
+          data: { status: "scheduled", lockedAt: null, scheduledAt: dueAt, decision: { mode: "harness" }, reason: "harness_waiting_step" }
+        });
+        if (updated.count === 1) await publish(followup);
+        return { status: "deferred", followupId: followup.id };
+      }
+    }
+    const settings = await resolveOpenAiCompatibleSettings(prisma, { workspaceId: runInput.workspaceId });
+    const models = input.harness?.modelFactory
+      ? input.harness.modelFactory(settings, d.config.modelo)
+      : (() => {
+          const model = modeloDoHarness(settings, d.config.modelo);
+          const analista = modeloDoAnalista(settings, d.config.modelo);
+          return model && analista ? { model, analista } : null;
+        })();
+    if (!models) {
+      await markReview({ followup, decision: { mode: "harness" }, reason: "followup_provider_unavailable" });
+      return { status: "review", followupId: followup.id };
+    }
+    let result: Awaited<ReturnType<typeof seguirComHarness>>;
+    let session: { id: string; metadata?: unknown } | null = null;
+    try {
+      const [context, knowledge] = await Promise.all([
+        buildConversationContext(prisma, { workspaceId: runInput.workspaceId, conversationId: followup.conversationId, limit: 80 }),
+        prisma.aiKnowledgeSource.findMany({ where: { workspaceId: runInput.workspaceId, agentId: agent.id, status: "ready" }, orderBy: [{ createdAt: "desc" }] })
+      ]);
+      session = followup.sessionId && prisma.aiAgentSession
+        ? await prisma.aiAgentSession.findFirst({ where: { workspaceId: runInput.workspaceId, id: followup.sessionId } })
+        : null;
+      const outboundIds = context.messages.filter((entry) => entry.direction === "outbound").map((entry) => entry.id);
+      const senders = outboundIds.length
+        ? await prisma.message.findMany({ where: { workspaceId: runInput.workspaceId, conversationId: followup.conversationId, id: { in: outboundIds } }, select: { id: true, metadata: true, sentByUserId: true } }) as Array<{ id: string; metadata?: unknown; sentByUserId?: string | null }>
+        : [];
+      const byId = new Map(senders.map((entry) => [entry.id, entry]));
+      result = await seguirComHarness({
+        config: d.config, model: models.model, analista: models.analista, jev: input.harness?.jev,
+        fontes: knowledge,
+        mensagens: context.messages.map((entry) => ({
+          id: entry.id,
+          autor: autorDaMensagem({ direction: entry.direction, type: entry.type, metadata: byId.get(entry.id)?.metadata, sentByUserId: byId.get(entry.id)?.sentByUserId }),
+          tipo: entry.type, texto: entry.body, em: entry.createdAt
+        })),
+        sessionMetadata: session?.metadata,
+        agora: now
+      });
+    } catch (error) {
+      const message = errorMessage(error);
+      await input.followups.recoverClaimedFollowup({ workspaceId: runInput.workspaceId, followupId: followup.id, claim: claimToken, outcome: "retry", reason: `harness_followup_failed: ${message}` });
+      return { status: "failed", followupId: followup.id, message };
+    }
+    const automatico = d.plan.humanCommercialDelivery === "automatic" && followup.kind === "human_commercial";
+    // A draft that goes to review is not an attempt yet: the seller may discard it. Only what is sent counts.
+    const ficha = result.tipo === "mensagem" && !automatico ? { ...result.ficha, followups: result.ficha.followups.slice(0, -1) } : result.ficha;
+    if (session && prisma.aiAgentSession) {
+      await prisma.aiAgentSession.update({ where: { workspaceId_id: { workspaceId: runInput.workspaceId, id: session.id } }, data: { metadata: metadataComFicha(session.metadata, ficha) } });
+    }
+    const decision = { mode: "harness", jogada: result.jogada, step: followup.stepIndex, analyzedAt: now.toISOString(),
+      trace: result.trace.map((step) => ({ fase: step.fase, ms: step.ms, detalhe: step.detalhe })) };
+    if (result.tipo === "nada") {
+      await markSkipped(followup, decision, `harness_${result.jogada}`);
+      return { status: "skipped", followupId: followup.id };
+    }
+    if (result.tipo === "lembrete_vendedor") {
+      const updated = await prisma.conversationFollowup.updateMany({
+        where: { workspaceId: followup.workspaceId, id: followup.id, activeKey: "active" },
+        data: { kind: "seller_reminder", status: "review", lockedAt: null, decision: { ...decision, motivo: result.motivo, resumo: result.resumo }, reason: "seller_reminder", draftBody: null }
+      });
+      if (updated.count === 1) await publish(followup);
+      return { status: "review", followupId: followup.id };
+    }
+    if (!automatico) {
+      await markReview({ followup, decision, reason: "harness_review", draftBody: result.texto });
+      return { status: "review", followupId: followup.id };
+    }
+    return deliverAutomatically({
+      runInput, followup, agent, prospecting: null, claimToken, candidate: result.texto, decision,
+      eligible: (current, currentConversation, delivery) =>
+        delivery === "automatic" && current.kind === "human_commercial" && currentConversation.status !== "closed",
+      onConfirmed: d.onConfirmed
+    });
+  }
+
   /** Sends an approved follow-up through the normal outbound path, inside business hours, and schedules the next step. */
   async function deliverAutomatically(d: {
     runInput: { workspaceId: string; followupId: string };
@@ -505,6 +625,11 @@ export function createAgentFollowupRuntime(input: {
       if (!step) {
         await markSkipped(followup, { outcome: "skip", reason: "followup_step_unconfigured" }, "followup_step_unconfigured");
         return { status: "skipped", followupId: followup.id };
+      }
+      const harnessConfig = prospecting ? null : readHarnessConfig(agent.behaviorConfig);
+      if (harnessNoCanal(harnessConfig, conversation.channel?.id)) {
+        return await runHarnessFollowup({ runInput, followup, agent, conversation, claimToken, config: harnessConfig,
+          plan: followupConfig!, onConfirmed: () => { deliveryConfirmed = true; } });
       }
       if (isBrainFollowup(followup)) {
         return await runBrainFollowup({ runInput, followup, agent, conversation, prospecting, claimToken,

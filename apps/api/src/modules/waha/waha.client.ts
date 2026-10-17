@@ -10,6 +10,11 @@ export class WahaClientError extends Error {
     this.name = 'WahaClientError';
   }
 }
+export class WahaResponseLimitError extends Error {
+  readonly code = 'WAHA_RESPONSE_LIMIT';
+  constructor() { super('WAHA_RESPONSE_LIMIT'); this.name = 'WahaResponseLimitError'; }
+}
+export const WAHA_JSON_MAX_BYTES = 4 * 1024 * 1024;
 
 export interface WahaMe {
   id: string;
@@ -44,13 +49,15 @@ type Page = { limit?: number; offset?: number };
 type ContactInput = SessionInput & { contactId: string };
 type GroupInput = SessionInput & { groupId: string };
 
-export function createWahaClient(options: { baseUrl: string; apiKey: string; fetch?: typeof fetch; timeoutMs?: number; maxMediaBytes?: number }) {
+export function createWahaClient(options: { baseUrl: string; apiKey: string; fetch?: typeof fetch; timeoutMs?: number; maxMediaBytes?: number; maxResponseBytes?: number }) {
   const base = new URL(options.baseUrl);
   if (!['http:', 'https:'].includes(base.protocol) || base.username || base.password || base.pathname !== '/' || base.search || base.hash) {
     throw new Error('Invalid WAHA API base URL');
   }
   const baseUrl = base.toString().replace(/\/$/, '');
   const fetcher = options.fetch ?? fetch;
+  const maxResponseBytes = Math.min(WAHA_JSON_MAX_BYTES, options.maxResponseBytes ?? WAHA_JSON_MAX_BYTES);
+  if (!Number.isSafeInteger(maxResponseBytes) || maxResponseBytes < 1) throw new Error('Invalid WAHA JSON response limit');
   const enc = encodeURIComponent;
   const query = (values: Record<string, string | number | boolean | undefined>) => {
     const params = new URLSearchParams();
@@ -69,7 +76,22 @@ export function createWahaClient(options: { baseUrl: string; apiKey: string; fet
   }
   async function request<T = unknown>(path: string, method = 'GET', body?: unknown, timeoutMs?: number): Promise<T> {
     const result = await response(`${baseUrl}${path}`, method, body, timeoutMs);
-    const text = await result.text();
+    if (Number(result.headers.get('content-length')) > maxResponseBytes) {
+      await result.body?.cancel().catch(() => {}); throw new WahaResponseLimitError();
+    }
+    const reader = result.body?.getReader();
+    if (!reader) return null as T;
+    const chunks: Uint8Array[] = []; let size = 0;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        size += value.byteLength;
+        if (size > maxResponseBytes) throw new WahaResponseLimitError();
+        chunks.push(value);
+      }
+    } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
+    const text = Buffer.concat(chunks, size).toString('utf8');
     return (text ? JSON.parse(text) : null) as T;
   }
   const file = (input: BinaryFile) => ({ data: input.data, mimetype: input.mimetype, filename: input.filename });

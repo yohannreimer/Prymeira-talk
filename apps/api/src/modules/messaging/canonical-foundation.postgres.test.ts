@@ -31,7 +31,7 @@ describe.skipIf(!url)('canonical boundary and exact reads on PostgreSQL', () => 
   const lookup = (c: TrustedMessagingContext, key: Event['key']) => db.$transaction(tx => lookupNativeInTransaction(tx, c, key));
   beforeAll(() => {
     const u = new URL(url!);
-    if (u.hostname !== '127.0.0.1' || u.port !== '55439' || u.pathname !== '/messaging_test') throw new Error('Only isolated local messaging_test');
+    if (u.hostname !== '127.0.0.1' || u.port !== (process.env.TALK_TEST_POSTGRES_PORT ?? '55439') || u.pathname !== '/messaging_test') throw new Error('Only isolated local messaging_test');
     db = new PrismaClient({ datasources: { db: { url } } });
   });
   afterAll(async () => {

@@ -813,6 +813,8 @@ export function createAgentImprovementsService(
       improvementId: string;
       title?: string;
       content?: string;
+      /** The same customer's agents in its other workspaces: each gets the same knowledge. */
+      alsoTo?: Array<{ workspaceId: string; agentId: string }>;
     }): Promise<AiAgentImprovementDto> {
       await ensureAgent(input);
       const improvement = await findImprovement(input);
@@ -856,6 +858,27 @@ export function createAgentImprovementsService(
             }
           }
         });
+        for (const other of input.alsoTo ?? []) {
+          if (other.workspaceId === input.workspaceId && other.agentId === input.agentId) continue;
+          await tx.aiKnowledgeSource.create({
+            data: {
+              workspaceId: other.workspaceId,
+              agentId: other.agentId,
+              type: "text",
+              title,
+              content,
+              status: "ready",
+              metadata: {
+                source: "approved_agent_improvement",
+                improvementId: input.improvementId,
+                kind: improvement.kind,
+                normalizedBy: "jev",
+                normalizationScope: normalization.scope,
+                copiedFrom: { workspaceId: input.workspaceId, agentId: input.agentId, knowledgeSourceId: source.id }
+              }
+            }
+          });
+        }
         const updated = await tx.aiAgentImprovement.update({
           where: {
             workspaceId_id: {

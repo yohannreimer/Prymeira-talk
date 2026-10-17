@@ -25,7 +25,11 @@ describe('delete message for everyone', () => {
     } } as never);
     app.decorate('realtime', { publish } as never);
     app.addHook('preHandler', async request => { request.talk = { workspaceId: 'workspace-a', role: 'agent' }; });
-    await app.register(conversationsRoutes, { evolution: { mode: 'real', client: { deleteMessageForEveryone } } as never });
+    await app.register(conversationsRoutes, { evolution: {
+      mode: 'real', client: { deleteMessageForEveryone }, providerConfigured: true, webhookSecret: 'delete-fixture-secret',
+      publicWebhookUrl: (id: string) => `https://talk.test/webhooks/evolution/${encodeURIComponent(id)}`,
+      localWebhookUrl: (id: string) => `http://127.0.0.1:3000/webhooks/evolution/${encodeURIComponent(id)}`
+    } as never });
     return { app, deleteMessageForEveryone, update, updateMany, publish };
   }
 

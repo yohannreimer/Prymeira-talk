@@ -95,22 +95,28 @@ const baseRule = {
 };
 
 function createMockPrisma(overrides: Partial<AutomationRunnerPrisma> = {}) {
+  const durableRuns = new Map<string, any>();
   const prisma = {
     automationRule: {
       findMany: vi.fn().mockResolvedValue([baseRule])
     },
     automationRun: {
-      upsert: vi.fn().mockImplementation(async (args) => ({
-        id: "00000000-0000-4000-8000-000000000901",
-        workspaceId: args.create.workspaceId,
-        ruleId: args.create.ruleId,
-        eventKey: args.create.eventKey,
-        status: args.create.status,
-        input: args.create.input,
-        result: args.create.result,
-        createdAt: new Date("2026-05-24T12:00:01.000Z"),
-        updatedAt: new Date("2026-05-24T12:00:01.000Z")
-      }))
+      upsert: vi.fn(async (args: any) => {
+        const key = JSON.stringify(args.where);
+        const previous = durableRuns.get(key);
+        const row = previous ? { ...previous, ...args.update } : {
+          id: args.create.id ?? "00000000-0000-4000-8000-000000000901",
+          ...args.create,
+          createdAt: new Date("2026-05-24T12:00:01.000Z"), updatedAt: new Date("2026-05-24T12:00:01.000Z")
+        };
+        durableRuns.set(key, row); return { ...row };
+      }),
+      updateMany: vi.fn(async ({ where, data }: any) => {
+        const row = [...durableRuns.values()].find(r => r.id === where.id && r.workspaceId === where.workspaceId &&
+          (!where.executionToken || r.executionToken === where.executionToken) && (!where.status || r.status === where.status));
+        if (!row) return { count: 0 };
+        Object.assign(row, data); return { count: 1 };
+      })
     },
     message: {
       findUnique: vi.fn().mockResolvedValue({ ...currentMessage, conversation }),
@@ -181,7 +187,9 @@ describe("automation runner", () => {
     await createAutomationRunner({ prisma, evolution: { mode: "real", client: { sendText } as any } })
       .runForInboundMessage({ workspaceId, messageId, eventKey: "reset-during-send" });
     expect(prisma.tag.upsert).not.toHaveBeenCalled();
-    expect(prisma.automationRun.upsert).not.toHaveBeenCalled();
+    // The durable pre-send claim remains, but reset cannot create a new run.
+    expect(prisma.automationRun.upsert).toHaveBeenCalledTimes(1);
+    expect(prisma.automationRun.upsert).toHaveBeenCalledWith(expect.objectContaining({ create: expect.objectContaining({ status: 'running' }) }));
   });
 
   it("executes a first-message flow with real text send and tag actions", async () => {
@@ -243,16 +251,9 @@ describe("automation runner", () => {
       workspaceId,
       conversationId
     });
-    expect(prisma.automationRun.upsert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        create: expect.objectContaining({
-          workspaceId,
-          ruleId: automationId,
-          eventKey: "message.received:wamid-inbound",
-          status: "completed",
-          result: expect.objectContaining({ mode: "real" })
-        })
-      })
+    expect(prisma.automationRun.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ workspaceId }),
+        data: expect.objectContaining({ status: 'completed', result: expect.objectContaining({ mode: 'real' }) }) })
     );
     expect(runs).toHaveLength(1);
     expect(runs[0]?.result).toMatchObject({
@@ -298,9 +299,9 @@ describe("automation runner", () => {
 
     expect(runs).toHaveLength(1);
     expect(runs[0]?.status).toBe("skipped");
-    expect(prisma.automationRun.upsert).toHaveBeenCalledWith(
+    expect(prisma.automationRun.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        create: expect.objectContaining({
+        data: expect.objectContaining({
           status: "skipped",
           result: expect.objectContaining({
             skippedReason: "trigger_not_matched",
@@ -1529,10 +1530,10 @@ describe("automation runner", () => {
         conversationId,
         messageId
       });
-      expect(prisma.automationRun.upsert).toHaveBeenCalledWith(
+      expect(prisma.automationRun.updateMany).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: { workspaceId_ruleId_eventKey: { workspaceId, ruleId: automationId, eventKey: "webhook.received:abc:1" } },
-          update: expect.objectContaining({
+          where: expect.objectContaining({ workspaceId }),
+          data: expect.objectContaining({
             status: "completed",
             input: expect.objectContaining({
               source: "automation_webhook",
@@ -1638,5 +1639,28 @@ describe("automation runner", () => {
         data: expect.objectContaining({ body: "Use {{nome}} literalmente" })
       });
     });
+  });
+});
+
+
+describe("audit: durable automation execution", () => {
+  it("reuses the same inbound event without repeating sends or notes", async () => {
+    const prisma = createMockPrisma();
+    const sendText = vi.fn(async () => ({ providerMessageId: "accepted" }));
+    const runner = createAutomationRunner({ prisma, evolution: { mode: "real", client: { sendText } as any } });
+    const event = { workspaceId, messageId, eventKey: "same-durable-event" };
+    await runner.runForInboundMessage(event);
+    await runner.runForInboundMessage(event);
+    expect(sendText).toHaveBeenCalledTimes(1);
+    expect(prisma.conversationTag.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not run actions when durable claim persistence fails", async () => {
+    const prisma = createMockPrisma();
+    vi.mocked(prisma.automationRun.upsert).mockRejectedValue(new Error("database unavailable"));
+    const sendText = vi.fn();
+    const runner = createAutomationRunner({ prisma, evolution: { mode: "real", client: { sendText } as any } });
+    await runner.runForInboundMessage({ workspaceId, messageId, eventKey: "unclaimed" }).catch(() => undefined);
+    expect(sendText).not.toHaveBeenCalled();
   });
 });

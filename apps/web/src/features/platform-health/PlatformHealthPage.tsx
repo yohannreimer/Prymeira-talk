@@ -2,7 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Activity, AlertTriangle, CheckCircle2, RefreshCw, Search, ShieldCheck, XCircle } from "lucide-react";
 import { useTalkAuth } from "../../app/auth";
 import { apiPlatformHealth, SupervisionApiError, type PlatformHealthChannel, type PlatformHealthConnection, type PlatformHealthLevel } from "../../app/supervision-api";
+import { OwnerNav } from "./OwnerNav";
 import "./platform-health.css";
+import "./agent-evaluation.css";
 
 const REFRESH_MS = 30_000;
 const levelLabel: Record<PlatformHealthLevel, string> = { ok: "Saudável", warning: "Atenção", critical: "Crítico" };
@@ -113,6 +115,7 @@ export function PlatformHealthPage() {
   return <div className="health-page">
     <header className="health-header">
       <div className="health-brand"><span className="health-brand-mark"><Activity size={20} aria-hidden="true" /></span><strong>Saúde dos números</strong><span>Prymeira Talk · todos os clientes</span></div>
+      <OwnerNav current="saude" />
       <div className="health-refresh">
         <small>{generatedAt ? `Atualizado há ${sinceLabel(generatedAt, now)} · a cada 30 s` : ""}</small>
         <button type="button" onClick={() => { void load(); }} disabled={loading}><RefreshCw size={15} aria-hidden="true" className={loading ? "is-refreshing" : ""} />Atualizar</button>
