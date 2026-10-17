@@ -30,8 +30,8 @@ function completa() {
 }
 const boa = "Boa tarde, fornecemos chapa de piso de alumínio sob encomenda. Qual quantidade precisa?";
 const judgeInput = (texto = boa, f = completa()) => ({ texto, ficha: f, pedido, historico, jogada, fichaTexto: "" });
-function jev(scores: Record<string, number> = {}): JevClient {
-  return { ask: async (_state, questions) => Object.fromEntries(Object.keys(questions).map(k => [k, { type: "noul", noul: scores[k] ?? (k === "inventa" ? 0.01 : 0.95) }])) };
+function jev(scores: Record<string, number | string> = {}): JevClient {
+  return { ask: async (_state, questions) => Object.fromEntries(Object.entries(questions).map(([k,q]) => [k, q.type === "choice" ? { type: "choice", choice: String(scores[k] ?? Object.keys(q.criteria)[0]) } : { type: "noul", noul: Number(scores[k] ?? (k === "inventa" ? 0.01 : 0.95)) }])) };
 }
 
 describe("coverage of a live attendance answer", () => {
@@ -69,20 +69,20 @@ describe("coverage of a live attendance answer", () => {
     expect(aposEnvio({ ficha: completa(), jogada: move, texto: boa }).catalogoOferecido).toBe(false);
     expect(aposEnvio({ ficha: completa(), jogada: move, texto: `${boa} Prefere ver o catálogo?` }).catalogoOferecido).toBe(true);
   });
-  it("rejects the real production scores with the live attendance judge", async () => {
-    expect(await createJuizDeAtendimento(jev({ segue: .23, responde: .29, inventa: .07 }))(judgeInput(omitida))).toMatchObject({ ok: false });
+  it("rejects a specifically identified omission even when the old global scores were permissive", async () => {
+    expect(await createJuizDeAtendimento(jev({ resposta_1: "sem_resposta", inventa: .07 }))(judgeInput(omitida))).toMatchObject({ ok: false });
   });
   it("checks every question even when the overall response score is high", async () => {
     const f = completa();
     f.perguntas.push({ ...f.perguntas[0], id: "q2", texto: "Qual o prazo?" });
-    expect(await createJuizDeAtendimento(jev({ resposta_2: .1 }))(judgeInput(boa, f))).toMatchObject({ ok: false, regra: "juiz_resposta_incompleta", motivo: expect.stringContaining("q2"), notas: { cobertura_q2: .1 } });
+    expect(await createJuizDeAtendimento(jev({ resposta_2: "sem_resposta" }))(judgeInput(boa, f))).toMatchObject({ ok: false, regra: "juiz_requisito", motivo: expect.stringContaining("q2"), verificacoes: expect.arrayContaining([expect.objectContaining({id:"resposta_2",ok:false})]) });
   });
   it("allows a grounded paraphrase and records question coverage in the trace scores", async () => {
-    expect(await createJuizDeAtendimento(jev())(judgeInput())).toMatchObject({ ok: true, notas: { cobertura_q1: .95 } });
+    expect(await createJuizDeAtendimento(jev())(judgeInput())).toMatchObject({ ok: true, verificacoes: expect.arrayContaining([expect.objectContaining({ id:"resposta_1",resultado:"atendida",ok:true })]) });
   });
   it("missing coverage scores fail closed", async () => {
     const missing: JevClient = { ask: async () => ({ inventa: { type: "noul", noul: 0 }, segue: { type: "noul", noul: 1 }, responde: { type: "noul", noul: 1 } }) };
-    expect(await createJuizDeAtendimento(missing)(judgeInput())).toMatchObject({ ok: false, regra: "juiz_resposta_incompleta" });
+    await expect(createJuizDeAtendimento(missing)(judgeInput())).rejects.toThrow("JEV_REQUIREMENT_INVALID");
   });
   it("rewrites the omitted answer before treating the question", async () => {
     let writes = 0;
