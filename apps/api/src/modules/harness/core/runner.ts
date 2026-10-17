@@ -312,6 +312,7 @@ async function writeAndReview<Ficha, Pedido>(
         input.jogada.instrucao,
         "",
         "Escreva como gente no WhatsApp: curto, sem listas longas, no máximo uma pergunta. Responda primeiro ao que o contato acabou de dizer.",
+        "Sem emoji. Não repita o que já foi dito nesta conversa: responda só o que a última mensagem traz de novo, como uma pessoa responderia.",
         "Use só números e fatos que estão no pedido, na ficha ou na jogada. Nunca invente.",
         "Não prometa consultar e retornar depois. Responda o que dá com o que você tem e pergunte o que falta.",
         "Chame a ferramenta responder com o texto final, ou pedir_humano se a jogada não puder ser cumprida com segurança."

@@ -935,6 +935,31 @@ describe("ajustes da sombra de 16/10, segunda leva", () => {
     expect(conferirLeitura({ ficha: fichaInicialAtendimento(), mensagem: "teria a pronta entrega?", pedido: contextoVillefer() }) ?? "").not.toMatch(/cidade/);
   });
 
+  it("answers a follow-up question without emoji and without repeating the reply before (test of 17/10)", async () => {
+    const { regras } = await import("./agentes/atendimento/regras.js");
+    const { decidirJogada, aposEnvio } = await import("./agentes/atendimento/jogadas.js");
+    const primeira = "Temos chapas de piso de alumínio sob encomenda, no tamanho padrão 1,25 x 3 m, com prazo de 5 a 10 dias úteis. Você prefere ver o catálogo em PDF ou falar com um vendedor?";
+    const historico = conversa("C: Vcs vendem chapa de alumínio xadrez?", `E: ${primeira}`, "C: 1,25m x 3m de 1,2mm ? Tem dessa medida");
+    const base = { ficha: fichaInicialAtendimento(), pedido: contextoVillefer(), historico, jogada: { tipo: "responder_e_passar", instrucao: "" }, rules: regras, fichaTexto: "" };
+    expect(await reviewMessage({ ...base, texto: "Temos sim 😊 A espessura de 1,2 mm o vendedor confirma." })).toMatchObject({ ok: false, regra: "sem_emoji" });
+    expect(await reviewMessage({ ...base, texto: "Temos chapas de piso de alumínio sob encomenda no tamanho padrão 1,25 x 3 m, com prazo de 5 a 10 dias úteis. A espessura de 1,2 mm precisa ser confirmada." }))
+      .toMatchObject({ ok: false, regra: "nao_repete_frase" });
+    expect(await reviewMessage({ ...base, texto: "Você prefere ver o catálogo em PDF ou falar com um vendedor?" })).toMatchObject({ ok: false, regra: "nao_repete_frase" });
+    expect(await reviewMessage({ ...base, texto: "Essa medida é a padrão, temos sim. A espessura de 1,2 mm o vendedor confirma com você. Quantas chapas você precisa?" })).toMatchObject({ ok: true });
+
+    // The catalogue-or-seller choice is offered once per conversation.
+    const pergunta = { id: "q1", texto: "fornecem chapa de alumínio xadrez?", status: "respondida" as const, buscas: 1, resposta: { trechoId: "t1", citacao: "Chapa de piso de alumínio: sob encomenda." } };
+    const pedido = contextoVillefer({ anexos: [catalogoPdf] });
+    const ficha = { ...fichaInicialAtendimento(), perguntas: [pergunta] };
+    const jogada = decidirJogada({ ficha, pedido, triagem: null, evento: { tipo: "mensagem", texto: "" } });
+    expect(jogada.instrucao).toMatch(/catálogo em PDF ou falar com um vendedor/);
+    const depois = aposEnvio({ ficha, jogada, texto: primeira });
+    expect(depois.catalogoOferecido).toBe(true);
+    const segunda = decidirJogada({ ficha: { ...depois, perguntas: [{ ...pergunta, id: "q2" }] }, pedido, triagem: null, evento: { tipo: "mensagem", texto: "" } });
+    expect(segunda.instrucao).not.toMatch(/catálogo em PDF/);
+    expect(segunda.instrucao).toMatch(/não repita/);
+  });
+
   it("sends the approved PDF with the reply, and never says 'segue o catálogo' without it", async () => {
     const { regras } = await import("./agentes/atendimento/regras.js");
     const regra = regras.find((item) => item.id === "nao_promete_anexo")!;

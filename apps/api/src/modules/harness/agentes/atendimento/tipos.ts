@@ -71,6 +71,8 @@ export type FichaDoAtendimento = {
   anexosDaVez?: string[];
   /** Approved files already sent in this conversation. */
   anexosEnviados?: string[];
+  /** The catalogue-or-seller choice was already offered for a made-to-order item. */
+  catalogoOferecido?: boolean;
 };
 
 /** What the attendance agent knows about the company it works for. Shown to the model as is. */

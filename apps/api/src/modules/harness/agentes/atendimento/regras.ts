@@ -31,6 +31,28 @@ const naoRepete: Rule = {
   }
 };
 
+/** Each sentence as its words; short ones ("Bom dia!", "Quantas você precisa?") never count as repeats. */
+const frases = (text: string) => text.split(/(?<=[.!?])\s+|\n+/).map((frase) => [...words(frase)]).filter((palavras) => palavras.length >= 4);
+
+/**
+ * A live reply says only what is new. Seen in the Villefer test of 17/10: asked about one size, the reply
+ * restated product, standard size, lead time and the catalogue offer from the reply before, word for word.
+ */
+const naoRepeteFrase: Rule = {
+  id: "nao_repete_frase",
+  check: ({ texto, historico, jogada }) => {
+    if (jogada.tipo === "cobrar_pendencia") return { ok: true };
+    const ditas = historico.filter((message) => message.autor !== "contato").slice(-4).flatMap((message) => frases(message.texto));
+    const repetida = frases(texto).find((frase) => ditas.some((dita) => {
+      const common = frase.filter((word) => dita.includes(word)).length;
+      return common / (frase.length + dita.length - common) >= 0.6;
+    }));
+    return repetida
+      ? { ok: false, regra: "nao_repete_frase", motivo: `Uma frase repete o que a empresa já disse nesta conversa (${repetida.join(" ").slice(0, 80)}). Tire o que já foi dito e responda só o que a última mensagem pergunta.` }
+      : { ok: true };
+  }
+};
+
 /** Prices and percentages only come from the conversation or the base passages seen: never a new one. */
 const semValorNovo: Rule = {
   id: "sem_valor_novo",
@@ -89,4 +111,4 @@ const semTermoInterno: Rule = {
   }
 };
 
-export const regras: Rule[] = [naoRepete, semValorNovo, semPressao, naoInverteRecusa, naoPrometeAnexo, semTermoInterno];
+export const regras: Rule[] = [naoRepete, naoRepeteFrase, semValorNovo, semPressao, naoInverteRecusa, naoPrometeAnexo, semTermoInterno];
