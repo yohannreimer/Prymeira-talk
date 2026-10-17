@@ -436,3 +436,26 @@
   .po-stat b { font-size: 18px; }
   .po-stat small { font-size: 11px; }
 }
+
+/* ── Buyer agent on the supplier card ───────────────────────────────────────────────────────────── */
+.po-agent { display: grid; gap: 8px; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--po-line-soft); background: var(--po-subtle); font-size: 13px; line-height: 1.45; min-width: 0; animation: po-fade-up .25s var(--po-ease) both; }
+.po-agent p { margin: 0; overflow-wrap: anywhere; }
+.po-agent-draft { border-color: var(--po-brand-line); background: var(--po-brand-soft); }
+.po-agent-human { border-color: #f1d79e; background: var(--po-amber-bg); color: #6f4207; }
+.po-agent-human p { display: flex; align-items: flex-start; gap: 6px; }
+.po-agent-human svg { flex: none; margin-top: 2px; }
+.po-agent-label { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; font-weight: 650; letter-spacing: .02em; color: var(--po-brand-ink); }
+.po-agent-text { white-space: pre-wrap; color: var(--po-ink); }
+.po-agent textarea { width: 100%; min-width: 0; resize: vertical; font: inherit; }
+.po-agent-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.po-agent-status { display: flex; align-items: center; gap: 6px; margin: 0; font-size: 12.5px; color: var(--po-soft); }
+.po-agent-status.is-error { color: var(--po-red); }
+.po-start-options { display: grid; gap: 8px; }
+.po-start-option { display: flex; align-items: flex-start; gap: 12px; padding: 12px 14px; border: 1.5px solid var(--po-line); border-radius: 12px; background: var(--po-card); color: var(--po-ink); font: inherit; text-align: left; cursor: pointer; transition: border-color var(--transition-fast), background var(--transition-fast); }
+.po-start-option svg { flex: none; margin-top: 2px; color: var(--po-soft); }
+.po-start-option span { display: grid; gap: 3px; min-width: 0; }
+.po-start-option small { font-size: 12.5px; color: var(--po-soft); line-height: 1.4; }
+.po-start-option.is-on { border-color: var(--po-brand); background: var(--po-brand-soft); }
+.po-start-option.is-on svg { color: var(--po-brand); }
+.po-start-option:disabled { opacity: .55; cursor: not-allowed; }
+.po-start-option:focus-visible { outline: 2px solid var(--po-brand); outline-offset: 2px; }

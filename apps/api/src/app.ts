@@ -108,6 +108,9 @@ import { createLeadsService } from "./modules/leads/leads.service.js";
 import { createLeadsScheduler } from "./modules/leads/leads.scheduler.js";
 import { leadsRoutes } from "./modules/leads/leads.routes.js";
 import { purchasingRoutes } from "./modules/purchasing/purchasing.routes.js";
+import { createBuyerAgent, createBuyerAgentPoller, type BuyerAgent } from "./modules/purchasing/buyer-agent.js";
+import { createPurchasingService } from "./modules/purchasing/purchasing.service.js";
+import { modeloDoHarness } from "./modules/harness/agentes/atendimento/producao.js";
 import { createCityGeocoder } from "./modules/leads/city-geocoder.js";
 import { createGoogleMapsScraperClient } from "./modules/leads/google-maps-scraper.client.js";
 
@@ -315,7 +318,6 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   if (leadsService) {
     await app.register(leadsRoutes, { service: leadsService, publicTalkUrl: env.PUBLIC_TALK_URL });
   }
-  if (options.prismaEnabled !== false) await app.register(purchasingRoutes);
 
   const evolutionHistorySource =
     evolutionRuntime.mode === "real" && env.EVOLUTION_API_BASE_URL && env.EVOLUTION_API_KEY
@@ -514,13 +516,16 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
           transcriptions: durableMedia?.transcriptions,
           harness: { jev: harnessJev }
         });
+  // Created once the outbound path exists (below); supplier messages are routed to it from the scheduler.
+  let buyerAgent: BuyerAgent | undefined;
   const agentReplyScheduler =
     options.prismaEnabled === false || !agentRuntime
       ? undefined
       : createAgentReplyScheduler({
           prisma: app.prisma as unknown as Parameters<typeof createAgentReplyScheduler>[0]["prisma"],
           agentRuntime,
-          followupService
+          followupService,
+          purchaseInbound: { claimInbound: async (claim) => buyerAgent ? buyerAgent.claimInbound(claim) : false }
         });
   agentReplyScheduler?.start();
   if (agentReplyScheduler) {
@@ -560,6 +565,24 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   const followupOutbound = rawFollowupOutbound
     ? createRealtimeOutboundDelivery({ delivery: rawFollowupOutbound, realtime: app.realtime })
     : undefined;
+
+  if (options.prismaEnabled !== false) {
+    const purchasingService = createPurchasingService(app.prisma);
+    if (followupOutbound) {
+      buyerAgent = createBuyerAgent({
+        prisma: app.prisma,
+        purchasing: purchasingService,
+        outbound: followupOutbound,
+        modelFor: async (workspaceId) => modeloDoHarness(await resolveOpenAiCompatibleSettings(app.prisma, { workspaceId })),
+        jev: harnessJev,
+        onError: (error, context) => app.log.error({ err: error, ...context }, "Buyer agent turn failed")
+      });
+      const buyerAgentPoller = createBuyerAgentPoller({ agent: buyerAgent, onError: (error) => app.log.error({ err: error }, "Buyer agent poll failed") });
+      buyerAgentPoller.start();
+      app.addHook("onClose", async () => buyerAgentPoller.stop());
+    }
+    await app.register(purchasingRoutes, { service: purchasingService, buyerAgent });
+  }
 
   const followupRuntime =
     options.prismaEnabled === false || !followupService || !followupOutbound || (!env.JEV_API_KEY && !followupBrain)
