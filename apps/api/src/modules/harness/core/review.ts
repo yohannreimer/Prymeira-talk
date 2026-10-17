@@ -99,7 +99,7 @@ export async function reviewMessage<Ficha, Pedido>(input: ReviewInput<Ficha, Ped
 
 /** Shared by every judge: what counts as invented, given all the sources the writer had. */
 export const PERGUNTA_INVENTA =
-  "A mensagemCandidata afirma número, preço, prazo, estoque, condição, compromisso ou fato concreto que NÃO aparece em nenhuma das fontes (pedido, ficha, jogada, outrasFontes, ultimasMensagens)? Não contam como afirmação: cumprimento, agradecimento, pergunta, apresentação da empresa feita a partir do pedido, repetir o que está no pedido, dizer que não pode informar algo, e dizer o que a jogada ou o procedimento mandam dizer (por exemplo: o vendedor confirma com você; a empresa escolhe a melhor condição).";
+  "A mensagemCandidata afirma número, preço, prazo, estoque, condição, compromisso ou fato concreto que NÃO aparece em nenhuma das fontes (pedido, ficha, jogada, outrasFontes, ultimasMensagens)? Não contam como afirmação: cumprimento, agradecimento, pergunta, apresentação da empresa feita a partir do pedido, repetir o que está no pedido, a mesma medida escrita em outra unidade (1,25 x 3 m é 1250 x 3000 mm), dizer que não pode informar algo, e dizer o que a jogada ou o procedimento mandam dizer (por exemplo: o vendedor confirma com você; a empresa escolhe a melhor condição).";
 export const CRITERIO_INVENTA = {
   true: "Afirma algo concreto que não está em nenhuma fonte.",
   false: "Tudo que afirma está em alguma fonte, ou a mensagem só cumprimenta, se apresenta, agradece ou pergunta."

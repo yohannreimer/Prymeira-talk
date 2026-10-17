@@ -10,12 +10,14 @@ import { autorDe, hash, lista, mascarar, prisma, resolverWorkspaces } from "./ha
 //   HARNESS_WORKSPACE="Geral Villefer,Vendas 05" (by name)  or  HARNESS_WORKSPACE_ID=<id>[,<id>]
 //   CANAIS="..." (optional: only channels whose name contains one of these)
 //   DIAS=30   LIMITE=300 (follow-ups per workspace)   SAIDA=followups
+//   STATUS=review (optional: only these statuses, e.g. the ones waiting in "Para revisar"; default sent,review,skipped)
 // Output: <SAIDA>.jsonl.gz (one line per conversation) and <SAIDA>-base.jsonl (the agents' knowledge sources).
 
 const dias = Number(process.env.DIAS ?? 30);
 const limite = Number(process.env.LIMITE ?? 300);
 const canais = lista(process.env.CANAIS).map((nome) => nome.toLowerCase());
 const saida = process.env.SAIDA ?? "followups";
+const status = lista(process.env.STATUS ?? "sent,review,skipped") as Array<"sent" | "review" | "skipped" | "scheduled" | "cancelled">;
 
 /** The part of the old decision worth comparing: what the old brain or JEV thought was open, never the prompt. */
 function resumoDaDecisao(decision: unknown, nomes: string[]) {
@@ -59,7 +61,7 @@ async function main() {
         workspaceId,
         createdAt: { gte: desde },
         // Decided ones: cancelled means the contact or a seller wrote first; scheduled has not run yet.
-        status: { in: ["sent", "review", "skipped"] },
+        status: { in: status },
         ...(canais.length ? { conversation: { channelId: { in: usados.map((canal) => canal.id) } } } : {})
       },
       orderBy: { createdAt: "desc" },
