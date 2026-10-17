@@ -1,8 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ClipboardCheck, RefreshCw, ShieldCheck } from "lucide-react";
 import { useTalkAuth } from "../../app/auth";
+import type { AiAgentImprovementDto } from "../../app/api";
+import { ImprovementsReview } from "../assistant/ImprovementsReview";
 import {
+  apiApproveClientImprovement,
   apiClientEvaluations,
+  apiClientImprovements,
+  apiNormalizeClientImprovement,
+  apiUpdateClientImprovement,
   apiDecideClientProposal,
   apiEvaluationClients,
   apiRemoveClientRule,
@@ -68,6 +74,9 @@ export function AgentEvaluationPage() {
   const [denied, setDenied] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [tab, setTab] = useState<"evaluation" | "improvements">("evaluation");
+  const [improvements, setImprovements] = useState<AiAgentImprovementDto[]>([]);
+  const [loadingImprovements, setLoadingImprovements] = useState(false);
 
   const failed = useCallback((cause: unknown, fallback: string) => {
     if (cause instanceof SupervisionApiError && (cause.status === 401 || cause.status === 403)) {
@@ -102,6 +111,20 @@ export function AgentEvaluationPage() {
     }
   }, [clientKey, failed, token]);
   useEffect(() => { setLoading(true); setEvaluations([]); setSelectedId(null); setMessage(null); void load(); }, [load]);
+  useEffect(() => { setMessage(null); }, [tab]);
+
+  const loadImprovements = useCallback(async () => {
+    if (!clientKey) return;
+    setLoadingImprovements(true);
+    try {
+      setImprovements(await apiClientImprovements(clientKey, token));
+    } catch (cause) {
+      failed(cause, "Não foi possível carregar os aprimoramentos.");
+    } finally {
+      setLoadingImprovements(false);
+    }
+  }, [clientKey, failed, token]);
+  useEffect(() => { setImprovements([]); void loadImprovements(); }, [loadImprovements]);
 
   const running = evaluations.some((item) => item.status === "running");
   useEffect(() => {
@@ -148,7 +171,7 @@ export function AgentEvaluationPage() {
       <div className="health-brand"><span className="health-brand-mark"><ClipboardCheck size={20} aria-hidden="true" /></span><strong>Avaliação dos agentes</strong><span>Prymeira Talk · todos os clientes</span></div>
       <OwnerNav current="avaliacao" />
       <div className="health-refresh">
-        <button type="button" onClick={() => { void loadClients(); void load(); }} disabled={loading}><RefreshCw size={15} aria-hidden="true" className={loading ? "is-refreshing" : ""} />Atualizar</button>
+        <button type="button" onClick={() => { void loadClients(); void load(); void loadImprovements(); }} disabled={loading}><RefreshCw size={15} aria-hidden="true" className={loading ? "is-refreshing" : ""} />Atualizar</button>
       </div>
     </header>
     {denied ? <section className="health-denied" role="alert"><ShieldCheck size={32} aria-hidden="true" /><h2>Acesso restrito</h2><p>{denied}</p></section> : <main className="health-content evaluation-layout">
@@ -158,7 +181,7 @@ export function AgentEvaluationPage() {
         {clients?.map((item) => <button key={item.key} type="button" className="evaluation-client" aria-pressed={item.key === clientKey} onClick={() => setClientKey(item.key)}>
           <strong>{item.name}</strong>
           <small>{item.agents.length === 1 ? workspaceLabel(item.agents[0]!) : `${item.agents.length} workspaces`} · {item.rules.length} {item.rules.length === 1 ? "regra" : "regras"}</small>
-          {item.pendingProposals ? <span className="evaluation-badge">{item.pendingProposals} para decidir</span> : null}
+          {item.pendingProposals + item.pendingImprovements ? <span className="evaluation-badge">{item.pendingProposals + item.pendingImprovements} para decidir</span> : null}
         </button>)}
       </aside>
 
@@ -166,13 +189,40 @@ export function AgentEvaluationPage() {
         <div className="evaluation-heading">
           <div>
             <h1>{client.name}</h1>
-            <p className="evaluation-caption">Todo sábado de manhã o sistema revê os follow-ups da semana{severalWorkspaces ? " de todos os workspaces do cliente" : ""}: o que o vendedor aprovou, editou ou descartou e se o cliente respondeu. Dos erros saem propostas de regra, já testadas nos casos da semana. Nada muda no agente sem a sua aprovação{severalWorkspaces ? ", e a regra aprovada vale para todos os workspaces" : ""}.</p>
           </div>
           <ul className="evaluation-workspaces" aria-label="Workspaces do cliente">
             {client.agents.map((agent) => <li key={agent.agentId}>{workspaceLabel(agent)}<small>{agent.channels} {agent.channels === 1 ? "número" : "números"}</small></li>)}
           </ul>
         </div>
 
+        <nav className="evaluation-tabs" aria-label="Áreas do cliente">
+          <button type="button" aria-pressed={tab === "evaluation"} onClick={() => setTab("evaluation")}>Avaliação semanal{client.pendingProposals ? <span className="evaluation-badge">{client.pendingProposals}</span> : null}</button>
+          <button type="button" aria-pressed={tab === "improvements"} onClick={() => setTab("improvements")}>Aprimoramentos{client.pendingImprovements ? <span className="evaluation-badge">{client.pendingImprovements}</span> : null}</button>
+        </nav>
+        {message ? <p role="status" className="evaluation-message">{message}</p> : null}
+
+        {tab === "improvements" ? <ImprovementsReview
+          key={client.key}
+          improvements={improvements}
+          loading={loadingImprovements}
+          ready
+          api={{
+            update: (improvement, body) => apiUpdateClientImprovement(client.key, improvement.id, body, token),
+            normalize: (improvement) => apiNormalizeClientImprovement(client.key, improvement.id, token),
+            approve: (improvement, body) => apiApproveClientImprovement(client.key, improvement.id, body, token)
+          }}
+          onUpdated={(updated) => setImprovements((current) => current.map((item) => item.id === updated.id ? updated : item))}
+          onApproved={() => loadClients()}
+          onError={setMessage}
+          onNotice={setMessage}
+          origin={severalWorkspaces ? (improvement) => workspaceNames.get(improvement.workspaceId) ?? null : undefined}
+          intro={`O JEV identifica decisões explícitas do time depois de um repasse${severalWorkspaces ? ", em qualquer workspace do cliente" : ""}. Nada entra na base automaticamente: revise, edite, aprove ou recuse cada sugestão.`}
+          approveConfirm={severalWorkspaces
+            ? `Aprovar esta sugestão e incluí-la na base de conhecimento dos ${client.agents.length} workspaces de ${client.name}?`
+            : "Aprovar esta sugestão e incluí-la na base de conhecimento do agente?"}
+          approvedNotice={severalWorkspaces ? `Sugestão aprovada e adicionada à base dos ${client.agents.length} workspaces.` : "Sugestão aprovada e adicionada à base de conhecimento."}
+        /> : <>
+        <p className="evaluation-caption">Todo sábado de manhã o sistema revê os follow-ups da semana{severalWorkspaces ? " de todos os workspaces do cliente" : ""}: o que o vendedor aprovou, editou ou descartou e se o cliente respondeu. Dos erros saem propostas de regra, já testadas nos casos da semana. Nada muda no agente sem a sua aprovação{severalWorkspaces ? ", e a regra aprovada vale para todos os workspaces" : ""}.</p>
         <div className="evaluation-toolbar">
           {evaluations.length ? <label>Semana
             <select value={selectedId ?? ""} onChange={(event) => setSelectedId(event.target.value)}>
@@ -184,7 +234,6 @@ export function AgentEvaluationPage() {
           </button>
         </div>
 
-        {message ? <p role="status" className="evaluation-message">{message}</p> : null}
         {loading ? <p className="evaluation-caption">Carregando avaliação…</p> : null}
         {!loading && !evaluations.length ? <p className="evaluation-caption">Ainda não há avaliação. A primeira sai no próximo sábado, ou agora pelo botão acima.</p> : null}
         {selected?.status === "running" ? <p className="evaluation-caption">Esta avaliação ainda está rodando.</p> : null}
@@ -245,6 +294,7 @@ export function AgentEvaluationPage() {
             </details>)}
           </div>
         </> : null}
+        </>}
       </section> : null}
     </main>}
   </div>;

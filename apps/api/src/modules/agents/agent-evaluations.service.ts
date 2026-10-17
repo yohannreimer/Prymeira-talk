@@ -86,6 +86,7 @@ export type AgentEvaluationsPrismaLike = AiProviderSettingsPrismaLike & {
     update(args: unknown): Promise<EvaluationRecord>;
   };
   workspaceMirror?: { findMany(args: unknown): Promise<Array<{ workspaceId: string; name: string | null }>> };
+  aiAgentImprovement?: { count(args: unknown): Promise<number> };
   conversationFollowup: { findMany: FindMany<FollowupRow> };
   message: { findMany: FindMany<MessageRow>; findFirst(args: unknown): Promise<MessageRow | null> };
   aiKnowledgeSource: { findMany: FindMany<FonteDaBase> };
@@ -116,6 +117,8 @@ export type EvaluationClientDto = {
   rules: string[];
   latest: { periodStart: string; status: AgentEvaluationDto["status"] } | null;
   pendingProposals: number;
+  /** Suggestions learned from hand-overs still waiting for a decision, across the customer's agents. */
+  pendingImprovements: number;
 };
 
 export class AgentEvaluationError extends Error {
@@ -399,9 +402,12 @@ export function createAgentEvaluationsService(options: {
       const clients = await loadClients();
       if (!clients.length) return [];
       const workspaceIds = [...new Set(clients.flatMap((client) => client.members.map(({ agent }) => agent.workspaceId)))];
-      const [mirrors, latest] = await Promise.all([
+      const [mirrors, latest, improvements] = await Promise.all([
         prisma.workspaceMirror?.findMany({ where: { workspaceId: { in: workspaceIds } } }) ?? [],
-        Promise.all(clients.map((client) => prisma.aiAgentEvaluation.findFirst({ where: { clientKey: client.key }, orderBy: [{ periodStart: "desc" }] })))
+        Promise.all(clients.map((client) => prisma.aiAgentEvaluation.findFirst({ where: { clientKey: client.key }, orderBy: [{ periodStart: "desc" }] }))),
+        Promise.all(clients.map((client) => prisma.aiAgentImprovement
+          ? prisma.aiAgentImprovement.count({ where: { status: "pending", OR: client.members.map(({ agent }) => ({ workspaceId: agent.workspaceId, agentId: agent.id })) } })
+          : 0))
       ]);
       const names = new Map(mirrors.map((mirror) => [mirror.workspaceId, mirror.name]));
       return clients.map((client, index) => {
@@ -419,9 +425,15 @@ export function createAgentEvaluationsService(options: {
           })),
           rules,
           latest: record ? { periodStart: record.periodStart.toISOString(), status: toDto(record, rules).status } : null,
-          pendingProposals: record ? asArray<PropostaDeRegra>(record.proposals).filter((proposal) => proposal.status === "pendente").length : 0
+          pendingProposals: record ? asArray<PropostaDeRegra>(record.proposals).filter((proposal) => proposal.status === "pendente").length : 0,
+          pendingImprovements: improvements[index] ?? 0
         };
       }).sort((a, b) => a.name.localeCompare(b.name, "pt-BR"));
+    },
+
+    /** The agents of one customer, one per workspace. */
+    async clientAgents(clientKey: string): Promise<Array<{ workspaceId: string; agentId: string }>> {
+      return (await loadClient(clientKey)).members.map(({ agent }) => ({ workspaceId: agent.workspaceId, agentId: agent.id }));
     },
 
     /** The customers the Saturday job evaluates. */

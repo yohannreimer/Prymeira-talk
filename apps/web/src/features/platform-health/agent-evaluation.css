@@ -56,3 +56,11 @@
   .evaluation-detail { padding: 16px; }
   .health-header { flex-wrap: wrap; }
 }
+.evaluation-tabs { display: flex; flex-wrap: wrap; gap: 4px; padding: 3px; justify-self: start; border: 1px solid var(--color-border); border-radius: 10px; background: var(--color-surface-subtle, #f6f7f8); }
+.evaluation-tabs button { display: inline-flex; align-items: center; gap: 6px; padding: 7px 12px; border: 0; border-radius: 8px; background: transparent; font-size: 13px; font-weight: 600; color: var(--color-text-secondary); }
+.evaluation-tabs button[aria-pressed="true"] { background: white; color: var(--color-brand-600); box-shadow: var(--shadow-card); }
+.evaluation-detail .agent-improvements-panel { padding: 0; border: 0; box-shadow: none; background: transparent; }
+.evaluation-detail .agent-improvements-panel { min-width: 0; }
+.evaluation-detail .agent-improvements-panel .panel-title-row { flex-wrap: wrap; gap: 8px; }
+.evaluation-detail .agent-improvements-panel .panel-title-row > div { flex: 1 1 240px; min-width: 0; }
+.evaluation-detail .agent-improvements-panel .segmented-control { max-width: 100%; overflow-x: auto; }

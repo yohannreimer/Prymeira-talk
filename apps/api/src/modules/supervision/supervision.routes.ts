@@ -9,6 +9,8 @@ import { createSupervisionService } from "./supervision.service.js";
 import { collectPlatformHealth } from "./platform-health.js";
 import { loadWeeklyFollowupCatalog } from "./weekly-followup-catalog.js";
 import { AgentEvaluationError, type AgentEvaluationsService } from "../agents/agent-evaluations.service.js";
+import { AgentImprovementsServiceError, type AgentImprovementsService } from "../agents/agent-improvements.service.js";
+import { agentImprovementErrorStatus, approveImprovementBodySchema, updateImprovementBodySchema } from "../agents/agents.routes.js";
 
 const querySchema = z.object({
   status: z.enum(["active", "closed", "all"]).default("active"),
@@ -35,10 +37,10 @@ function parse<T>(schema: z.ZodType<T>, data: unknown): T {
 
 /** The writes besides answering: marking a customer as not needing an answer, and the owner deciding agent rules. */
 const waitingMarkPath = /^\/supervision\/workspaces\/[^/]+\/conversations\/[^/]+\/waiting$/;
-const agentEvaluationWritePath = /^\/supervision\/admin\/agent-evaluations\/[^/]+\/(run|proposals|rules\/remove)$/;
+const ownerWritePath = /^\/supervision\/admin\/(agent-evaluations\/[^/]+\/(run|proposals|rules\/remove)|agent-improvements\/[^/]+\/[^/]+\/(update|normalize|approve))$/;
 function isAllowedWrite(request: FastifyRequest) {
   const path = request.url.split("?")[0]!;
-  return request.method === "POST" && (waitingMarkPath.test(path) || agentEvaluationWritePath.test(path));
+  return request.method === "POST" && (waitingMarkPath.test(path) || ownerWritePath.test(path));
 }
 function admin(request: FastifyRequest) {
   if (request.supervision?.kind !== "admin") throw new SupervisionError(403, "Acesso administrativo necessário.");
@@ -46,10 +48,12 @@ function admin(request: FastifyRequest) {
 const clientParams = z.object({ clientKey: z.string().regex(/^[a-z0-9-]{1,80}$/) });
 function evaluationError(error: unknown): never {
   if (error instanceof AgentEvaluationError) throw new SupervisionError(error.code === "NOT_FOUND" ? 404 : 409, error.message);
+  if (error instanceof AgentImprovementsServiceError) throw new SupervisionError(agentImprovementErrorStatus(error), error.message);
   throw error;
 }
+const improvementParams = clientParams.extend({ improvementId: z.string().uuid() });
 
-export const supervisionRoutes: FastifyPluginAsync<{ evolution?: EvolutionRuntime; agentEvaluations?: AgentEvaluationsService }> = async (app, options) => {
+export const supervisionRoutes: FastifyPluginAsync<{ evolution?: EvolutionRuntime; agentEvaluations?: AgentEvaluationsService; agentImprovements?: AgentImprovementsService }> = async (app, options) => {
   const service = createSupervisionService(app.prisma);
   const mediaService = createInboxMediaService({ prisma: app.prisma, client: options.evolution?.client, photos: deploymentPhotoStore() });
   app.addHook("preHandler", async (request, reply) => {
@@ -102,6 +106,47 @@ export const supervisionRoutes: FastifyPluginAsync<{ evolution?: EvolutionRuntim
     const params = parse(clientParams, request.params);
     const body = parse(z.object({ rule: z.string().min(1).max(400) }).strict(), request.body);
     return evaluationsService().removeRule({ ...params, rule: body.rule }).catch(evaluationError);
+  });
+
+  // The suggestions learned from hand-overs, for every workspace of the customer. One approved goes to all of them.
+  function improvementsService() {
+    if (!options.agentImprovements) throw new SupervisionError(503, "Aprimoramentos indisponíveis.");
+    return options.agentImprovements;
+  }
+  async function improvementOwner(clientKey: string, improvementId: string) {
+    const agents = await evaluationsService().clientAgents(clientKey).catch(evaluationError);
+    for (const agent of agents) {
+      const found = await app.prisma.aiAgentImprovement.findFirst({ where: { ...agent, id: improvementId }, select: { id: true } });
+      if (found) return { owner: agent, agents };
+    }
+    throw new SupervisionError(404, "Sugestão de aprimoramento não encontrada.");
+  }
+  app.get("/supervision/admin/agent-improvements/:clientKey", async request => {
+    admin(request);
+    const params = parse(clientParams, request.params);
+    const agents = await evaluationsService().clientAgents(params.clientKey).catch(evaluationError);
+    const lists = await Promise.all(agents.map(agent => improvementsService().listImprovements({ ...agent, status: "all" }).catch(evaluationError)));
+    return { improvements: lists.flat().sort((a, b) => b.createdAt.localeCompare(a.createdAt)) };
+  });
+  app.post("/supervision/admin/agent-improvements/:clientKey/:improvementId/update", async request => {
+    admin(request);
+    const params = parse(improvementParams, request.params);
+    const body = parse(updateImprovementBodySchema, request.body);
+    const { owner } = await improvementOwner(params.clientKey, params.improvementId);
+    return improvementsService().updateImprovement({ ...owner, improvementId: params.improvementId, ...body, reject: body.reject === true }).catch(evaluationError);
+  });
+  app.post("/supervision/admin/agent-improvements/:clientKey/:improvementId/normalize", async request => {
+    admin(request);
+    const params = parse(improvementParams, request.params);
+    const { owner } = await improvementOwner(params.clientKey, params.improvementId);
+    return improvementsService().normalizeImprovement({ ...owner, improvementId: params.improvementId }).catch(evaluationError);
+  });
+  app.post("/supervision/admin/agent-improvements/:clientKey/:improvementId/approve", async request => {
+    admin(request);
+    const params = parse(improvementParams, request.params);
+    const body = parse(approveImprovementBodySchema, request.body ?? {});
+    const { owner, agents } = await improvementOwner(params.clientKey, params.improvementId);
+    return improvementsService().approveImprovement({ ...owner, improvementId: params.improvementId, ...body, alsoTo: agents }).catch(evaluationError);
   });
 
   app.get("/supervision/summary", async request => {

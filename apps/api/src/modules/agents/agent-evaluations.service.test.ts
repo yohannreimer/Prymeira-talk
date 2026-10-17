@@ -59,7 +59,8 @@ function setup(options: { regras?: string[] } = {}) {
       ]),
       findFirst: vi.fn().mockResolvedValue(null)
     },
-    aiKnowledgeSource: { findMany: vi.fn().mockResolvedValue([]) }
+    aiKnowledgeSource: { findMany: vi.fn().mockResolvedValue([]) },
+    aiAgentImprovement: { count: vi.fn(async (args: { where: { OR: unknown[] } }) => args.where.OR.length > 1 ? 3 : 0) }
   };
   const analista = createScriptedModel("analista", (request) => {
     const ferramenta = request.tools?.[0]?.name;
@@ -89,7 +90,7 @@ describe("weekly agent evaluation", () => {
     expect(await service.clients()).toEqual([
       expect.objectContaining({ key: "agente-b1", name: "Agente Outra", agents: [expect.objectContaining({ workspaceId: "ws-outra", workspaceName: null })], rules: [] }),
       expect.objectContaining({
-        key: "villefer", name: "Villefer", rules: ["Regra antiga."], latest: null, pendingProposals: 0,
+        key: "villefer", name: "Villefer", rules: ["Regra antiga."], latest: null, pendingProposals: 0, pendingImprovements: 3,
         agents: [
           { workspaceId: "ws-vendas-02", workspaceName: "Vendas 02", agentId: "a2", agentName: "Atendimento Villefer", channels: 1 },
           { workspaceId: "ws-vendas-05", workspaceName: "Vendas 05", agentId: "a5", agentName: "Atendimento Villefer", channels: 1 }

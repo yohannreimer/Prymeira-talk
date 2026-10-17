@@ -1,4 +1,4 @@
-import { messageSchema, supervisionPageSchema, supervisionSummarySchema, supervisionThreadSchema, supervisionFollowupWeeksSchema, type SupervisionUnreadPeriod } from "@prymeira-talk/shared";
+import { aiAgentImprovementSchema, messageSchema, supervisionPageSchema, supervisionSummarySchema, supervisionThreadSchema, supervisionFollowupWeeksSchema, type SupervisionUnreadPeriod } from "@prymeira-talk/shared";
 import { readConfigValue } from "./runtime-config";
 
 const apiUrl = readConfigValue("VITE_API_URL") ?? "http://localhost:3002";
@@ -152,6 +152,7 @@ export type EvaluationClient = {
   rules: string[];
   latest: { periodStart: string; status: AgentEvaluation["status"] } | null;
   pendingProposals: number;
+  pendingImprovements: number;
 };
 const evaluationPath = (clientKey: string) => `/supervision/admin/agent-evaluations/${encodeURIComponent(clientKey)}`;
 export async function apiEvaluationClients(getToken: GetToken, signal?: AbortSignal) {
@@ -169,4 +170,20 @@ export async function apiDecideClientProposal(clientKey: string, evaluationId: s
 }
 export async function apiRemoveClientRule(clientKey: string, rule: string, getToken: GetToken) {
   return await (await request(`${evaluationPath(clientKey)}/rules/remove`, getToken, undefined, { rule })).json() as { rules: string[] };
+}
+
+/* The suggestions learned from hand-overs, for every workspace of a customer. An approved one goes to all of them. */
+const improvementPath = (clientKey: string, improvementId: string) => `/supervision/admin/agent-improvements/${encodeURIComponent(clientKey)}/${encodeURIComponent(improvementId)}`;
+export async function apiClientImprovements(clientKey: string, getToken: GetToken, signal?: AbortSignal) {
+  const body = await (await request(`/supervision/admin/agent-improvements/${encodeURIComponent(clientKey)}`, getToken, signal)).json() as { improvements: unknown[] };
+  return body.improvements.map(item => aiAgentImprovementSchema.parse(item));
+}
+export async function apiUpdateClientImprovement(clientKey: string, improvementId: string, body: Partial<{ title: string; content: string; reject: true; clarificationAnswers: Record<string, string> }>, getToken: GetToken) {
+  return aiAgentImprovementSchema.parse(await (await request(`${improvementPath(clientKey, improvementId)}/update`, getToken, undefined, body)).json());
+}
+export async function apiNormalizeClientImprovement(clientKey: string, improvementId: string, getToken: GetToken) {
+  return aiAgentImprovementSchema.parse(await (await request(`${improvementPath(clientKey, improvementId)}/normalize`, getToken, undefined, {})).json());
+}
+export async function apiApproveClientImprovement(clientKey: string, improvementId: string, body: Partial<{ title: string; content: string }>, getToken: GetToken) {
+  return aiAgentImprovementSchema.parse(await (await request(`${improvementPath(clientKey, improvementId)}/approve`, getToken, undefined, body)).json());
 }

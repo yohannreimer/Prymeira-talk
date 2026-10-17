@@ -191,6 +191,10 @@ function findButtonByName(node: ReactNode, matcher: string | RegExp) {
   );
 }
 
+function improvementsReview(node: ReactNode) {
+  return findElement(node, (element) => Array.isArray((element.props as { improvements?: unknown }).improvements)) as ReactElement<{ improvements: AiAgentImprovementDto[]; ready: boolean }> | null;
+}
+
 async function renderAgentsPageContainer() {
   let ComponentUnderTest: (() => ReactElement) | null = null;
   let tree: ReactNode = null;
@@ -423,13 +427,8 @@ describe("AgentsPage", () => {
     await page.settle();
 
     expect(page.apiGetAgentImprovementsMock).toHaveBeenCalled();
-    expect(hasText(page.tree, "Complete o escopo antes de incluir")).toBe(true);
-    expect(hasText(page.tree, "A decisão vale para todas as medidas?")).toBe(true);
-    expect(hasText(page.tree, "Preparar regra com IA")).toBe(true);
-    const approveButton = findButtonByName(page.tree, "Aprovar e incluir") as ReactElement<{
-      disabled: boolean;
-    }> | null;
-    expect(approveButton?.props.disabled).toBe(true);
+    // The review itself (scope questions, approval locked until the rule is prepared) is in ImprovementsReview.test.
+    expect(improvementsReview(page.tree)?.props).toMatchObject({ improvements: [baseImprovement], ready: true });
   });
   it("renders the agents management controls", () => {
     const html = renderToStaticMarkup(<AgentsPage />);
@@ -489,7 +488,7 @@ describe("AgentsPage", () => {
     rosterItem?.props.onClick();
     await page.settle();
     await openTab(page, "Aprimoramentos");
-    expect(hasText(page.tree, "Complete o escopo antes de incluir")).toBe(true);
+    expect(improvementsReview(page.tree)?.props).toMatchObject({ improvements: [baseImprovement] });
   });
 
   it("syncs refreshed selected agent tags before submitting updates", async () => {

@@ -1179,8 +1179,6 @@ model AiAgent {
   @@map("ai_agents")
 }
 
-/// The weekly evaluation of an agent's follow-ups: what sellers did with each draft, the mistakes a
-/// reviewer model found and the rules it proposes, each checked against the week's cases.
 /// The weekly evaluation of one customer's new attendance agent. A customer (behaviorConfig.harness.cliente)
 /// may run the same agent in several workspaces, so it is keyed by customer and lists the agents it covered.
 model AiAgentEvaluation {

@@ -729,7 +729,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
     : undefined;
   agentEvaluationsScheduler?.start();
   if (agentEvaluationsScheduler) app.addHook("onClose", async () => { await agentEvaluationsScheduler.stop(); });
-  await app.register(supervisionRoutes, { evolution: evolutionRuntime, agentEvaluations });
+  await app.register(supervisionRoutes, { evolution: evolutionRuntime, agentEvaluations, agentImprovements });
   if (inboxTriage) await app.register(inboxTriageRoutes, { triage: inboxTriage });
   if (followupService && followupOutbound) {
     await app.register(conversationFollowupsRoutes, {

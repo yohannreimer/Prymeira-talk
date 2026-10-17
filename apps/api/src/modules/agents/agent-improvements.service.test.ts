@@ -388,6 +388,29 @@ describe("createAgentImprovementsService", () => {
     expect(approved.acceptedKnowledgeSourceId).toBe("source-1");
   });
 
+  it("gives an approved improvement to the same customer's agents in its other workspaces", async () => {
+    const prisma = buildPrisma();
+    prisma.aiAgentImprovement.findFirst.mockResolvedValue(pendingImprovement);
+    const service = createAgentImprovementsService(prisma);
+
+    await service.approveImprovement({
+      workspaceId,
+      agentId,
+      improvementId: pendingImprovement.id,
+      alsoTo: [{ workspaceId, agentId }, { workspaceId: "ws-vendas-02", agentId: "agent-vendas-02" }]
+    });
+
+    expect(prisma.aiKnowledgeSource.create).toHaveBeenCalledTimes(2);
+    expect(prisma.aiKnowledgeSource.create.mock.calls[1]![0].data).toMatchObject({
+      workspaceId: "ws-vendas-02",
+      agentId: "agent-vendas-02",
+      type: "text",
+      title: pendingImprovement.title,
+      status: "ready",
+      metadata: { source: "approved_agent_improvement", improvementId: pendingImprovement.id, copiedFrom: { workspaceId, agentId, knowledgeSourceId: "source-1" } }
+    });
+  });
+
   it("makes an approved João-style resolution retrievable on the next matching inquiry", async () => {
     const prisma = buildPrisma();
     prisma.aiAgentImprovement.findFirst.mockResolvedValue({
