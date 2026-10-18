@@ -69,7 +69,8 @@ import type { ConversationFollowupsObserver } from "../followups/conversation-fo
 import type { InboxTriageObserver } from "../conversations/inbox-triage.service.js";
 
 import { blocksAutonomousAgent } from '../assistant/assistant-policy.js';
-import { autorDaMensagem, harnessNoCanal, modeloDoHarness, readHarnessConfig, responderComHarness, type MensagemDaConversa } from "../harness/agentes/atendimento/producao.js";
+import { autorDaMensagem, modeloDoHarness, readHarnessConfig, responderComHarness, type MensagemDaConversa } from "../harness/agentes/atendimento/producao.js";
+import { readCommercialConfig, responderComercial } from "../harness/agentes/comercial/producao.js";
 import type { JevClient } from "../harness/core/jev.js";
 import type { ModelClient } from "../harness/core/model.js";
 type JsonValue = unknown;
@@ -1255,8 +1256,10 @@ export function createAgentRuntime(input: {
         const allowedTags = toAllowedTags(agent);
         const approvedAttachments = knowledge.flatMap(toApprovedAttachment);
         const approvedAttachmentUrls = new Set(approvedAttachments.map((attachment) => attachment.url));
-        const harnessConfig = prospecting ? null : readHarnessConfig(agent.behaviorConfig);
-        const harnessModel = harnessNoCanal(harnessConfig, conversation.channelId ?? conversation.channel?.id)
+        const commercialConfig = prospecting ? null : readCommercialConfig(agent.behaviorConfig);
+        const attendanceHarnessConfig = prospecting ? null : readHarnessConfig(agent.behaviorConfig);
+        const harnessConfig = commercialConfig ?? attendanceHarnessConfig;
+        const harnessModel = harnessConfig?.canais.includes(conversation.channelId ?? conversation.channel?.id ?? "")
           ? (input.harness?.modelFactory ?? modeloDoHarness)(providerSettings, harnessConfig.modelo)
           : null;
         // The harness does its own triage, reading, review and catalogue sending: the quote-desk
@@ -1455,16 +1458,27 @@ export function createAgentRuntime(input: {
           };
         } else if (harnessActive && harnessConfig && harnessModel) {
           runModel = harnessModel.id;
-          const saida = await responderComHarness({
-            config: harnessConfig,
+          const harnessMessagesForTurn = await harnessMessages(runInput.workspaceId, conversation.id, conversationContext.messages);
+          const saida = await (commercialConfig ? responderComercial({
+            config: commercialConfig,
+            model: harnessModel,
+            jev: input.harness?.jev,
+            instrucoes: effectiveSystemPrompt,
+            fontes: knowledge,
+            agenda: await loadMeetingScheduling(allowedActions, conversation.id),
+            mensagens: harnessMessagesForTurn,
+            atual: { id: message.id, texto: effectiveText, em: new Date(message.createdAt).toISOString() },
+            sessionMetadata: session.metadata
+          }) : responderComHarness({
+            config: attendanceHarnessConfig!,
             model: harnessModel,
             jev: input.harness?.jev,
             // Without send_attachment the agent is not told about the PDFs, so it never promises one.
             fontes: allowedActions.includes("send_attachment") ? knowledge : knowledge.map((source) => ({ ...source, fileUrl: null })),
-            mensagens: await harnessMessages(runInput.workspaceId, conversation.id, conversationContext.messages),
+            mensagens: harnessMessagesForTurn,
             atual: { id: message.id, texto: effectiveText, em: new Date(message.createdAt).toISOString() },
             sessionMetadata: session.metadata
-          }).catch(error => { throw new AgentGenerationFailure(error); });
+          })).catch(error => { throw new AgentGenerationFailure(error); });
           harnessFicha = saida.ficha;
           contextSummary = {
             ...contextSummary,
@@ -1473,7 +1487,7 @@ export function createAgentRuntime(input: {
           if (saida.silencio) {
             await operational.aiAgentSession.update({
               where: { workspaceId_id: { workspaceId: runInput.workspaceId, id: session.id } },
-              data: { lastRunAt: new Date(), metadata: withHarnessFicha(session.metadata, saida.ficha) }
+              data: { lastRunAt: new Date(), metadata: withHarnessFicha(session.metadata, saida.ficha, commercialConfig ? "comercial" : "atendimento") }
             });
             const run = await createRun({
               workspaceId: runInput.workspaceId,
@@ -1864,7 +1878,7 @@ export function createAgentRuntime(input: {
             handoffActionCompletedAt: null,
             lastRunAt: new Date(),
             messageCount: { increment: 1 },
-            ...(harnessFicha ? { metadata: withHarnessFicha(session.metadata, harnessFicha) } : {})
+            ...(harnessFicha ? { metadata: withHarnessFicha(session.metadata, harnessFicha, commercialConfig ? "comercial" : "atendimento") } : {})
           }
         }));
 
@@ -1998,7 +2012,9 @@ export function createAgentRuntime(input: {
         };
       }
       const { meeting } = booking;
-      const confirmation = output.reply?.trim() || `Fechado! Sua call ficou marcada para ${meeting.label}.`;
+      const confirmation = readCommercialConfig(args.agent.behaviorConfig)
+        ? `Fechado! Sua conversa ficou marcada para ${meeting.label}.`
+        : output.reply?.trim() || `Fechado! Sua call ficou marcada para ${meeting.label}.`;
       const reply = meeting.meetLink && !confirmation.includes(meeting.meetLink)
         ? `${confirmation}\n\nLink da call: ${meeting.meetLink}`
         : confirmation;
@@ -2529,9 +2545,9 @@ function getHandoffReason(output: AgentOutput, confidenceThreshold: number) {
 }
 
 /** The session metadata with the harness record, keeping what other services store there (the handoff brief). */
-function withHarnessFicha(metadata: JsonValue | undefined, ficha: unknown) {
+function withHarnessFicha(metadata: JsonValue | undefined, ficha: unknown, agente = "atendimento") {
   const current = metadata && typeof metadata === "object" && !Array.isArray(metadata) ? metadata : {};
-  return { ...current, harness: { ficha, atualizadoEm: new Date().toISOString() } } as JsonValue;
+  return { ...current, harness: { agente, ficha, atualizadoEm: new Date().toISOString() } } as JsonValue;
 }
 
 function isRecord(value: JsonValue): value is Record<string, unknown> {

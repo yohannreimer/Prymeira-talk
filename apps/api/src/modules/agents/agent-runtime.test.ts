@@ -3292,6 +3292,62 @@ it("continues after a material answer without requiring a document for its own p
   });
 });
 
+describe("createAgentRuntime with a reusable commercial harness", () => {
+  const slot = { startsAt: "2026-06-24T10:30:00-03:00", label: "quarta-feira, 24/06 às 10:30" };
+  const meeting = { eventId: "ev-commercial", startsAt: slot.startsAt, label: slot.label, meetLink: "https://meet.google.com/abc-defg-hij", htmlLink: null };
+  async function runCommercial(options: { body?: string; booking?: "booked" | "unavailable" | "failed"; channels?: string[] } = {}) {
+    const body = options.body ?? "quarta às 10:30";
+    const selecting = !options.body;
+    const agent = { ...baseAgent, systemPrompt: "Você é Rui, da Oficina Aurora. Explique os serviços aprovados.",
+      allowedActions: ["send_message", "create_internal_note", "request_handoff", "schedule_meeting"],
+      behaviorConfig: { harness: { agente: "comercial", empresa: "Oficina Aurora", canais: options.channels ?? [baseConversation.channelId] } } };
+    const prisma = buildPrisma({ aiAgent: { findFirst: vi.fn().mockResolvedValue(agent) }, aiKnowledgeSource: { findMany: vi.fn().mockResolvedValue([
+      { id: "service", title: "Serviços", content: "Manutenção de máquinas.", metadata: { approvalStatus: "confirmed" } }
+    ]) } });
+    vi.mocked(prisma.message.findFirst).mockResolvedValue({ ...baseMessage, body });
+    vi.mocked(prisma.message.findMany).mockResolvedValue([{ ...baseMessage, body }]);
+    const model = harnessModelHelpers.createScriptedModel("commercial-test", request => {
+      if (request.tools?.some(t => t.name === "responder")) return { content: null, toolCalls: [harnessModelHelpers.toolCall("responder", { texto: selecting ? "Vou reservar esse horário." : "Fazemos manutenção de máquinas." })] };
+      if (request.messages.some(m => m.role === "tool")) return { content: null, toolCalls: [] };
+      return { content: null, toolCalls: [harnessModelHelpers.toolCall("registrar_contexto", { intencao: selecting ? "agendar" : "duvida", assunto: null, empresa: null, rotina: null }),
+        ...(selecting ? [harnessModelHelpers.toolCall("escolher_horario", { startsAt: slot.startsAt, trecho: body })] : [])] };
+    });
+    const complete = vi.spyOn(model, "complete");
+    const meetingScheduler = { availability: vi.fn().mockResolvedValue({ durationMinutes: 15, timeZone: "America/Sao_Paulo", availableSlots: [slot], bookedMeeting: null }),
+      book: options.booking === "failed" ? vi.fn().mockRejectedValue(new Error("Calendar unavailable")) : vi.fn().mockResolvedValue(options.booking === "unavailable"
+        ? { status: "unavailable", reason: "occupied", availableSlots: [slot] } : { status: "booked", meeting, replacedEventIds: [] }) };
+    const provider = buildProvider({ confidence: 1, reply: "Motor anterior.", actions: [], handoff: { required: false, reason: null } });
+    const result = await createAgentRuntime({ prisma, provider, meetingScheduler, harness: { modelFactory: () => model } }).runForMessage({ workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation, messageId: ids.message, trigger: "automation" });
+    return { result, prisma, meetingScheduler, complete, provider };
+  }
+  it("uses the shared core and the agent's own company and sources", async () => {
+    const { result, complete, provider, meetingScheduler } = await runCommercial({ body: "O que vocês fazem?" });
+    expect(result.status).toBe("completed");
+    expect(provider.generate).not.toHaveBeenCalled();
+    expect(meetingScheduler.book).not.toHaveBeenCalled();
+    const prompts = JSON.stringify(complete.mock.calls);
+    expect(prompts).toContain("Oficina Aurora");
+    expect(prompts).toContain("Manutenção de máquinas");
+    expect(prompts).not.toMatch(/Villefer|catálogo|pedido mínimo/);
+  });
+  it("reserves through Calendar and replaces the writer's text with the real confirmation", async () => {
+    const { result, prisma, meetingScheduler } = await runCommercial();
+    expect(result.status).toBe("completed");
+    expect(meetingScheduler.book).toHaveBeenCalledWith(expect.objectContaining({ startsAt: slot.startsAt, conversationId: ids.conversation }));
+    expect(prisma.message.create).toHaveBeenCalledWith({ data: expect.objectContaining({ body: `Fechado! Sua conversa ficou marcada para ${slot.label}.\n\nLink da call: ${meeting.meetLink}` }) });
+    expect(prisma.aiAgentSession.update).toHaveBeenLastCalledWith(expect.objectContaining({ data: expect.objectContaining({ metadata: { harness: expect.objectContaining({ agente: "comercial", ficha: expect.objectContaining({ horario: null }) }) } }) }));
+  });
+  it.each(["unavailable", "failed"] as const)("never sends a false booking confirmation when Calendar is %s", async booking => {
+    const { prisma } = await runCommercial({ booking });
+    expect(JSON.stringify(vi.mocked(prisma.message.create).mock.calls)).not.toMatch(/ficou marcada|meet.google.com|Vou reservar/);
+  });
+  it("does not select the harness outside its explicit channels", async () => {
+    const { complete, provider } = await runCommercial({ body: "O que fazem?", channels: ["other-channel"] });
+    expect(complete).not.toHaveBeenCalled();
+    expect(provider.generate).toHaveBeenCalled();
+  });
+});
+
 describe("createAgentRuntime with the harness attendance agent", () => {
   const channelId = baseConversation.channelId;
   const catalogSource = {
