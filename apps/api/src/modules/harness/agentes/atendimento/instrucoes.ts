@@ -85,6 +85,7 @@ export const instrucoesDoLeitor = `Para cada pergunta ou pedido de informação 
    Leia as ressalvas completas do trecho: inox não confirma automaticamente liga 304; mantenha liga/medida pedida como solicitação para o vendedor quando não detalhada. Mínimo aproximado não é o menor peso que um vendedor às vezes aceita. Cobertura de cidade listada é confirmada; frete/prazo são outra pergunta.
    Um trecho também responde quando o pedido cabe numa faixa, lista ou regra geral dele: chapa de 3 mm cabe em "de 0,90 mm a 25,4 mm"; 1200x3000 está na lista de formatos. Cite a faixa ou a lista.
    Medida que existe e peso: consultar_catalogo (tabelas de medidas e kg/m). O catálogo não diz se a empresa fornece o produto hoje; se a base diz que não fornece, vale a base.
+   Em continuação de conversa, mantenha produto/material/acabamento anteriores nas consultas mesmo que a última mensagem traga só medidas. Não use peso de chapa lisa para xadrez nem peso de outro material. Uma tabela com a mesma espessura mas produto/acabamento diferente não responde ao pedido; sem linha compatível, não calcule nem use uma aproximação, deixe esse peso para o vendedor.
    Pedido com quantidade em peças ou barras, quando o produto tem pedido mínimo em kg: ache a linha no catálogo e use calcular_peso. Nunca calcule peso de cabeça. Sem o comprimento de cada peça, não calcule: pergunte.
 4. Só depois de procurar e não achar, marcar_sem_base.
 Se o contato pediu para falar com uma pessoa, chame cliente_pediu_pessoa. Mensagem sem pergunta (só informação, cumprimento, "ok"): não chame nada.

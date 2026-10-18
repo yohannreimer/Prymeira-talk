@@ -90,7 +90,7 @@ function jogadaDaMensagem(ficha: FichaDoAtendimento, triagem: TriageResult | nul
   const pesos = (ficha.pesosDaVez ?? []).map((id) => ficha.trechosVistos[id]).filter(Boolean);
   const anexos = (ficha.anexosDaVez ?? []).map((id) => pedido.anexos?.find((anexo) => anexo.id === id)).filter((anexo) => anexo !== undefined);
   const extras = [
-    ...(pesos.length ? [`Peso do pedido, calculado pelo sistema: ${pesos.join(" ")} Use esse número como o peso; o pedido mínimo é outra coisa, compare os dois.`] : []),
+    ...(pesos.length ? [`Peso do pedido, calculado pelo sistema: ${pesos.join(" ")} Use esse número somente se a descrição do cálculo corresponde ao mesmo produto, material, acabamento e medida pedidos; caso contrário não informe esse peso, deixe o vendedor confirmar. O pedido mínimo é outra coisa, compare somente com peso compatível.`] : []),
     ...(anexos.length
       ? [`Vai anexado nesta mensagem: ${anexos.map((anexo) => anexo.titulo).join(", ")}. Diga em poucas palavras que está enviando.`]
       : pedido.anexos?.length ? ["Nenhum arquivo vai anexado nesta mensagem: não diga que está enviando catálogo ou arquivo."] : [])

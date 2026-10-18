@@ -33,3 +33,34 @@ describe("round 2: context before lexical similarity", () => {
     expect(asked.dado_medida.instructions).toMatch(/pergunta anterior.*sem resposta/);
   });
 });
+
+describe("round 2 remaining causes",()=>{
+  it("never ranks plain sheet or another material for an aluminium checker plate search", async()=>{
+    const {catalogoEmMemoria}=await import('./agentes/atendimento/catalogo.js');
+    const {default: rows}=await import('./agentes/atendimento/dados/catalogo-villefer.json',{with:{type:'json'}});
+    const matches=catalogoEmMemoria(rows as never).buscar('chapa alumínio xadrez 3 mm');
+    expect(matches.every(r=>r.familia==='chapa piso'&&r.material.some(m=>/alumínio/i.test(m)))).toBe(true);
+  });
+  it("gives the writer complete consulted sources even when a city passage was not selected",async()=>{
+    let seen='';
+    const result=await runTurn(atendimento,{leitor:createScriptedModel('reader',()=>({content:null,toolCalls:[]})),model:createScriptedModel('writer',request=>{seen=JSON.stringify(request.messages);return {content:null,toolCalls:[toolCall('responder',{texto:'Entregamos em Guaramirim.'})]}})},
+      {ficha:{...fichaInicial(),trechosVistos:{t1:'Entregamos em Guaramirim.'}},pedido:{empresa:{nome:'Distribuidora',oQueVende:'Chapas'},maxFollowups:2},historico:[{autor:'contato',texto:'Sou de Guaramirim.',em:'2026-10-18T01:00:00Z'}],evento:{tipo:'mensagem',texto:'Sou de Guaramirim.'}});
+    expect(seen).toContain('Entregamos em Guaramirim.');
+    expect(result.enviar).toBe('Entregamos em Guaramirim.');
+  });
+});
+
+describe('rewrite preserves answered questions',()=>{
+  it('does not trade the answered I/W distinction for the missing supply answer',async()=>{
+    const first='Viga I não é sinônimo de W.';
+    let writes=0;
+    const result=await runTurn(atendimento,{
+      leitor:createScriptedModel('reader',()=>({content:null,toolCalls:[]})),
+      model:createScriptedModel('writer',req=>({content:null,toolCalls:[toolCall('responder',{texto:writes++===0?first:(req.messages.at(-1)?.content??'').includes('Preserve: Responder se W é igual a I')?'Fornecemos perfil W150 de 12 m. Viga I não é sinônimo de W.':'Fornecemos perfil W150 de 12 m.'})]})),
+      judge:async i=>i.texto.includes('Fornecemos')&&i.texto.includes('não é sinônimo')?{ok:true}:{ok:false,regra:'juiz_requisito',motivo:'Falta confirmar fornecimento.',verificacoes:[{id:'resposta_2',exigencia:'Responder se W é igual a I',resultado:'atendida',ok:true,motivo:null}]}
+    },{ficha:fichaInicial(),pedido:{empresa:{nome:'Distribuidora',oQueVende:'Perfis'},maxFollowups:2},historico:[{autor:'contato',texto:'Tem W150? É igual a I?',em:'2026-10-18T01:00:00Z'}],evento:{tipo:'mensagem',texto:'Tem W150? É igual a I?'}});
+    expect(result.enviar).toContain('Fornecemos');
+    expect(result.enviar).toContain('não é sinônimo');
+    expect(result.humano).toBeNull();
+  });
+});

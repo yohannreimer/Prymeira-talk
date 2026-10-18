@@ -139,6 +139,10 @@ export type AgentDefinition<Ficha, Pedido> = {
    */
   anexosDaVez?: (ficha: Ficha, pedido: Pedido) => Anexo[];
   /** Extra sources the writer could use and the judge must see too (e.g. knowledge-base passages already read). */
+  /** Complete consulted sources available to the writer, opt-in per agent. */
+  fontesDoEscritor?: (ficha: Ficha, pedido: Pedido) => string;
+  /** Agent-specific live conversation guidance; other agents retain the default. */
+  orientacaoDaConversa?: string;
   fontesDoRevisor?: (ficha: Ficha, pedido: Pedido) => string;
   /**
    * Subagent that runs on a silence, before the move: it reads the WHOLE conversation (numbered) and

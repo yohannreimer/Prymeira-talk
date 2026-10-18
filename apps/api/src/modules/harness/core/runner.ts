@@ -314,11 +314,13 @@ async function writeAndReview<Ficha, Pedido>(
         "# Ficha desta conversa",
         fichaTexto,
         "",
+        ...(agent.fontesDoEscritor ? ["# Fontes completas consultadas (responda apenas o relevante, preserve ressalvas)", agent.fontesDoEscritor(input.ficha, input.pedido), ""] : []),
         "# Jogada agora",
         input.jogada.instrucao,
         "",
         "Escreva como gente no WhatsApp: curto, sem listas longas, no máximo uma pergunta. Responda primeiro ao que o contato acabou de dizer.",
-        "Sem emoji. Não repita o que já foi dito nesta conversa: responda só o que a última mensagem traz de novo, como uma pessoa responderia.",
+        "Sem emoji.",
+        agent.orientacaoDaConversa ?? "Não repita o que já foi dito nesta conversa: responda só o que a última mensagem traz de novo, como uma pessoa responderia.",
         "Use só números e fatos que estão no pedido, na ficha ou na jogada. Nunca invente.",
         "Não prometa consultar e retornar depois. Responda o que dá com o que você tem e pergunte o que falta.",
         "Chame a ferramenta responder com o texto final, ou pedir_humano se a jogada não puder ser cumprida com segurança."
@@ -379,7 +381,7 @@ async function writeAndReview<Ficha, Pedido>(
         ? [{ role: "assistant" as const, content: null, toolCalls: [call] },
           { role: "tool" as const, toolCallId: call.id, name: call.name, content: "BLOQUEADA, não foi enviada." }]
         : [{ role: "assistant" as const, content: texto }]),
-      { role: "user", content: `Sua mensagem foi bloqueada pelo revisor e não foi enviada. Motivo: ${outcome.motivo} Reescreva cumprindo a jogada e chame responder de novo.` }
+      { role: "user", content: `Sua mensagem foi bloqueada pelo revisor e não foi enviada. Motivo: ${outcome.motivo} Reescreva cumprindo TODA a jogada, corrigindo a falha sem apagar as respostas que já estavam corretas. ${outcome.verificacoes?.filter(v => v.ok && v.id.startsWith("resposta_")).map(v => `Preserve: ${v.exigencia}`).join("\n") ?? ""} Chame responder de novo.` }
     );
   }
   return repasse("O agente não conseguiu escrever uma mensagem aprovada.");
