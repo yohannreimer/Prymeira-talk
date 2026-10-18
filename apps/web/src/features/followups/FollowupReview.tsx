@@ -163,7 +163,7 @@ export function FollowupReview(props: Props) {
             const day = dayFormat.format(new Date(message.createdAt));
             return <Fragment key={message.id}>
               {i === 0 || day !== dayFormat.format(new Date(shownMessages[i - 1].createdAt)) ? <div className="fr-day">{day}</div> : null}
-              <div className={`fr-message${message.direction === 'outbound' ? ' is-outbound' : ''}${message.type === 'internal_note' ? ' is-note' : ''}`}>
+              <div className={`fr-message${message.direction === 'outbound' ? ' fr-outbound' : ''}${message.type === 'internal_note' ? ' is-note' : ''}`}>
                 <span className="fr-author">{message.type === 'internal_note' ? 'Nota interna' : message.type === 'system' ? 'Evento do atendimento' : message.direction === 'outbound' ? 'Equipe' : message.senderName || nameOf(active)}</span>
                 <ReviewMessage message={message} getToken={getToken} />
                 <div className="fr-message-meta"><time dateTime={message.createdAt}>{timeFormat.format(new Date(message.createdAt))}</time>{message.editedAt ? <span>Editada</span> : null}{message.direction === 'outbound' && !message.deletedAt ? <MessageTicks status={message.status} /> : null}</div>

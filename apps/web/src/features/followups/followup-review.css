@@ -46,7 +46,7 @@
 .fr-older { align-self: center; font-size: 11px !important; color: #7b8c73 !important; }
 .fr-day { align-self: center; font-size: 10px; background: #e8ede0; color: #78826d; padding: 3px 9px; border-radius: 4px; margin: 1px 0 5px; }
 .fr-message { max-width: 84%; min-width: 80px; border-radius: 1px 8px 8px 8px; background: #fff; padding: 9px 13px 6px; box-shadow: 0 1px 1px #30462d12; font-size: 14px; line-height: 1.6; overflow-wrap: anywhere; }
-.fr-message.is-outbound { align-self: flex-end; border-radius: 8px 1px 8px 8px; background: #dfedda; }
+.fr-message.fr-outbound { align-self: flex-end; border-radius: 8px 1px 8px 8px; background: #dfedda; }
 .fr-message.is-note { background: #faf1d8; }
 .fr-author { display: block; font-size: 10px; font-weight: 600; color: #708b64; margin-bottom: 3px; }
 .fr-message p { margin: 0; white-space: pre-wrap; }
