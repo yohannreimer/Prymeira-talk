@@ -3,6 +3,26 @@ import { realtimeEventSchema } from "@prymeira-talk/shared";
 import { EvolutionClientError } from "../evolution/evolution.client.js";
 import { createAutomationRunner } from "./automation-runner.js";
 import type { AutomationRunnerPrisma } from "./automation-runner.js";
+import { prymeiraWhatsappFlow } from "../agents/prymeira-whatsapp-definition.js";
+
+describe("Prymeira direct WhatsApp routing", () => {
+  it.each([
+    { kind: "new direct message", channel: true, site: false, previous: 0, activates: true },
+    { kind: "another channel", channel: false, site: false, previous: 0, activates: false },
+    { kind: "website lead", channel: true, site: true, previous: 0, activates: false },
+    { kind: "continuation of existing conversation", channel: true, site: false, previous: 2, activates: false }
+  ])("activates only the intended entry: $kind", async scenario => {
+    const rule = { ...baseRule, actions: prymeiraWhatsappFlow(channelId, agentId) };
+    const target = { ...conversation, channel: { ...conversation.channel, id: scenario.channel ? channelId : "other-channel" }, tags: scenario.site ? [{ tag: { id: "site", name: "Site | Raio-X | Origem" } }] : [] };
+    const prisma = createMockPrisma({ automationRule: { findMany: vi.fn().mockResolvedValue([rule]) }, message: {
+      findUnique: vi.fn().mockResolvedValue({ ...currentMessage, conversation: target }), count: vi.fn().mockResolvedValue(scenario.previous), findFirst: vi.fn().mockResolvedValue(null), create: vi.fn()
+    } } as Partial<AutomationRunnerPrisma>);
+    const activateForMessage = vi.fn().mockResolvedValue({ status: "completed", sessionId: "commercial-session" });
+    await createAutomationRunner({ prisma, agentRuntime: { activateForMessage } }).runForInboundMessage({ workspaceId, messageId, eventKey: `routing:${scenario.kind}` });
+    expect(activateForMessage).toHaveBeenCalledTimes(scenario.activates ? 1 : 0);
+    if (scenario.activates) expect(activateForMessage).toHaveBeenCalledWith(expect.objectContaining({ workspaceId, agentId, conversationId, messageId }));
+  });
+});
 
 const workspaceId = "workspace_a";
 const automationId = "00000000-0000-4000-8000-000000000101";
