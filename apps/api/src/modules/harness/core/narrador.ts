@@ -99,7 +99,8 @@ function narrarPasso(step: TraceStep): Passo[] {
       return [{ fase: step.fase, titulo: tentativa > 1 ? "Reescreveu a mensagem" : "Escreveu a mensagem", detalhe: detalhe?.texto ?? "", tipo: "info", ms }];
     }
     case "revisao": {
-      const notas = renderNotas(detalhe?.notas);
+      const verificacoes = Array.isArray(detalhe?.verificacoes) ? detalhe.verificacoes.map((v: { id: string; resultado: string; motivo?: string; exigencia?: string; ok: boolean }) => `${v.ok ? "✓" : "✗"} ${v.id}: ${v.resultado}. ${v.motivo || v.exigencia || ""}`).join("\n") : null;
+      const notas = [renderNotas(detalhe?.notas), verificacoes].filter(Boolean).join("\n");
       if (detalhe?.ok) {
         const juiz = detalhe.juiz === "aprovou" ? "As regras e o revisor aprovaram" : detalhe.juiz === "falhou_aberto" ? "As regras aprovaram (o revisor não respondeu)" : "As regras aprovaram";
         return [{ fase: step.fase, titulo: juiz, detalhe: notas, tipo: "ok", ms }];

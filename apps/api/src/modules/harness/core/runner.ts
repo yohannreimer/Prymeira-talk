@@ -100,6 +100,12 @@ export async function runTurn<Ficha, Pedido>(
 
     if (triagem.kind === "humano" || triagem.kind === "injecao") {
       ficha = await readIntoRecord(agent, deps, { ficha, pedido, historico, mensagem: evento.texto }, trace);
+      const lacuna = agent.validarLeitura?.({ ficha, pedido, mensagem: evento.texto });
+      if (lacuna) {
+        trace.push({ fase: "revisao", detalhe: { ok: false, regra: "leitura_incompleta", motivo: lacuna, fonte: "regra" } });
+        trace.push({ fase: "humano", detalhe: { motivo: lacuna } });
+        return { enviar: null, humano: { motivo: `Leitura incompleta: ${lacuna}`, resumo: agent.renderFicha(ficha, pedido) }, ficha, jogada: null, trace };
+      }
     }
   }
 

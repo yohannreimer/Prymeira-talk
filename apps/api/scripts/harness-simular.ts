@@ -11,7 +11,7 @@ import { catalogoEmMemoria, type LinhaDoCatalogo } from "../src/modules/harness/
 import { cenariosDaSombra, chaveDaDecisao, type DecisaoAntiga } from "../src/modules/harness/agentes/atendimento/sombra.js";
 import type { AnexoAprovado } from "../src/modules/harness/agentes/atendimento/tipos.js";
 import { aplicarPropostaVillefer } from "../src/modules/harness/agentes/atendimento/proposta-villefer.js";
-import { createJuizDeFollowup } from "../src/modules/harness/agentes/atendimento/juiz.js";
+import { createJuizDeAtendimento, createJuizDeFollowup } from "../src/modules/harness/agentes/atendimento/juiz.js";
 import { cenarios } from "../src/modules/harness/agentes/comprador/cenarios.js";
 import { comprador } from "../src/modules/harness/agentes/comprador/index.js";
 import { cenarios as cenariosProspeccao } from "../src/modules/harness/agentes/prospeccao/cenarios.js";
@@ -136,7 +136,7 @@ async function runAtendimento() {
       analista,
       triage: createTriage({ jev }),
       // Follow-ups get the "is it worth sending?" judge; live replies get the general one.
-      ...(jev ? { judge: juizPorJogada(createJuizDeFollowup(jev), createJevJudge(jev)), judgeFailClosed: true } : {})
+      ...(jev ? { judge: juizPorJogada(createJuizDeFollowup(jev), createJuizDeAtendimento(jev)), judgeFailClosed: true } : {})
     }),
     scenarios,
     k,

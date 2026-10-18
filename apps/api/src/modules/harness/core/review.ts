@@ -1,5 +1,5 @@
 import { noul, type JevClient } from "./jev.js";
-import type { JudgeVerdict, ReviewInput, ReviewRule } from "./types.js";
+import type { JudgeVerdict, ReviewInput, ReviewRule, VerificacaoDoJuiz } from "./types.js";
 
 /** A second opinion on a message that already passed the hard rules. */
 /**
@@ -66,8 +66,8 @@ function normalizeText(text: string) {
 }
 
 export type ReviewOutcome =
-  | { ok: true; juiz: "aprovou" | "sem_juiz" | "falhou_aberto"; notas?: Record<string, number> }
-  | { ok: false; regra: string; motivo: string; fonte: "regra" | "juiz"; notas?: Record<string, number> };
+  | { ok: true; juiz: "aprovou" | "sem_juiz" | "falhou_aberto"; notas?: Record<string, number>; verificacoes?: VerificacaoDoJuiz[] }
+  | { ok: false; regra: string; motivo: string; fonte: "regra" | "juiz"; notas?: Record<string, number>; verificacoes?: VerificacaoDoJuiz[] };
 
 /**
  * Hard rules first (code, no model). Only a message that passes them goes to the judge. When the judge is
@@ -89,7 +89,7 @@ export async function reviewMessage<Ficha, Pedido>(input: ReviewInput<Ficha, Ped
   if (!input.judge) return { ok: true, juiz: "sem_juiz" };
   try {
     const verdict = await input.judge(input as JudgeInput);
-    return verdict.ok ? { ok: true, juiz: "aprovou", notas: verdict.notas } : { ok: false, regra: verdict.regra, motivo: verdict.motivo, fonte: "juiz", notas: verdict.notas };
+    return verdict.ok ? { ok: true, juiz: "aprovou", notas: verdict.notas, ...(verdict.verificacoes ? { verificacoes: verdict.verificacoes } : {}) } : { ok: false, regra: verdict.regra, motivo: verdict.motivo, fonte: "juiz", notas: verdict.notas, ...(verdict.verificacoes ? { verificacoes: verdict.verificacoes } : {}) };
   } catch {
     return input.judgeFailClosed === false
       ? { ok: true, juiz: "falhou_aberto" }

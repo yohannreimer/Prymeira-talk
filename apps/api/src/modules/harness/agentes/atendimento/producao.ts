@@ -1,4 +1,4 @@
-import { createJevJudge, type Judge } from "../../core/review.js";
+import type { Judge } from "../../core/review.js";
 import { runTurn } from "../../core/runner.js";
 import type { JevClient } from "../../core/jev.js";
 import type { OpenAiCompatibleSettings } from "../../../agents/ai-provider-settings.js";
@@ -8,7 +8,7 @@ import type { HarnessMessage, TraceStep } from "../../core/types.js";
 import { catalogoEmMemoria, type Catalogo, type LinhaDoCatalogo } from "./catalogo.js";
 import { baseCompleta, fichaInicial, trechosDeFontes } from "./ficha.js";
 import { atendimento } from "./index.js";
-import { createJuizDeFollowup } from "./juiz.js";
+import { createJuizDeAtendimento, createJuizDeFollowup } from "./juiz.js";
 import { aplicarPropostaVillefer } from "./proposta-villefer.js";
 import type { AnexoAprovado, ContextoDoAtendimento, FichaDoAtendimento } from "./tipos.js";
 
@@ -194,7 +194,7 @@ export async function responderComHarness(input: {
     model: input.model,
     triage: createTriage({ jev: input.jev }),
     // Fail closed: with the judge down, the fixed hand-over notice goes out instead of an unchecked reply.
-    ...(input.jev ? { judge: createJevJudge(input.jev), judgeFailClosed: true } : {})
+    ...(input.jev ? { judge: createJuizDeAtendimento(input.jev), judgeFailClosed: true } : {})
   }, { ficha: fichaSalva(input.sessionMetadata), pedido, historico, evento: { tipo: "mensagem", texto } });
 
   const actions: SaidaDoHarness["actions"] = (resultado.anexos ?? []).map((anexo) => ({

@@ -63,7 +63,8 @@ export type HarnessTool<Ficha, Pedido, Args = unknown> = {
 
 export type ReviewVerdict = { ok: true } | { ok: false; regra: string; motivo: string };
 /** A judge's verdict with its scores (0..1 per question), kept in the trace to calibrate thresholds. */
-export type JudgeVerdict = ReviewVerdict & { notas?: Record<string, number> };
+export type VerificacaoDoJuiz = { id: string; exigencia: string; resultado: string; ok: boolean; motivo: string | null };
+export type JudgeVerdict = ReviewVerdict & { notas?: Record<string, number>; verificacoes?: VerificacaoDoJuiz[] };
 
 export type ReviewInput<Ficha, Pedido> = {
   texto: string;
@@ -130,6 +131,8 @@ export type AgentDefinition<Ficha, Pedido> = {
    * answer; code can see that and ask them to look again.
    */
   conferirLeitura?: (input: { ficha: Ficha; mensagem: string; pedido?: Pedido }) => string | null;
+  /** Final reader gate after bounded retries; enabled only by agents opting in. */
+  validarLeitura?: (input: { ficha: Ficha; mensagem: string; pedido: Pedido }) => string | null;
   /**
    * Approved files that go with this turn's message (the PDF catalogue the contact asked for). The agent
    * picks them by id with a tool; the URL always comes from the company's approved list, never the model.
