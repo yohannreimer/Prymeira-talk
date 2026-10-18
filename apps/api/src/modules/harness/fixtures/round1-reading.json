@@ -1,0 +1,291 @@
+[
+  {
+    "title": "Tubo Schedule • São Bento do Sul",
+    "input": "Preciso de tubo de aço carbono NBR 5580, 2 polegadas, SCH 40, 12 barras de 6 metros. Entregam em São Bento do Sul?",
+    "ficha": {
+      "contato": {
+        "tipo": "indefinido",
+        "prova": null
+      },
+      "pendencias": [],
+      "encerrada": null,
+      "emAndamento": null,
+      "indicado": null,
+      "followups": [],
+      "perguntas": [
+        {
+          "id": "q1",
+          "texto": "Vocês fornecem tubo de aço carbono NBR 5580, 2 polegadas, SCH 40?",
+          "status": "respondida",
+          "resposta": {
+            "trechoId": "t25",
+            "citacao": "Tubos industriais; tubos mecânicos; tubos conforme NBR 5580; tubos Schedule; tubos redondos; tubos quadrados; tubos retangulares. Formato, material, norma, diâmetro/lados, parede ou Schedule, comprimento e quantidade devem ser preservados como pedido a verificar, não promessa de estoque."
+          },
+          "buscas": 1,
+          "maisRespostas": [
+            {
+              "trechoId": "t46",
+              "citacao": "Tubos (não inox) e perfis sob encomenda: aproximadamente 1.000 kg."
+            }
+          ]
+        },
+        {
+          "id": "q2",
+          "texto": "Entregam em São Bento do Sul?",
+          "status": "respondida",
+          "resposta": {
+            "trechoId": "t52",
+            "citacao": "Diga que o vendedor confirma a entrega para a cidade e siga com o pedido."
+          },
+          "buscas": 1
+        }
+      ],
+      "trechosVistos": {
+        "t25": "Tubos industriais; tubos mecânicos; tubos conforme NBR 5580; tubos Schedule; tubos redondos; tubos quadrados; tubos retangulares. Formato, material, norma, diâmetro/lados, parede ou Schedule, comprimento e quantidade devem ser preservados como pedido a verificar, não promessa de estoque. Normas e séries detalhadas não foram preenchidas. NBR 5580 e redondos permanecem na família antes autorizada; campo vazio não retira oferta nem aprova especificação nova. SCH40/Schedule 40 informa a série solicitada, não parede de 40 mm. Tubo quadrado autorizado não permite barra maciça quadrada.",
+        "t46": "Tubos (não inox) e perfis sob encomenda: aproximadamente 1.000 kg.",
+        "t51": "REGIÃO DE ENTREGA (informado pela empresa em 16/10/2026; lista parcial).\nEntregamos em: Joinville, Araquari, Garuva, Jaraguá do Sul, Guaramirim, Schroeder, Corupá, Massaranduba, Itajaí, Blumenau, Indaial, Pomerode, Timbó e Balneário Camboriú.\nCliente de uma dessas cidades: confirme que entregamos lá e siga com o pedido. Prazo e frete o vendedor confirma.\nNão atendemos estados distantes, como Bahia, São Paulo e Rio Grande do Sul: diga isso de forma cordial, sem chamar o vendedor.\nCidade que não está na lista: a lista não é completa, então não diga que atende nem que não atende.",
+        "t52": "Diga que o vendedor confirma a entrega para a cidade e siga com o pedido."
+      },
+      "pediuPessoa": false
+    }
+  },
+  {
+    "title": "Perfil W • Indaial",
+    "input": "Oi! Preciso de perfil W150, 4 peças de 12 metros, para Indaial. É igual à viga I? Qual o peso por metro e o aço desse perfil?",
+    "ficha": {
+      "contato": {
+        "tipo": "indefinido",
+        "prova": null
+      },
+      "pendencias": [],
+      "encerrada": null,
+      "emAndamento": null,
+      "indicado": null,
+      "followups": [],
+      "perguntas": [
+        {
+          "id": "q1",
+          "texto": "vocês fornecem perfil W150?",
+          "status": "respondida",
+          "resposta": {
+            "trechoId": "t22",
+            "citacao": "Perfil W de abas paralelas: ASTM A572, designações W150 a W610, comprimentos de 6.000 ou 12.000 mm."
+          },
+          "buscas": 1
+        },
+        {
+          "id": "q2",
+          "texto": "É igual à viga I?",
+          "status": "respondida",
+          "resposta": {
+            "trechoId": "t22",
+            "citacao": "Viga I não é sinônimo de W."
+          },
+          "buscas": 1
+        },
+        {
+          "id": "q3",
+          "texto": "Qual o peso por metro do perfil W150?",
+          "status": "respondida",
+          "resposta": {
+            "trechoId": "t22",
+            "citacao": "Não foram informados grau específico, massas lineares ou lista completa de seções; consultar variante exata."
+          },
+          "buscas": 0,
+          "maisRespostas": [
+            {
+              "trechoId": "t22",
+              "citacao": "Perfil W de abas paralelas: ASTM A572, designações W150 a W610, comprimentos de 6.000 ou 12.000 mm. Não foram informados grau específico, massas lineares ou lista completa de seções; consultar variante exata."
+            },
+            {
+              "trechoId": "t50",
+              "citacao": "Vigas I, vigas U, perfil W e cantoneiras: sem mínimo informado."
+            }
+          ]
+        },
+        {
+          "id": "q4",
+          "texto": "Qual o aço desse perfil?",
+          "status": "respondida",
+          "resposta": {
+            "trechoId": "t22",
+            "citacao": "Perfil W de abas paralelas: ASTM A572, designações W150 a W610, comprimentos de 6.000 ou 12.000 mm."
+          },
+          "buscas": 1
+        },
+        {
+          "id": "q5",
+          "texto": "Vocês entregam em Indaial?",
+          "status": "respondida",
+          "resposta": {
+            "trechoId": "t51",
+            "citacao": "Entregamos em: Joinville, Araquari, Garuva, Jaraguá do Sul, Guaramirim, Schroeder, Corupá, Massaranduba, Itajaí, Blumenau, Indaial, Pomerode, Timbó e Balneário Camboriú."
+          },
+          "buscas": 1
+        }
+      ],
+      "trechosVistos": {
+        "t22": "Perfil W de abas paralelas: ASTM A572, designações W150 a W610, comprimentos de 6.000 ou 12.000 mm. Não foram informados grau específico, massas lineares ou lista completa de seções; consultar variante exata. Viga I não é sinônimo de W.\nVigas I, U e perfil W NÃO seguem o mínimo de 1.000 kg. Não foi fornecido outro mínimo. Prazo e pagamento desses itens de estoque: a combinar, não aplicar à vista/5 a 10 dias de encomenda.",
+        "t36": "Por peso, não exigir comprimento/peças; por peça, perguntar comprimento ausente sem inferir 6 m. Itens repetidos com quantidades diferentes exigem esclarecer adição versus correção, não somar por conta própria. Pedido existente com vendedor não reinicia checklist.",
+        "t50": "Vigas I, vigas U, perfil W e cantoneiras: sem mínimo informado.\nComo falar do mínimo: diga o valor aproximado (\"trabalhamos a partir de uns 1.000 kg de tubo\") e pergunte a quantidade, se ainda não sabe. Não diga que o pedido é pequeno demais e não recuse o cliente. Se o pedido está perto do mínimo, ou o cliente quer seguir abaixo dele, passe ao vendedor, que decide; não prometa que será aceito. O peso de barras ou peças só vale calculado pelo sistema a partir do catálogo, nunca de cabeça.",
+        "t51": "REGIÃO DE ENTREGA (informado pela empresa em 16/10/2026; lista parcial).\nEntregamos em: Joinville, Araquari, Garuva, Jaraguá do Sul, Guaramirim, Schroeder, Corupá, Massaranduba, Itajaí, Blumenau, Indaial, Pomerode, Timbó e Balneário Camboriú.\nCliente de uma dessas cidades: confirme que entregamos lá e siga com o pedido. Prazo e frete o vendedor confirma.\nNão atendemos estados distantes, como Bahia, São Paulo e Rio Grande do Sul: diga isso de forma cordial, sem chamar o vendedor.\nCidade que não está na lista: a lista não é completa, então não diga que atende nem que não atende.",
+        "peso1": "Peso teórico de perfil W 150 x 13 (viga W abas paralelas, tipo I) · d 148 x bf 100 mm · tw 4,3 / tf 4,9 mm · aço carbono: 4 × 12 m × 13 kg/m = aproximadamente 624 kg (catálogo, linha perfil-w-001).",
+        "peso2": "Peso teórico de perfil W 150 x 18 (viga W abas paralelas, tipo I) · d 153 x bf 102 mm · tw 5,8 / tf 7,1 mm · aço carbono: 4 × 12 m × 18 kg/m = aproximadamente 864 kg (catálogo, linha perfil-w-002).",
+        "peso3": "Peso teórico de perfil W 150 x 24 (viga W abas paralelas, tipo I) · d 160 x bf 102 mm · tw 6,6 / tf 10,3 mm · aço carbono: 4 × 12 m × 24 kg/m = aproximadamente 1.152 kg (catálogo, linha perfil-w-003)."
+      },
+      "pediuPessoa": false,
+      "pesosDaVez": [
+        "peso1",
+        "peso2",
+        "peso3"
+      ]
+    }
+  },
+  {
+    "title": "Cantoneiras • Timbó",
+    "input": "Vocês vendem cantoneira A36 de abas iguais 50 x 50, espessura 6 mm, barra de 6 metros? Preciso de 8 para Timbó. E se as abas forem 50 x 75, conseguem também?",
+    "ficha": {
+      "contato": {
+        "tipo": "indefinido",
+        "prova": null
+      },
+      "pendencias": [],
+      "encerrada": null,
+      "emAndamento": null,
+      "indicado": null,
+      "followups": [],
+      "perguntas": [
+        {
+          "id": "q1",
+          "texto": "Vocês fornecem cantoneira A36 de abas iguais 50 x 50 mm, espessura 6 mm, barra de 6 metros? Preciso de 8 para Timbó.",
+          "status": "respondida",
+          "resposta": {
+            "trechoId": "t17",
+            "citacao": "Cantoneiras de abas iguais, material A36: abas de 19,00 a 127 mm; espessura de 3,00 a 12,70 mm; comprimento de 6.000 mm."
+          },
+          "buscas": 1,
+          "maisRespostas": [
+            {
+              "trechoId": "t50",
+              "citacao": "Vigas I, vigas U, perfil W e cantoneiras: sem mínimo informado."
+            },
+            {
+              "trechoId": "t51",
+              "citacao": "Entregamos em: Joinville, Araquari, Garuva, Jaraguá do Sul, Guaramirim, Schroeder, Corupá, Massaranduba, Itajaí, Blumenau, Indaial, Pomerode, Timbó e Balneário Camboriú."
+            }
+          ]
+        },
+        {
+          "id": "q2",
+          "texto": "Vocês fornecem cantoneira A36 de abas 50 x 75 mm?",
+          "status": "respondida",
+          "resposta": {
+            "trechoId": "t17",
+            "citacao": "Não confirmar abas desiguais sem consulta."
+          },
+          "buscas": 1
+        }
+      ],
+      "trechosVistos": {
+        "t17": "Cantoneiras de abas iguais, material A36: abas de 19,00 a 127 mm; espessura de 3,00 a 12,70 mm; comprimento de 6.000 mm. Não confirmar abas desiguais sem consulta. Mínimo não preenchido.",
+        "t50": "Vigas I, vigas U, perfil W e cantoneiras: sem mínimo informado.\nComo falar do mínimo: diga o valor aproximado (\"trabalhamos a partir de uns 1.000 kg de tubo\") e pergunte a quantidade, se ainda não sabe. Não diga que o pedido é pequeno demais e não recuse o cliente. Se o pedido está perto do mínimo, ou o cliente quer seguir abaixo dele, passe ao vendedor, que decide; não prometa que será aceito. O peso de barras ou peças só vale calculado pelo sistema a partir do catálogo, nunca de cabeça.",
+        "t51": "REGIÃO DE ENTREGA (informado pela empresa em 16/10/2026; lista parcial).\nEntregamos em: Joinville, Araquari, Garuva, Jaraguá do Sul, Guaramirim, Schroeder, Corupá, Massaranduba, Itajaí, Blumenau, Indaial, Pomerode, Timbó e Balneário Camboriú.\nCliente de uma dessas cidades: confirme que entregamos lá e siga com o pedido. Prazo e frete o vendedor confirma.\nNão atendemos estados distantes, como Bahia, São Paulo e Rio Grande do Sul: diga isso de forma cordial, sem chamar o vendedor.\nCidade que não está na lista: a lista não é completa, então não diga que atende nem que não atende.",
+        "cant-017": "cantoneira: cantoneira abas iguais 2\" x 1/8\" (50,8 mm x 3,17 mm) · cantoneira L · aço carbono ou inoxidável · material: aço carbono ou aço inoxidável · 2,46 kg/m",
+        "cant-018": "cantoneira: cantoneira abas iguais 2\" x 3/16\" (50,8 mm x 4,76 mm) · cantoneira L · aço carbono ou inoxidável · material: aço carbono ou aço inoxidável · 3,63 kg/m"
+      },
+      "pediuPessoa": false
+    }
+  },
+  {
+    "title": "Barra redonda versus vergalhão • Garuva",
+    "input": "Sou de uma construtora em Garuva. Preciso de barra redonda maciça lisa 20 mm, 6 metros, 10 barras, aço A36, e vergalhão CA50 de 10 mm, 20 barras. Vocês fornecem quais desses?",
+    "ficha": {
+      "contato": {
+        "tipo": "indefinido",
+        "prova": null
+      },
+      "pendencias": [],
+      "encerrada": null,
+      "emAndamento": null,
+      "indicado": null,
+      "followups": [],
+      "perguntas": [
+        {
+          "id": "q1",
+          "texto": "Vocês fornecem barra redonda maciça lisa de 20 mm, 6 metros, 10 barras, aço A36?",
+          "status": "respondida",
+          "resposta": {
+            "trechoId": "t16",
+            "citacao": "Barras maciças redondas: diâmetro de 6,00 a 50 mm, comprimento de 6.000 mm. Material escrito EA36, pendente de confirmação da designação exata. EA36 é anotação interna, não uma opção a oferecer: nunca pergunte se o cliente aceita EA36; pergunte qual aço ele precisa quando ausente. A36 pedido pelo cliente é solicitação para confirmação, não equivalência já aprovada."
+          },
+          "buscas": 1
+        },
+        {
+          "id": "q2",
+          "texto": "Vocês fornecem vergalhão CA50 de 10 mm, 20 barras?",
+          "status": "respondida",
+          "resposta": {
+            "trechoId": "t27",
+            "citacao": "NÃO FORNECE: chapas expandidas; barras maciças quadradas; barras maciças sextavadas; ferragem armada e vergalhões da linha de construção civil; oxicorte ou material cortado, incluindo corte em barras e corte e dobra."
+          },
+          "buscas": 1
+        }
+      ],
+      "trechosVistos": {
+        "t16": "Barras maciças redondas: diâmetro de 6,00 a 50 mm, comprimento de 6.000 mm. Material escrito EA36, pendente de confirmação da designação exata. EA36 é anotação interna, não uma opção a oferecer: nunca pergunte se o cliente aceita EA36; pergunte qual aço ele precisa quando ausente. A36 pedido pelo cliente é solicitação para confirmação, não equivalência já aprovada. Se perguntar o material disponível, informe que a especificação ainda precisa de confirmação. Barra lisa/redonda maciça não é vergalhão de construção civil.",
+        "t27": "NÃO FORNECE: chapas expandidas; barras maciças quadradas; barras maciças sextavadas; ferragem armada e vergalhões da linha de construção civil; oxicorte ou material cortado, incluindo corte em barras e corte e dobra. Essas negativas prevalecem sobre listas antigas ou categorias genéricas. Foco comercial industrial/caldeiraria: não recusar produto autorizado porque comprador atua em construção civil. Fora da lista e identificado: recusar diretamente, sem cadastro ou repasse só para recusar. Pedido misto: separar recusados de autorizados."
+      },
+      "pediuPessoa": false
+    }
+  },
+  {
+    "title": "Destino fora da região • Porto Alegre",
+    "input": "Oi, vocês vendem chapa de alumínio? Preciso de 400 kg e entrega em Porto Alegre, Rio Grande do Sul. Atendem lá?",
+    "ficha": {
+      "contato": {
+        "tipo": "indefinido",
+        "prova": null
+      },
+      "pendencias": [],
+      "encerrada": null,
+      "emAndamento": null,
+      "indicado": null,
+      "followups": [],
+      "perguntas": [
+        {
+          "id": "q1",
+          "texto": "Vocês vendem chapa de alumínio? Preciso de 400 kg.",
+          "status": "respondida",
+          "resposta": {
+            "trechoId": "t26",
+            "citacao": "Produtos inox e alumínio: somente sob encomenda; identificar produto/família antes de assumir oferta. Qualidades, ligas, acabamentos e dimensões não detalhados."
+          },
+          "buscas": 1,
+          "maisRespostas": [
+            {
+              "trechoId": "t48",
+              "citacao": "Alumínio: aproximadamente 300 kg. Sob encomenda, prazo de 5 a 10 dias úteis."
+            }
+          ]
+        },
+        {
+          "id": "q2",
+          "texto": "Atendem em Porto Alegre, Rio Grande do Sul, com entrega?",
+          "status": "respondida",
+          "resposta": {
+            "trechoId": "t51",
+            "citacao": "Não atendemos estados distantes, como Bahia, São Paulo e Rio Grande do Sul: diga isso de forma cordial, sem chamar o vendedor."
+          },
+          "buscas": 1
+        }
+      ],
+      "trechosVistos": {
+        "t1": "Chapa de piso de alumínio: sob encomenda, prazo de 5 a 10 dias úteis, tamanho padrão 1250x3000.",
+        "t26": "Produtos inox e alumínio: somente sob encomenda; identificar produto/família antes de assumir oferta. Qualidades, ligas, acabamentos e dimensões não detalhados. Não estender automaticamente as faixas de aço carbono para inox/alumínio. A autorização de material não permite qualquer peça fabricada desse material.\nMínimos: ver \"Pedidos mínimos\". Encomenda: estimativa de 5 a 10 dias úteis, podendo chegar antes, à vista ao pedir. Vendedor confirma disponibilidade, composição e condições específicas.",
+        "t48": "Alumínio: aproximadamente 300 kg. Sob encomenda, prazo de 5 a 10 dias úteis.",
+        "t51": "REGIÃO DE ENTREGA (informado pela empresa em 16/10/2026; lista parcial).\nEntregamos em: Joinville, Araquari, Garuva, Jaraguá do Sul, Guaramirim, Schroeder, Corupá, Massaranduba, Itajaí, Blumenau, Indaial, Pomerode, Timbó e Balneário Camboriú.\nCliente de uma dessas cidades: confirme que entregamos lá e siga com o pedido. Prazo e frete o vendedor confirma.\nNão atendemos estados distantes, como Bahia, São Paulo e Rio Grande do Sul: diga isso de forma cordial, sem chamar o vendedor.\nCidade que não está na lista: a lista não é completa, então não diga que atende nem que não atende."
+      },
+      "pediuPessoa": false
+    }
+  }
+]

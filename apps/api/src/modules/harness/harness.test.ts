@@ -943,7 +943,7 @@ describe("ajustes da sombra de 16/10, segunda leva", () => {
     const base = { ficha: fichaInicialAtendimento(), pedido: contextoVillefer(), historico, jogada: { tipo: "responder_e_passar", instrucao: "" }, rules: regras, fichaTexto: "" };
     expect(await reviewMessage({ ...base, texto: "Temos sim 😊 A espessura de 1,2 mm o vendedor confirma." })).toMatchObject({ ok: false, regra: "sem_emoji" });
     expect(await reviewMessage({ ...base, texto: "Temos chapas de piso de alumínio sob encomenda no tamanho padrão 1,25 x 3 m, com prazo de 5 a 10 dias úteis. A espessura de 1,2 mm precisa ser confirmada." }))
-      .toMatchObject({ ok: false, regra: "nao_repete_frase" });
+      .toMatchObject({ ok: true }); // Factual repetition is judged semantically; the offer remains an objective veto.
     expect(await reviewMessage({ ...base, texto: "Você prefere ver o catálogo em PDF ou falar com um vendedor?" })).toMatchObject({ ok: false, regra: "nao_repete_frase" });
     expect(await reviewMessage({ ...base, texto: "Essa medida é a padrão, temos sim. A espessura de 1,2 mm o vendedor confirma com você. Quantas chapas você precisa?" })).toMatchObject({ ok: true });
 

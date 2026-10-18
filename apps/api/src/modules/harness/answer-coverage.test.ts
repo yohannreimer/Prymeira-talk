@@ -104,14 +104,15 @@ describe("coverage of a live attendance answer", () => {
     expect(result.enviar).not.toBe(omitida);
     expect(result.ficha.perguntas[0].status).toBe("respondida");
   });
-  it("an unresolved generic reading cannot reach the writer", async () => {
+  it("an unresolved generic reading remains a hint, but a rejected answer still cannot be sent", async () => {
     let writes = 0;
     const result = await runTurn(atendimento, {
       leitor: createScriptedModel("reader", () => ({ content: null, toolCalls: [] })),
-      model: createScriptedModel("writer", () => { writes++; return { content: null, toolCalls: [] }; })
+      model: createScriptedModel("writer", () => { writes++; return { content: null, toolCalls: [toolCall("responder", { texto: boa })] }; }),
+      judge: createJuizDeAtendimento(jev({ resposta_1: "sem_resposta" }))
     }, { ficha: ficha(), pedido, historico, evento: { tipo: "mensagem", texto: pergunta } });
-    expect(writes).toBe(0);
-    expect(result.humano?.motivo).toMatch(/Leitura incompleta/);
+    expect(writes).toBe(2);
+    expect(result.humano?.motivo).toMatch(/juiz_requisito/);
     expect(result.ficha.perguntas[0].status).toBe("respondida");
   });
   it("reviewer outage hands off without treating the question", async () => {

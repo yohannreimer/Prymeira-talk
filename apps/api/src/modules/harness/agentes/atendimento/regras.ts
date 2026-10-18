@@ -44,7 +44,9 @@ const naoRepeteFrase: Rule = {
   check: ({ texto, historico, jogada }) => {
     if (jogada.tipo === "cobrar_pendencia") return { ok: true };
     const ditas = historico.filter((message) => message.autor !== "contato").slice(-4).flatMap((message) => frases(message.texto));
-    const repetida = frases(texto).find((frase) => ditas.some((dita) => {
+    // Factual repetition needs semantic context (renewed question, unanswered detail).
+    // Only the unsolicited catalogue/seller offer is an objective duplicate here.
+    const repetida = frases(texto).filter(frase => frase.some(w => /^(catalogo|vendedor|atendente)$/.test(w)) && frase.some(w => /^(prefere|quer|gostaria|posso|deseja)$/.test(w))).find((frase) => ditas.some((dita) => {
       const common = frase.filter((word) => dita.includes(word)).length;
       return common / (frase.length + dita.length - common) >= 0.6;
     }));

@@ -139,7 +139,7 @@ function jogadaDasPerguntas(ficha: FichaDoAtendimento): Jogada {
     return {
       tipo: "responder_e_passar",
       instrucao: [
-        ...(respostas.length ? [`Responda com estas informações da base: ${respostas.join("; ")}. Use só o que responde a última mensagem; o que a conversa já disse ao cliente, não repita.`] : []),
+        ...(respostas.length ? [`Responda com estas informações da base: ${respostas.join("; ")}. Use só o que responde a última mensagem; não repita informações antigas sem motivo. Se o cliente perguntou novamente ou pediu confirmação, responda esse ponto de novo.`] : []),
         `Os documentos não respondem: ${semBase.map((item) => `"${item.texto}"`).join(", ")}. Diga, nomeando esse assunto, que o vendedor confirma isso com ele. Não diga nada genérico como "vou consultar as informações". E siga atendendo: o objetivo é deixar o pedido pronto para orçar. Termine perguntando o que ainda falta para o vendedor orçar (produto, medida, quantidade, cidade de entrega), tudo o que faltar numa pergunta só, sem repetir o que o cliente já disse.`
       ].join(" "),
       avisarHumano: `Sem base nos documentos para: ${semBase.map((item) => item.texto).join(" | ")}`,
@@ -149,7 +149,7 @@ function jogadaDasPerguntas(ficha: FichaDoAtendimento): Jogada {
   if (respostas.length) {
     return {
       tipo: "responder",
-      instrucao: `Responda com estas informações da base, com as palavras do cliente: ${respostas.join("; ")}. Use só o que responde a última mensagem; o que a conversa já disse ao cliente, não repita.${naoBuscadas.length ? ` Sobre ${naoBuscadas.map((item) => `"${item.texto}"`).join(", ")}, não afirme nada; pergunte o detalhe que falta.` : ""} O objetivo é deixar o pedido pronto para orçar: termine perguntando o que ainda falta para o vendedor orçar (produto, medida, quantidade, cidade de entrega), tudo o que faltar numa pergunta só, sem repetir o que o cliente já disse. Se não falta nada, não pergunte.`
+      instrucao: `Responda com estas informações da base, com as palavras do cliente: ${respostas.join("; ")}. Use só o que responde a última mensagem; não repita informações antigas sem motivo. Se o cliente perguntou novamente ou pediu confirmação, responda esse ponto de novo.${naoBuscadas.length ? ` Sobre ${naoBuscadas.map((item) => `"${item.texto}"`).join(", ")}, não afirme nada; pergunte o detalhe que falta.` : ""} O objetivo é deixar o pedido pronto para orçar: termine com o próximo detalhe necessário para o vendedor orçar (produto, medida, quantidade ou cidade), respeitando a etapa de viabilidade da base. Reutilize o que o cliente já informou; uma pergunta anterior ainda sem resposta pode ser retomada se necessária para avançar. Não acumule dados técnicos, logística e cadastro numa só pergunta. Se não falta nada, não pergunte.`
     };
   }
   return {

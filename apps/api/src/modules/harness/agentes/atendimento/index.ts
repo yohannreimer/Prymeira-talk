@@ -5,7 +5,6 @@ import { instrucoes, instrucoesDoAnalista, instrucoesDoLeitor, skills } from "./
 import { aposEnvio, decidirJogada } from "./jogadas.js";
 import { regras } from "./regras.js";
 import type { ContextoDoAtendimento, FichaDoAtendimento } from "./tipos.js";
-import { lacunasDaBase } from "./cobertura.js";
 
 /**
  * The attendance agent on the new harness.
@@ -25,7 +24,6 @@ export const atendimento: AgentDefinition<FichaDoAtendimento, ContextoDoAtendime
   instrucoesDoLeitor,
   maxRodadasDeLeitura: 6,
   conferirLeitura,
-  validarLeitura: ({ ficha }) => lacunasDaBase(ficha),
   analista: { instrucoes: instrucoesDoAnalista, ferramentas: ferramentasDoAnalista, maxRodadas: 4 },
   decidirJogada,
   aposEnvio,
