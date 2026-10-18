@@ -401,7 +401,7 @@ export function createAgentFollowupRuntime(input: {
     let session: { id: string; metadata?: unknown } | null = null;
     try {
       const [context, knowledge] = await Promise.all([
-        buildConversationContext(prisma, { workspaceId: runInput.workspaceId, conversationId: followup.conversationId, limit: 80 }),
+        buildConversationContext(prisma, { workspaceId: runInput.workspaceId, conversationId: followup.conversationId, limit: 200 }),
         prisma.aiKnowledgeSource.findMany({ where: { workspaceId: runInput.workspaceId, agentId: agent.id, status: "ready" }, orderBy: [{ createdAt: "desc" }] })
       ]);
       session = followup.sessionId && prisma.aiAgentSession
