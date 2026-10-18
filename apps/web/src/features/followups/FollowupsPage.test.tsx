@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   getToken: vi.fn(async () => "token"),
   list: vi.fn(),
+  messages: vi.fn(),
   getConversations: vi.fn(),
   send: vi.fn(),
   postpone: vi.fn(),
@@ -25,6 +26,7 @@ vi.mock("../../app/api", async (importOriginal) => {
   return {
     ...original,
     apiListFollowups: mocks.list,
+    apiGetConversationMessages: mocks.messages,
     apiGetConversations: mocks.getConversations,
     apiSendFollowup: mocks.send,
     apiPostponeFollowup: mocks.postpone,
@@ -160,6 +162,11 @@ describe("FollowupsPage", () => {
       return [];
     });
     mocks.getConversations.mockReset().mockResolvedValue([conversation]);
+    mocks.messages.mockReset().mockResolvedValue([{
+      id: review.anchorMessage.id, workspaceId: review.workspaceId, conversationId: review.conversationId,
+      providerMessageId: null, direction: 'inbound', type: 'text', body: review.anchorMessage.body,
+      mediaUrl: null, status: 'read', sentByUserId: null, createdAt: review.anchorMessage.createdAt
+    }]);
     mocks.send.mockReset();
     mocks.postpone.mockReset();
     mocks.cancel.mockReset();
@@ -188,7 +195,7 @@ describe("FollowupsPage", () => {
     expect(container.textContent).toContain("Vou verificar a proposta e retorno.");
     expect(container.textContent).toContain("Retomar proposta enviada");
     expect(container.textContent).toContain("A análise indicou revisão humana");
-    expect(container.textContent).toContain("Etapa 1");
+    expect(container.querySelector("textarea")?.value).toBe(review.draftBody);
     expect(mocks.getConversations).not.toHaveBeenCalled();
     expect(container.textContent).toContain("Para revisar");
     expect(buttonByText(container, "Para revisar")?.getAttribute("aria-pressed")).toBe("true");
@@ -232,7 +239,7 @@ describe("FollowupsPage", () => {
       setter?.call(textarea, sent.finalBody);
       textarea?.dispatchEvent(new Event("input", { bubbles: true }));
     });
-    await act(async () => buttonByText(container, "Confirmar envio")?.click());
+    await act(async () => buttonByText(container, "Enviar")?.click());
     await settle();
 
     expect(mocks.send).toHaveBeenCalledWith(mocks.getToken, review.id, {
@@ -262,9 +269,8 @@ describe("FollowupsPage", () => {
     });
     await settle();
 
-    expect(container.querySelector("textarea")).toBeNull();
+    expect(container.querySelector("textarea")?.value).toBe("Rascunho atualizado pelo servidor.");
     expect(container.textContent).toContain("O contexto mudou");
-    expect(container.textContent).toContain("Rascunho atualizado pelo servidor.");
     expect(mocks.list).toHaveBeenCalledTimes(callsBeforeEvent);
   });
 
@@ -311,7 +317,7 @@ describe("FollowupsPage", () => {
     await act(async () => resolveReload([review, otherReview]));
     await settle();
 
-    expect(container.textContent).toContain("Rascunho realtime mais novo.");
+    expect(container.querySelector("textarea")?.value).toBe("Rascunho realtime mais novo.");
     expect(container.textContent).not.toContain(review.draftBody);
     expect(container.textContent).toContain("Bruno Lima");
     expect(container.textContent).not.toContain("Organizando acompanhamentos");
@@ -362,6 +368,7 @@ describe("FollowupsPage", () => {
     mocks.noFollowup.mockResolvedValue({ ...cancelled, reason: "no_followup" });
     await renderPage();
 
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Mais opções"]')?.click());
     await act(async () => buttonByText(container, "Não acompanhar")?.click());
     expect(mocks.noFollowup).not.toHaveBeenCalled();
     expect(container.textContent).toContain("Não acompanhar mais esta conversa?");
@@ -384,13 +391,14 @@ describe("FollowupsPage", () => {
     await settle();
     expect(document.activeElement).toBe(buttonByText(container, "Cancelar"));
 
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Mais opções"]')?.click());
     await act(async () => buttonByText(container, "Não acompanhar")?.click());
     const confirmNoFollowup = buttonByText(container, "Confirmar não acompanhar");
     expect(document.activeElement).toBe(confirmNoFollowup);
 
     await act(async () => buttonByText(container, "Voltar")?.click());
     await settle();
-    expect(document.activeElement).toBe(buttonByText(container, "Não acompanhar"));
+    expect(document.activeElement).toBe(container.querySelector('[aria-label="Mais opções"]'));
   });
 
   it("closes an open confirmation on realtime and restores focus to its trigger", async () => {
@@ -411,6 +419,7 @@ describe("FollowupsPage", () => {
     expect(document.activeElement).toBe(buttonByText(container, "Cancelar"));
     expect(mocks.cancel).not.toHaveBeenCalled();
 
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Mais opções"]')?.click());
     await act(async () => buttonByText(container, "Não acompanhar")?.click());
     expect(container.textContent).toContain("Não acompanhar mais esta conversa?");
 
@@ -424,7 +433,7 @@ describe("FollowupsPage", () => {
     await settle();
 
     expect(container.textContent).not.toContain("Não acompanhar mais esta conversa?");
-    expect(document.activeElement).toBe(buttonByText(container, "Não acompanhar"));
+    expect(document.activeElement).toBe(container.querySelector('[aria-label="Mais opções"]'));
     expect(mocks.noFollowup).not.toHaveBeenCalled();
   });
 
@@ -477,15 +486,14 @@ describe("FollowupsPage", () => {
     mocks.list.mockResolvedValueOnce([{ ...review, analysis }]);
     await renderPage();
 
-    const card = container.querySelector(".followup-card");
-    expect(card?.querySelector(".followup-pending")?.textContent).toBe(analysis.pendingItem);
-    expect(card?.querySelector(".followup-rationale")?.textContent).toBe(analysis.rationale);
-    expect(card?.querySelector(".followup-copy")?.textContent).toContain(review.draftBody);
-    expect(card?.querySelector(".followup-meta")?.textContent).toContain("Etapa 1");
-    expect(card?.querySelector(".followup-meta")?.textContent).toContain("Cliente disse: semana que vem");
+    const context = container.querySelector('.fr-draft-label details');
+    expect(context?.textContent).toContain(analysis.pendingItem);
+    expect(context?.textContent).toContain(analysis.rationale);
+    expect(context?.textContent).toContain("Cliente disse: semana que vem");
+    expect(container.querySelector('textarea')?.value).toBe(review.draftBody);
     expect(container.textContent).not.toContain("Mensagem âncora");
     expect(container.textContent).not.toContain("Motivo:");
-    expect(buttonByText(container, "Editar e enviar")).not.toBeNull();
+    expect(buttonByText(container, "Enviar")).not.toBeNull();
   });
 
   it("lists seller reminders apart, in amber, with no way to message the customer", async () => {

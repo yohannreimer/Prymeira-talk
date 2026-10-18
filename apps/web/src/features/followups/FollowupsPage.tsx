@@ -43,6 +43,7 @@ import {
 } from "./followup-display";
 import "./followups.css";
 import { FollowupSettings } from "./FollowupSettings";
+import { FollowupReview } from "./FollowupReview";
 
 const filters: Array<{
   key: FollowupListStatus;
@@ -149,6 +150,8 @@ export function FollowupsPage() {
   const [editing, setEditing] = useState<FollowupEditingState | null>(null);
   const [confirmation, setConfirmation] = useState<FollowupConfirmation | null>(null);
   const [realtimeToken, setRealtimeToken] = useState<string | null>(null);
+  const [contextRevisions, setContextRevisions] = useState<Record<string, number>>({});
+  const actionInFlight = useRef(false);
   const loadSequence = useRef(0);
   const loadInFlightRef = useRef(0);
   const realtimeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -238,11 +241,12 @@ export function FollowupsPage() {
       if (hadLoadInFlight) scheduleRealtimeReload(25);
       return;
     }
-    if (event.type === "message.created" || event.type === "conversation.updated") {
-      const conversationId = event.type === "message.created"
+    if (event.type === "message.created" || event.type === "message.updated" || event.type === "conversation.updated") {
+      const conversationId = event.type === "message.created" || event.type === "message.updated"
         ? event.payload.conversationId
         : event.payload.id;
       if (followupsRef.current.some((followup) => followup.conversationId === conversationId)) {
+        setContextRevisions(current => ({ ...current, [conversationId]: (current[conversationId] ?? 0) + 1 }));
         scheduleRealtimeReload();
       }
     }
@@ -269,7 +273,8 @@ export function FollowupsPage() {
     action: () => Promise<ConversationFollowupDto>,
     successMessage: string
   ) {
-    if (busyId) return;
+    if (actionInFlight.current) return;
+    actionInFlight.current = true;
     editingRef.current = null;
     confirmationRef.current = null;
     setEditing(null);
@@ -293,6 +298,7 @@ export function FollowupsPage() {
         }));
       }
     } finally {
+      actionInFlight.current = false;
       setBusyId(null);
     }
   }
@@ -321,7 +327,7 @@ export function FollowupsPage() {
   }
 
   return (
-    <section className="talk-workspace followups-page" aria-labelledby="followups-title">
+    <section className={`talk-workspace followups-page${filter === "review" && !settingsOpen ? " is-chat-review" : ""}`} aria-labelledby="followups-title">
       <header className="followups-header">
         <div className="followups-title-block">
           <span className="followups-kicker">Central de continuidade</span>
@@ -397,7 +403,22 @@ export function FollowupsPage() {
           </div>
         ) : null}
 
-        {!isLoading && !loadError && followups.length > 0 ? (
+        {!isLoading && !loadError && followups.length > 0 && filter === "review" ? <FollowupReview
+          followups={followups}
+          getToken={getToken}
+          busyId={busyId}
+          errors={cardErrors}
+          contextRevisions={contextRevisions}
+          onSend={sendBody}
+          onOpenConversation={openConversation}
+          onCancel={item => void runAction(item, () => apiCancelFollowup(getToken, item.id, {
+            reason: "manual_cancelled", expectedUpdatedAt: item.updatedAt
+          }), "Acompanhamento cancelado.")}
+          onNoFollowup={item => void runAction(item, () => apiMarkFollowupNoFollowup(getToken, item.id, item.updatedAt), "Conversa marcada para não acompanhar.")}
+          onPostpone={item => void runAction(item, () => apiPostponeFollowup(getToken, item.id, item.updatedAt), "Follow-up adiado para o próximo horário útil.")}
+        /> : null}
+
+        {!isLoading && !loadError && followups.length > 0 && filter !== "review" ? (
           <div className="followups-list" aria-label={`Follow-ups: ${filters.find((item) => item.key === filter)?.label}`}>
             {followups.map((followup) => (
               <FollowupCard
