@@ -33,6 +33,7 @@ export const atendimento: AgentDefinition<FichaDoAtendimento, ContextoDoAtendime
   fontesDoEscritor: (ficha) => Object.entries(ficha.trechosVistos).map(([id, texto]) => `[${id}] ${texto}`).join("\n"),
   fontesDoRevisor: (ficha) => Object.entries(ficha.trechosVistos).map(([id, texto]) => `[${id}] ${texto}`).join("\n"),
   janelaDeMensagens: 20,
+  janelaDoFollowup: 200,
   anexosDaVez: (ficha, pedido) => (ficha.anexosDaVez ?? [])
     .map((id) => pedido.anexos?.find((anexo) => anexo.id === id))
     .filter((anexo) => anexo !== undefined)

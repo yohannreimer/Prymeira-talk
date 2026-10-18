@@ -35,9 +35,10 @@ export function decidirJogada(input: {
     return { tipo: "em_andamento", silencio: true, instrucao: `Em andamento: ${ficha.emAndamento.motivo}.` };
   }
 
-  // The company owes something: the customer is not chased, the seller is reminded.
+  // An old unresolved item must not hide a newer quote awaiting the buyer.
+  const doCliente = ultima(abertas.filter((item) => item.dono === "cliente"));
   const daEmpresa = ultima(abertas.filter((item) => item.dono === "empresa"));
-  if (daEmpresa) {
+  if (daEmpresa && (!doCliente || daEmpresa.prova.mensagem >= doCliente.prova.mensagem)) {
     return {
       tipo: "lembrete_vendedor",
       humano: `Lembrete: ${daEmpresa.descricao} (${daEmpresa.doContato ? `o cliente pediu na mensagem [${daEmpresa.doContato.mensagem}]: "${daEmpresa.doContato.trecho}"` : `mensagem [${daEmpresa.prova.mensagem}]: "${daEmpresa.prova.trecho}"`})`,
@@ -54,7 +55,6 @@ export function decidirJogada(input: {
     };
   }
 
-  const doCliente = ultima(abertas.filter((item) => item.dono === "cliente"));
   if (!doCliente) return { tipo: "nada_aberto", silencio: true, instrucao: "Nada em aberto: sem follow-up." };
 
   const anteriores = ficha.followups.filter((item) => item.pendenciaId === doCliente.id);

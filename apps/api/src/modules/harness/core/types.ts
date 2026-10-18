@@ -110,6 +110,8 @@ export type AgentDefinition<Ficha, Pedido> = {
   regras: ReviewRule<Ficha, Pedido>[];
   /** How many recent messages the writer sees verbatim. The record carries the rest. */
   janelaDeMensagens?: number;
+  /** Longer commercial context on silence, without expanding live reply context. */
+  janelaDoFollowup?: number;
   /**
    * The only reasons the writer may hand the conversation to a person, as {key: when it applies}.
    * Without it the writer may hand over for any reason, which is how "anything hard goes to a human" starts.

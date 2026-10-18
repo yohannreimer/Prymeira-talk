@@ -72,42 +72,35 @@ export function createJuizDeAtendimento(jev: JevClient): Judge {
   };
 }
 
-/**
- * JEV as the follow-up judge: is this message worth sending now? It answers the question the old
- * follow-up never asked separately. Wire it with judgeFailClosed so a JEV outage sends nothing alone.
- */
-export function createJuizDeFollowup(jev: JevClient, thresholds = { vale: 0.35, inventa: 0.6, assunto: 0.3 }): Judge {
+/** Concrete defects only: useful reactivation does not require new information or a fresh promise to reply. */
+export function createJuizDeFollowup(jev: JevClient): Judge {
+  const falhas: Record<string, string> = {
+    contradiz_negociacao: "A mensagem altera uma condição informada pelo vendedor nesta negociação. Preserve o combinado, mesmo quando difere da base geral.",
+    etapa_antecipada: "A mensagem pede medida ou cadastro antes de saber se a alternativa atende. Pergunte primeiro só pela viabilidade da alternativa.",
+    cobra_empresa: "A pendência é da empresa: falta responder ou enviar o que o cliente pediu. Gere lembrete interno, sem cobrar avaliação de algo não entregue.",
+    insiste_recusa: "A mensagem insiste na oferta após recusa expressa, compra resolvida ou pedido para parar. Não reapresente a alternativa recusada.",
+    sem_contexto: "Faltou retomar o item, proposta ou decisão concreta em aberto. Faça uma pergunta simples sobre a compra.",
+    inventa: "A mensagem inventa preço, estoque atual, prazo, desconto, condição ou equivalência técnica. Retire a afirmação sem suporte.",
+    repete_dado: "A mensagem cobra um dado já informado. Use o histórico e pergunte apenas o que ainda falta.",
+    terceiriza: "A mensagem desvia para vendedor ou catálogo sem retomar a negociação. Pergunte diretamente sobre o pedido.",
+    repete_mensagem: "A mensagem repete a mesma cobrança sem mudar a abordagem. Preserve o assunto e faça uma retomada diferente.",
+    contato_interno: "O contato não é cliente nesta conversa. Não envie retomada comercial."
+  };
   return async ({ texto, jogada, historico, fichaTexto, pedidoTexto, fontesExtras }) => {
-    const answers = await jev.ask(
-      {
-        pedido: pedidoTexto ?? "",
-        ficha: fichaTexto,
-        jogada: jogada.instrucao,
-        ...(fontesExtras ? { outrasFontes: fontesExtras } : {}),
-        ultimasMensagens: historico.slice(-12),
-        mensagemCandidata: texto
-      },
-      {
-        vale: {
-          type: "noul",
-          instructions: "A conversa ficou parada. Lendo as últimas mensagens, faz sentido a empresa mandar a mensagemCandidata agora para o cliente?",
-          criteria: {
-            true: "Sim: o cliente ficou devendo algo real e a mensagem ajuda a retomar.",
-            false: "Não: a conversa terminou, a vez é da empresa, o contato não é cliente, ou a mensagem incomoda sem motivo."
-          }
-        },
-        assunto: {
-          type: "noul",
-          instructions: "A mensagemCandidata fala do assunto que está realmente em aberto no FINAL da conversa (e não de um assunto antigo já resolvido)?",
-          criteria: { true: "Fala do assunto em aberto no final.", false: "Fala de um assunto antigo, resolvido ou que não aparece na conversa." }
-        },
-        inventa: { type: "noul", instructions: PERGUNTA_INVENTA, criteria: CRITERIO_INVENTA }
-      }
-    );
-    const notas = { vale: noul(answers.vale), assunto: noul(answers.assunto), inventa: noul(answers.inventa) };
-    if (notas.inventa >= thresholds.inventa) return { ok: false, regra: "juiz_inventa", motivo: "O revisor achou uma afirmação sem base na conversa.", notas };
-    if (notas.assunto < thresholds.assunto) return { ok: false, regra: "juiz_assunto", motivo: "O revisor achou que a mensagem fala de um assunto que não é o que está em aberto.", notas };
-    if (notas.vale < thresholds.vale) return { ok: false, regra: "juiz_nao_vale", motivo: "O revisor achou que não vale mandar follow-up nesta conversa agora.", notas };
-    return { ok: true, notas };
+    const exigencia = `Revise a retomada de uma venda parada e escolha uma falha concreta, ou adequada.
+Silêncio, cobranças anteriores sem resposta, agradecimento pelo orçamento e 'vou ver e aviso' NÃO encerram a compra. Retomar o mesmo produto com outra abordagem é o objetivo, não repetição indevida. Não exija novidade, urgência, desconto ou promessa de resposta para permitir follow-up. O sistema controla cadência e limite: avalie conteúdo, não invente intervalo.
+A condição informada pelo vendedor nesta negociação prevalece sobre a base geral; 500 kg informados pelo vendedor não podem ser corrigidos para 1.000 kg. Não exija mencionar vendedor nem confirmação. Não deduza estoque atual de oferta antiga. Cada condição pertence ao produto/modalidade informado: mínimo de tubos não vale automaticamente para perfis, e não se pode somar perfil U com tubo para atingir 500 kg sem autorização explícita. Isso é contradiz_negociacao, mesmo se a ficha ou a jogada tiver resumido errado: o histórico original prevalece sobre essas interpretações.
+Pedido detalhado de cotação ainda sem orçamento respondido gera lembrete interno, mesmo se a última mensagem da empresa só informou mínimo genérico, disse "registrei" ou ofereceu catálogo/vendedor. Isso não obriga o cliente a pedir novamente para seguir. Só cobre dado essencial ausente ou aceite explicitamente perguntado e não respondido. Para quem pediu retalho, confirmar se chapa inteira serve é válido, sem pedir medidas antes desse aceite; orçamento enviado e agradecido permite retomada. Aprovação com pagamento ainda indefinido mantém essa decisão em aberto. Cortesia não é fechamento. Uma alternativa recusada não deve ser oferecida de novo, mas o pedido original pode continuar se ainda houver caminho de compra. Não presuma equivalência entre vigas ou materiais.
+Se o vendedor ofereceu uma alternativa e perguntou se atende, o silêncio mantém essa decisão aberta: uma nova pergunta contextual sobre a alternativa é válida, sem presumir equivalência técnica. Não vete só porque o item original estava indisponível ou a pergunta já foi feita; retomar uma decisão sem resposta é o objetivo. Vete afirmar equivalência sem prova ou insistir após recusa expressa. Recusa de uma oferta posterior não encerra os outros itens de uma cotação anterior: retomar os itens ainda abertos, não recusados e não declarados indisponíveis é válido, mesmo sem sinal recente de interesse. Não cobre a alternativa recusada nem afirme disponibilidade do item que acabou.
+A mensagem deve citar o assunto real e facilitar uma resposta. Não peça dado já informado nem o significado de um 'obrigado'. Uma pergunta sobre condição ainda não aceita é válida; pergunta com premissa inventada também é invenção. Não vete por preferência de estilo.`;
+    const criteria = { adequada: "Retomada útil, contextual, fiel à negociação e sem falha concreta.", ...falhas };
+    const answers = await jev.ask({ pedido: pedidoTexto ?? "", ficha: fichaTexto, jogada: jogada.instrucao,
+      outrasFontes: fontesExtras ?? "", ultimasMensagens: historico.slice(-200), mensagemCandidata: texto },
+      { retomada: { type: "choice", instructions: exigencia, criteria } });
+    const resultado = choice(answers.retomada);
+    if (!resultado || !Object.hasOwn(criteria, resultado)) throw new Error("JEV_FOLLOWUP_VERDICT_INVALID");
+    const motivo = falhas[resultado] ?? null;
+    const verificacoes = [{ id: "retomada", exigencia, resultado, ok: resultado === "adequada", motivo }];
+    return motivo ? { ok: false, regra: "juiz_retomada", motivo, verificacoes } : { ok: true, verificacoes };
   };
 }
