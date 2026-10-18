@@ -31,6 +31,11 @@ export function renderFicha(ficha: FichaDoAtendimento): string {
     const resposta = [pergunta.resposta, ...(pergunta.maisRespostas ?? [])].filter((item) => item !== null).map((item) => ` · base ${item.trechoId}: "${item.citacao}"`).join("");
     lines.push(`Pergunta ${pergunta.id} [${pergunta.status}]: ${pergunta.texto}${resposta}`);
   }
+  if (ficha.prequalificacao) {
+    lines.push(`Pré-qualificação interna: ${ficha.prequalificacao.situacao}. ${ficha.prequalificacao.resumo}`);
+    lines.push(`Faltantes: ${ficha.prequalificacao.faltantes.join("; ") || "nenhum"}`);
+    lines.push(`Divergências para o orçamento (não recitar ao cliente): ${ficha.prequalificacao.divergencias.join("; ") || "nenhuma"}`);
+  }
   if (ficha.pediuPessoa) lines.push("O contato pediu para falar com uma pessoa.");
   if (ficha.anexosDaVez?.length) lines.push(`Vai anexado nesta resposta: ${ficha.anexosDaVez.join(", ")}`);
   if (ficha.anexosEnviados?.length) lines.push(`Já enviado antes: ${ficha.anexosEnviados.join(", ")}`);

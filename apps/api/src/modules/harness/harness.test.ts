@@ -446,18 +446,19 @@ describe("atendimento ao vivo: consulta a base antes de passar para humano", () 
     expect(result.jogada?.tipo).toBe("conversar");
   });
 
-  it("answers what the base covers and hands over only the rest, with a specific line", async () => {
+  it("answers known facts and keeps unknown pricing pending while qualifying", async () => {
     const result = await turno("prazo pra blumenau? e desconto pra 5 toneladas?", {
       leitor: leitor(
         [toolCall("registrar_pergunta", { texto: "prazo para Blumenau" }), toolCall("registrar_pergunta", { texto: "desconto para 5 toneladas" })],
         [toolCall("buscar_na_base", { perguntaId: "q1", consulta: "entrega Blumenau" }), toolCall("buscar_na_base", { perguntaId: "q2", consulta: "desconto toneladas" })],
         [toolCall("responder_pergunta", { perguntaId: "q1", trechoId: "entrega", citacao: "em até 48 horas úteis" }), toolCall("marcar_sem_base", { perguntaId: "q2" })]
       ),
-      model: escritor("Pra Blumenau a entrega é em até 48 horas úteis. O desconto pra 5 toneladas o vendedor confirma com você.")
+      model: escritor("Pra Blumenau a entrega é em até 48 horas úteis. O desconto ainda não está definido. Qual material você precisa?")
     });
-    expect(result.jogada?.tipo).toBe("responder_e_passar");
+    expect(result.jogada?.tipo).toBe("qualificar_com_pendencias");
     expect(result.enviar).toMatch(/48 horas/);
-    expect(result.humano?.motivo).toMatch(/desconto para 5 toneladas/);
+    expect(result.humano).toBeNull();
+    expect(result.ficha.perguntas.find(p=>p.id==="q2")?.status).toBe("sem_base");
   });
 
   it("rejects a citation that is not in the passage", async () => {
@@ -943,9 +944,9 @@ describe("ajustes da sombra de 16/10, segunda leva", () => {
     const base = { ficha: fichaInicialAtendimento(), pedido: contextoVillefer(), historico, jogada: { tipo: "responder_e_passar", instrucao: "" }, rules: regras, fichaTexto: "" };
     expect(await reviewMessage({ ...base, texto: "Temos sim 😊 A espessura de 1,2 mm o vendedor confirma." })).toMatchObject({ ok: false, regra: "sem_emoji" });
     expect(await reviewMessage({ ...base, texto: "Temos chapas de piso de alumínio sob encomenda no tamanho padrão 1,25 x 3 m, com prazo de 5 a 10 dias úteis. A espessura de 1,2 mm precisa ser confirmada." }))
-      .toMatchObject({ ok: false, regra: "nao_repete_frase" });
-    expect(await reviewMessage({ ...base, texto: "Você prefere ver o catálogo em PDF ou falar com um vendedor?" })).toMatchObject({ ok: false, regra: "nao_repete_frase" });
-    expect(await reviewMessage({ ...base, texto: "Essa medida é a padrão, temos sim. A espessura de 1,2 mm o vendedor confirma com você. Quantas chapas você precisa?" })).toMatchObject({ ok: true });
+      .toMatchObject({ ok: true }); // Factual repetition is judged semantically; the offer remains an objective veto.
+    expect(await reviewMessage({ ...base, texto: "Você prefere ver o catálogo em PDF ou falar com um vendedor?" })).toMatchObject({ ok: false, regra: "sem_terceirizar_prequalificacao" });
+    expect(await reviewMessage({ ...base, texto: "Essa medida é a padrão, temos sim. Anotei a espessura solicitada de 1,2 mm. Quantas chapas você precisa?" })).toMatchObject({ ok: true });
 
     // The 1,20 mm row is in the catalogue: the reader is sent to look before calling the thickness unknown.
     const { conferirLeitura } = await import("./agentes/atendimento/ferramentas.js");
@@ -963,9 +964,9 @@ describe("ajustes da sombra de 16/10, segunda leva", () => {
     const pedido = contextoVillefer({ anexos: [catalogoPdf] });
     const ficha = { ...fichaInicialAtendimento(), perguntas: [pergunta] };
     const jogada = decidirJogada({ ficha, pedido, triagem: null, evento: { tipo: "mensagem", texto: "" } });
-    expect(jogada.instrucao).toMatch(/catálogo em PDF ou falar com um vendedor/);
+    expect(jogada.dados?.ofereceCatalogo).not.toBe(true);
     const depois = aposEnvio({ ficha, jogada, texto: primeira });
-    expect(depois.catalogoOferecido).toBe(true);
+    expect(depois.catalogoOferecido).not.toBe(true);
     const segunda = decidirJogada({ ficha: { ...depois, perguntas: [{ ...pergunta, id: "q2" }] }, pedido, triagem: null, evento: { tipo: "mensagem", texto: "" } });
     expect(segunda.instrucao).not.toMatch(/catálogo em PDF/);
     expect(segunda.instrucao).toMatch(/não repita/);

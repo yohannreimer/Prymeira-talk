@@ -14,6 +14,9 @@ function jev(choices: Record<string,string>={}): JevClient {
   return {ask:async (_state,questions)=>Object.fromEntries(Object.entries(questions).map(([key,q])=>[key,q.type==='choice'?{type:'choice',choice:choices[key]??Object.keys(q.criteria)[0]}:{type:'noul',noul:key==='inventa'?.14:key==='segue'?.45:.96}]))};
 }
 describe('attendance reviewer requirements',()=>{
+  it('still vetoes unnecessary factual repetition identified in context',async()=>{
+    expect(await createJuizDeAtendimento(jev({repeticao:'desnecessaria'}))(input())).toMatchObject({ok:false,regra:'juiz_requisito',motivo:expect.stringContaining('[repeticao]')});
+  });
   it('accepts the useful real reply despite the old low adherence score and no optional catalogue offer',async()=>{
     const result=await createJuizDeAtendimento(jev())(input());
     expect(result).toMatchObject({ok:true,verificacoes:expect.arrayContaining([expect.objectContaining({id:'encomenda_1',resultado:'preservada'}),expect.objectContaining({id:'resposta_1',resultado:'atendida'})])});

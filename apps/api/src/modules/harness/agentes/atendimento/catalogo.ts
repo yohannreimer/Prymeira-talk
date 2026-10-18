@@ -93,7 +93,18 @@ export function catalogoEmMemoria(linhas: LinhaDoCatalogo[], limite = 8): Catalo
       const busca = tokens(texto.replace(/(\d+(?:\.\d+\/\d+)?)\s*x\s*(\d+\/\d+)/g, '$1" x $2"'));
       const familias = [...busca.palavras].map((palavra) => FAMILIAS[palavra]).filter(Boolean);
       const daFamilia = familias.length ? indice.filter((item) => familias.some((familia) => item.linha.familia.startsWith(familia) || (familia === "viga" && item.linha.familia === "perfil w"))) : indice;
-      return (daFamilia.length ? daFamilia : indice)
+      // Material and finish are constraints, not ranking hints: plain aluminium cannot
+      // supply the theoretical weight of checker plate; a carbon row cannot stand in for aluminium.
+      const compativeis = daFamilia.filter(item => {
+        const materiais = normalize(item.linha.material.join(" "));
+        if (/\baluminio\b/.test(texto) && !/aluminio/.test(materiais)) return false;
+        if (/\b(inox|inoxidavel)\b/.test(texto) && !/inoxidavel|inox/.test(materiais)) return false;
+        if (/\bcarbono\b/.test(texto) && !/carbono/.test(materiais)) return false;
+        if (/\bchapa\b/.test(texto) && /\b(xadrez|piso)\b/.test(texto) && !/piso|xadrez/.test(normalize(item.linha.familia+" "+item.linha.descricao))) return false;
+        if (/\bchapa\b/.test(texto) && /\blisa\b/.test(texto) && /piso|xadrez/.test(normalize(item.linha.familia+" "+item.linha.descricao))) return false;
+        return true;
+      });
+      return compativeis
         .map((item) => {
           const numeros = [...busca.numeros].filter((numero) => item.numeros.has(numero) || [...item.numeros].some((outro) => perto(numero, outro))).length;
           const palavras = [...busca.palavras].filter((palavra) => item.palavras.has(palavra)).length;
@@ -147,7 +158,7 @@ const pesoArgs = z.object({
 });
 const calcularPeso: Tool<z.infer<typeof pesoArgs>> = {
   name: "calcular_peso",
-  description: "Calcula o peso teórico de um pedido a partir de uma linha do catálogo, para comparar com o pedido mínimo. A conta é feita pelo sistema: nunca calcule peso de cabeça. Barras, tubos e perfis: peças e comprimento de cada peça. Chapas: peças, comprimento e largura.",
+  description: "Calcula o peso teórico de um pedido a partir de uma linha do catálogo, para comparar com o pedido mínimo. A conta é feita pelo sistema: nunca calcule peso de cabeça. Só calcule se a linha corresponde ao mesmo produto, material, acabamento e medida do pedido; chapa lisa não substitui xadrez. Se não houver linha correspondente, não calcule e diga que o vendedor confirma o peso. Barras, tubos e perfis: peças e comprimento de cada peça. Chapas: peças, comprimento e largura.",
   parameters: {
     type: "object",
     properties: {

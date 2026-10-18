@@ -44,7 +44,9 @@ const naoRepeteFrase: Rule = {
   check: ({ texto, historico, jogada }) => {
     if (jogada.tipo === "cobrar_pendencia") return { ok: true };
     const ditas = historico.filter((message) => message.autor !== "contato").slice(-4).flatMap((message) => frases(message.texto));
-    const repetida = frases(texto).find((frase) => ditas.some((dita) => {
+    // Factual repetition needs semantic context (renewed question, unanswered detail).
+    // Only the unsolicited catalogue/seller offer is an objective duplicate here.
+    const repetida = frases(texto).filter(frase => frase.some(w => /^(catalogo|vendedor|atendente)$/.test(w)) && frase.some(w => /^(prefere|quer|gostaria|posso|deseja)$/.test(w))).find((frase) => ditas.some((dita) => {
       const common = frase.filter((word) => dita.includes(word)).length;
       return common / (frase.length + dita.length - common) >= 0.6;
     }));
@@ -112,10 +114,17 @@ const semTermoInterno: Rule = {
   }
 };
 
+const semTerceirizar: Rule = {
+  id: "sem_terceirizar_prequalificacao",
+  check: ({texto,jogada}) => jogada.tipo !== "cobrar_pendencia" && !jogada.avisarHumano && !jogada.humano && /\b(vendedor(?:a)?|comercial|responsavel|ele confirma|eles confirmam)\b|\b(?:vou|vamos)\s+(?:encaminhar|passar|transferir)\b.{0,50}\b(?:pedido|solicitacao|atendimento|orcamento|dados|voce)\b/.test(sem(texto))
+    ? {ok:false,regra:"sem_terceirizar_prequalificacao",motivo:"Você conduz a pré-qualificação. Retire a referência ao vendedor/comercial/responsável e faça a próxima pergunta necessária. Divergências ficam internas até o repasse real."}
+    : {ok:true}
+};
+
 const respondePerguntas: Rule = {
   id: "resposta_omitida",
   check: ({ texto, ficha, jogada }) => {
-    if (!["responder", "responder_e_passar"].includes(jogada.tipo)) return { ok: true };
+    if (!["responder", "responder_e_passar", "qualificar_com_pendencias"].includes(jogada.tipo)) return { ok: true };
     const perguntas = ficha.perguntas.filter(p => p.status === "respondida");
     return perguntas.length && soSaudacaoOuOferta(texto)
       ? { ok: false, regra: "resposta_omitida", motivo: `A mensagem só cumprimenta ou oferece catálogo/vendedor. Responda primeiro: ${perguntas.map(p => `${p.id}: ${p.texto}`).join("; ")}, usando as citações da ficha.` }
@@ -123,4 +132,4 @@ const respondePerguntas: Rule = {
   }
 };
 
-export const regras: Rule[] = [respondePerguntas, naoRepete, naoRepeteFrase, semValorNovo, semPressao, naoInverteRecusa, naoPrometeAnexo, semTermoInterno];
+export const regras: Rule[] = [respondePerguntas, semTerceirizar, naoRepete, naoRepeteFrase, semValorNovo, semPressao, naoInverteRecusa, naoPrometeAnexo, semTermoInterno];

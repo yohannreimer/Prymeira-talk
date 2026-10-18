@@ -73,6 +73,13 @@ export type FichaDoAtendimento = {
   anexosEnviados?: string[];
   /** The catalogue-or-seller choice was already offered for a made-to-order item. */
   catalogoOferecido?: boolean;
+  /** Internal qualification, not a customer-facing disclaimer for every unknown fact. */
+  prequalificacao?: {
+    situacao: "coletando" | "pronta" | "impedida";
+    resumo: string;
+    faltantes: string[];
+    divergencias: string[];
+  };
 };
 
 /** What the attendance agent knows about the company it works for. Shown to the model as is. */

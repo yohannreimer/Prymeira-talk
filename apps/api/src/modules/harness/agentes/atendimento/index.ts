@@ -5,7 +5,6 @@ import { instrucoes, instrucoesDoAnalista, instrucoesDoLeitor, skills } from "./
 import { aposEnvio, decidirJogada } from "./jogadas.js";
 import { regras } from "./regras.js";
 import type { ContextoDoAtendimento, FichaDoAtendimento } from "./tipos.js";
-import { lacunasDaBase } from "./cobertura.js";
 
 /**
  * The attendance agent on the new harness.
@@ -25,12 +24,13 @@ export const atendimento: AgentDefinition<FichaDoAtendimento, ContextoDoAtendime
   instrucoesDoLeitor,
   maxRodadasDeLeitura: 6,
   conferirLeitura,
-  validarLeitura: ({ ficha }) => lacunasDaBase(ficha),
   analista: { instrucoes: instrucoesDoAnalista, ferramentas: ferramentasDoAnalista, maxRodadas: 4 },
   decidirJogada,
   aposEnvio,
   regras,
   // The passages the reader already pulled from the base are true facts the judge must also see.
+  orientacaoDaConversa: "Não repita informações sem necessidade. Responda novamente ao que o cliente perguntou de novo; retome um dado ainda pendente se ele aceitou avançar. Não repita ofertas de catálogo/vendedor. Use as fontes completas para responder cidades e fornecimento já confirmados. Divergências técnicas ficam internas; não recite ressalvas não perguntadas.",
+  fontesDoEscritor: (ficha) => Object.entries(ficha.trechosVistos).map(([id, texto]) => `[${id}] ${texto}`).join("\n"),
   fontesDoRevisor: (ficha) => Object.entries(ficha.trechosVistos).map(([id, texto]) => `[${id}] ${texto}`).join("\n"),
   janelaDeMensagens: 20,
   anexosDaVez: (ficha, pedido) => (ficha.anexosDaVez ?? [])
