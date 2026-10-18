@@ -116,7 +116,7 @@ const semTermoInterno: Rule = {
 
 const semTerceirizar: Rule = {
   id: "sem_terceirizar_prequalificacao",
-  check: ({texto,jogada}) => jogada.tipo !== "cobrar_pendencia" && !jogada.avisarHumano && !jogada.humano && /\b(vendedor(?:a)?|comercial|responsavel|ele confirma|eles confirmam)\b/.test(sem(texto))
+  check: ({texto,jogada}) => jogada.tipo !== "cobrar_pendencia" && !jogada.avisarHumano && !jogada.humano && /\b(vendedor(?:a)?|comercial|responsavel|ele confirma|eles confirmam)\b|\b(?:vou|vamos)\s+(?:encaminhar|passar|transferir)\b.{0,50}\b(?:pedido|solicitacao|atendimento|orcamento|dados|voce)\b/.test(sem(texto))
     ? {ok:false,regra:"sem_terceirizar_prequalificacao",motivo:"Você conduz a pré-qualificação. Retire a referência ao vendedor/comercial/responsável e faça a próxima pergunta necessária. Divergências ficam internas até o repasse real."}
     : {ok:true}
 };

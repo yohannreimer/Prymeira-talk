@@ -8,7 +8,7 @@ const pedido={empresa:{nome:'Distribuidora',oQueVende:'Chapas'},maxFollowups:2};
 const evento={tipo:'mensagem' as const,texto:'Preciso de chapa inox de 2 mm. Qual o preço?'};
 const ficha=():FichaDoAtendimento=>({...fichaInicial(),perguntas:[{id:'q1',texto:'Qual o preço?',status:'sem_base',resposta:null,buscas:1}],prequalificacao:{situacao:'coletando',resumo:'Chapa inox solicitada',faltantes:['medida','quantidade','cidade'],divergencias:['Preço a definir no orçamento']}});
 describe('prequalification owns the conversation',()=>{
- it.each(['O vendedor pode avaliar essa quantidade.','O frete o vendedor confirma.','O comercial vai confirmar a liga.','O responsável avalia.'])("blocks delegation during collection: %s",texto=>{
+ it.each(['O vendedor pode avaliar essa quantidade.','O frete o vendedor confirma.','O comercial vai confirmar a liga.','O responsável avalia.','Vou encaminhar seu pedido para orçamento.'])("blocks delegation during collection: %s",texto=>{
   const rule=regras.find(r=>r.id==='sem_terceirizar_prequalificacao')!;
   expect(rule.check({texto,ficha:ficha(),pedido,historico:[],jogada:{tipo:'qualificar_com_pendencias',instrucao:''}})).toMatchObject({ok:false});
  });
