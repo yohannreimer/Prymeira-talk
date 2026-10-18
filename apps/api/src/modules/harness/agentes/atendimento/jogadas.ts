@@ -98,7 +98,7 @@ function jogadaDaMensagem(ficha: FichaDoAtendimento, triagem: TriageResult | nul
   const respondidas = ficha.perguntas.filter((item) => item.status === "respondida").flatMap(citacoes);
   if (respondidas.some(recusa)) extras.push("Diga com clareza quais itens ou regiões não atendemos. Não ofereça esses itens nem encaminhe uma recusa simples.");
   extras.push("Você representa a empresa nesta conversa. Responda os fatos conhecidos e faça a próxima pergunta de qualificação. Divergências e dados que exigem checagem ficam no resumo interno. Não acrescente vendedor, avaliação, confirmação, frete ou prazo não perguntado como ressalva automática. Não ofereça catálogo/vendedor como saída da coleta; anexe catálogo só quando solicitado.");
-  if(ficha.prequalificacao?.situacao === "coletando") extras.push(`Ainda precisamos de: ${ficha.prequalificacao.faltantes.join("; ")}. Pergunte o próximo dado necessário à etapa, sem repetir dados informados.`);
+  if(ficha.prequalificacao?.situacao === "coletando") extras.push(`Ainda precisamos de: ${ficha.prequalificacao.faltantes.join("; ")}. Pergunte o próximo DADO DO CLIENTE necessário à etapa, priorizando detalhes técnicos antes do cadastro e sem repetir dados informados. Preço, disponibilidade, frete final e validação técnica são divergências internas, não perguntas ao cliente.`);
   return extras.length && !jogada.silencio ? { ...jogada, instrucao: `${jogada.instrucao} ${extras.join(" ")}` } : jogada;
 }
 

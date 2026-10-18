@@ -32,3 +32,10 @@ describe('prequalification owns the conversation',()=>{
   expect(rule.check({texto:'Reuni os dados e vou encaminhar ao responsável pelo orçamento.',ficha:ficha(),pedido,historico:[],jogada:{tipo:'prequalificacao_pronta',instrucao:'',avisarHumano:'Pedido pronto'}})).toMatchObject({ok:true});
  });
 });
+
+describe('only customer data belongs in missing qualification fields',()=>{
+ it('rejects an internal stock check misclassified as a missing customer answer',()=>{
+  const tool=ferramentasDeLeitura.find(t=>t.name==='registrar_prequalificacao')!;
+  expect(()=>tool.execute({situacao:'coletando',resumo:'Pedido de chapa',faltantes:['Confirmar disponibilidade e preço com o vendedor'],divergencias:[]} as never,{ficha:ficha(),pedido,historico:[],mensagemAtual:'',setFicha:()=>{}})).toThrow(/AO CLIENTE/);
+ });
+});

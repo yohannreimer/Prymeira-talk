@@ -370,9 +370,10 @@ const prequalificacaoArgs = z.object({
 const registrarPrequalificacao: Tool<z.infer<typeof prequalificacaoArgs>> = {
   name: "registrar_prequalificacao",
   description: "Atualiza o resumo INTERNO para quem preparar o orçamento, os dados ainda faltantes e divergências (especificação sem fonte, abaixo do mínimo, frete/preço não definido). Coletando enquanto faltar dado necessário. Pronta apenas com pedido e condições aplicáveis qualificados, logística e cadastro conforme a base. Impedida só se não houver como avançar sem decisão humana, não por qualquer especificação a conferir depois. Não informa o cliente nem cria cotação.",
-  parameters: {type:"object",properties:{situacao:{type:"string",enum:["coletando","pronta","impedida"]},resumo:{type:"string"},faltantes:{type:"array",items:{type:"string"}},divergencias:{type:"array",items:{type:"string"}}},required:["situacao","resumo","faltantes","divergencias"],additionalProperties:false},
+  parameters: {type:"object",properties:{situacao:{type:"string",enum:["coletando","pronta","impedida"]},resumo:{type:"string"},faltantes:{type:"array",items:{type:"string"},description:"Somente perguntas/dados que o CLIENTE pode fornecer: aceite das condições, dimensões completas, quantidade, cidade, tipo/nome/empresa de cadastro. Nunca incluir preço, disponibilidade, frete final ou confirmação técnica interna; isso é divergência."},divergencias:{type:"array",items:{type:"string"}}},required:["situacao","resumo","faltantes","divergencias"],additionalProperties:false},
   schema: prequalificacaoArgs,
   execute(args,context) {
+    if(args.faltantes.some(item => /\b(vendedor|comercial|responsavel|consultar catalogo|calcular)\b/.test(normalize(item)))) throw new Error("Faltantes são somente dados a perguntar AO CLIENTE. Verificações do orçamento/estoque/frete, consultas e cálculos ficam em divergencias, não são perguntas ao cliente. Atualize a pré-qualificação sem essas dependências internas.");
     if(args.situacao === "pronta" && args.faltantes.length) throw new Error("Ainda há dados faltantes: continue coletando antes de concluir.");
     context.setFicha({...context.ficha,prequalificacao:args});
     return "Pré-qualificação interna atualizada. Não anuncie vendedor/avaliação/confirmação durante a coleta.";
