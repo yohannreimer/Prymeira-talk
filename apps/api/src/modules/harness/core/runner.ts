@@ -299,6 +299,7 @@ async function writeAndReview<Ficha, Pedido>(
   const aoVivo = Boolean(input.aoVivo && motivos && Object.keys(motivos).length);
   // A live hand-over never leaves the contact without an answer: the fixed text goes when nothing written passed.
   const repasse = (humano: string) => (aoVivo && agent.avisoDeRepasse ? { humano, texto: agent.avisoDeRepasse } : { humano });
+  const contextoDeFollowup = !aoVivo && agent.janelaDoFollowup !== undefined;
   const fichaTexto = agent.renderFicha(input.ficha, input.pedido);
   const skills = (input.jogada.skills ?? []).flatMap((name) => agent.skills[name] ? [`## ${name}\n${agent.skills[name]}`] : []);
   const messages: ChatMessage[] = [
@@ -318,7 +319,7 @@ async function writeAndReview<Ficha, Pedido>(
         "# Jogada agora",
         input.jogada.instrucao,
         "",
-        "Escreva como gente no WhatsApp: curto, sem listas longas, no máximo uma pergunta. Responda primeiro ao que o contato acabou de dizer.",
+        !contextoDeFollowup ? "Escreva como gente no WhatsApp: curto, sem listas longas, no máximo uma pergunta. Responda primeiro ao que o contato acabou de dizer." : "Escreva uma retomada curta sobre a negociação parada. Não há mensagem nova a responder: faça a pergunta concreta da jogada.",
         "Sem emoji.",
         agent.orientacaoDaConversa ?? "Não repita o que já foi dito nesta conversa: responda só o que a última mensagem traz de novo, como uma pessoa responderia.",
         "Use só números e fatos que estão no pedido, na ficha ou na jogada. Nunca invente.",
@@ -326,7 +327,7 @@ async function writeAndReview<Ficha, Pedido>(
         "Chame a ferramenta responder com o texto final, ou pedir_humano se a jogada não puder ser cumprida com segurança."
       ].join("\n")
     },
-    ...toChatHistory(input.historico.slice(-(agent.janelaDeMensagens ?? 15)))
+    ...toChatHistory(input.historico.slice(-(contextoDeFollowup ? agent.janelaDoFollowup! : agent.janelaDeMensagens ?? 15)))
   ];
   // Openings and follow-ups have no new contact message; providers expect the last turn to be the user's.
   if (messages[messages.length - 1]?.role !== "user") {
