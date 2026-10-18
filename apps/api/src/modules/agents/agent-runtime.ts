@@ -651,6 +651,10 @@ export function createAgentRuntime(input: {
 
       if (activeAgent.type === "prospecting" || await findProspectingReservation(prisma, runInput.workspaceId, conversation.id)) return { status: "skipped", message: "Campaign conversation is reserved for prospecting." };
 
+      if (readCommercialConfig(activeAgent.behaviorConfig) && conversation.activeAgentSessionId) {
+        return { status: "skipped", message: "Commercial inbound preserves the conversation's existing agent session." };
+      }
+
       if (readOnlyNewConversations(activeAgent.behaviorConfig) && !conversation.activeAgentSessionId) {
         const freshness = await evaluateFreshConversation({
           prisma,

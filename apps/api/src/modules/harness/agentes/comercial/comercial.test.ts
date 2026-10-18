@@ -68,6 +68,10 @@ describe("comercial reutilizável", () => {
     const offGrid = await turn(model("agendar", "Qual horário fica melhor?", { startsAt: "2026-10-21T13:00:00Z", trecho: "quarta às 10h" }), "quarta às 10h");
     expect([...forged.actions, ...offGrid.actions].some(a => a.type === "schedule_meeting")).toBe(false);
   });
+  it("checks the whole message even when the reader quotes only its positive-looking fragment", async () => {
+    const result = await turn(model("agendar", "Qual horário fica melhor?", { startsAt: slot.startsAt, trecho: "terça às 10h" }), "Não posso terça às 10h");
+    expect(result.actions.some(a => a.type === "schedule_meeting")).toBe(false);
+  });
   it("does not reuse a stale choice or another workflow's record", async () => {
     for (const agente of ["comercial", "atendimento"]) {
       const result = await turn(model("duvida", "O plano é definido conforme a necessidade."), "Como funciona?", {

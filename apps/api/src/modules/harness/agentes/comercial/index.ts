@@ -17,6 +17,7 @@ const registrar: HarnessTool<FichaComercial, ContextoComercial, z.infer<typeof r
   schema: registro,
   execute(args, context) {
     context.setFicha({ ...context.ficha, intencao: args.intencao, assunto: args.assunto,
+      encerrada: args.intencao === "recusar" ? context.ficha.encerrada : false,
       empresaDoContato: args.empresa ?? context.ficha.empresaDoContato,
       rotina: args.rotina ?? context.ficha.rotina });
     return "Contexto registrado. A intenção de agendar não confirma reunião.";
@@ -32,7 +33,7 @@ const escolherHorario: HarnessTool<FichaComercial, ContextoComercial, z.infer<ty
     if (!context.mensagemAtual.includes(args.trecho)) return "Recusado: o trecho não está na mensagem atual.";
     const slot = context.pedido.agenda?.availableSlots.find(s => s.startsAt === args.startsAt);
     if (!slot) return "Recusado: o horário não está na agenda disponível.";
-    if (!escolhaExplicita(args.trecho, slot.startsAt, context.pedido.agenda!)) {
+    if (!escolhaExplicita(context.mensagemAtual, slot.startsAt, context.pedido.agenda!)) {
       return "Recusado: falta dia e horário inequívocos. Pergunte qual horário a pessoa escolheu.";
     }
     context.setFicha({ ...context.ficha, intencao: "agendar", horario: slot.startsAt });
@@ -43,6 +44,7 @@ const escolherHorario: HarnessTool<FichaComercial, ContextoComercial, z.infer<ty
 /** Conservative match: the contact must specify the day and time; ambiguous acknowledgements never book. */
 export function escolhaExplicita(texto: string, startsAt: string, agenda: NonNullable<ContextoComercial["agenda"]>) {
   const text = normalize(texto);
+  if (/\b(?:ou|talvez|ainda nao|nao marca|nao agende|so estou|so vendo)\b/.test(text)) return false;
   if (/\bnao\b.{0,35}\b(?:posso|serve|quero|consigo|marque|agende|da|fica)\b/.test(text)) return false;
   if (text.includes("?") && !/\b(?:pode marcar|pode agendar|quero marcar|quero agendar|agende|marque)\b/.test(text)) return false;
   const date = new Date(startsAt);
@@ -77,7 +79,7 @@ export function decidirComercial({ ficha, pedido, triagem, evento }: Parameters<
     if (ficha.horario) return { tipo: "solicitar_reserva", instrucao: "Diga apenas que vai reservar o horário escolhido. Não confirme reunião, dia, link ou reserva concluída: a agenda fará a confirmação real.", dados: { startsAt: ficha.horario } };
     return { tipo: "oferecer_horarios", instrucao: "A pessoa quer marcar: ofereça 2 ou 3 horários da agenda, com data e hora, e pergunte qual serve. Não peça dados de qualificação antes disso." };
   }
-  if (ficha.intencao === "duvida") return { tipo: "responder_duvida", instrucao: "Responda todas as dúvidas atuais, usando as fontes aprovadas e o contexto. Não desvie para a call, não reapresente a empresa nem repita o convite. Se não existe confirmação, diga isso brevemente. Não use uma pergunta para evitar a resposta." };
+  if (ficha.intencao === "duvida") return { tipo: "responder_duvida", instrucao: "Responda todas as dúvidas atuais, usando as fontes aprovadas e o contexto. Não desvie para a call, não reapresente a empresa nem repita o convite. Se não existe confirmação, diga isso brevemente. Se falta contexto para explicar a aplicação, pode fazer uma pergunta curta sobre a rotina, somente depois de responder. Não use uma pergunta para evitar a resposta." };
   if (ficha.turnos > 0 && ficha.rotina && ficha.convites === 0 && !pedido.agenda?.bookedMeeting) return { tipo: "convidar", instrucao: "Relacione um exemplo da oferta à rotina informada e convide para a conversa descrita na base. Pergunte se faz sentido, sem pressionar e sem inventar horário." };
   return { tipo: "entender", instrucao: "Responda à mensagem. Se é o começo, apresente-se brevemente e explique a oferta em uma frase conforme a base. Faça no máximo uma pergunta útil sobre a rotina, apenas se falta esse contexto. Não suponha formulário nem apresse o convite." };
 }

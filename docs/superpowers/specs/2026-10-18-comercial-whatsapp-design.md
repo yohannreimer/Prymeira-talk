@@ -1,6 +1,6 @@
 # Atendimento comercial de entrada pelo WhatsApp
 
-Desenho aprovado por Yohann em 18/10/2026: criar agente separado para pessoas que chegam diretamente dos anúncios. Reaproveitar as fontes atuais da Maria, explicar a solução, tirar dúvidas e marcar uma call. Consulta ao PostgreSQL pelo Portainer autorizada. O núcleo do harness deve servir a vários clientes, sem misturar suas regras ou dados.
+Desenho aprovado por Yohann em 18/10/2026: criar agente separado para pessoas que chegam diretamente dos anúncios. Reaproveitar as fontes atuais da Maria, explicar a solução, tirar dúvidas e marcar uma call. Consulta ao PostgreSQL pelo Portainer autorizada. Yohann corrigiu a referência da base para PR #52; a versão integrada 5dc7780140eaaecfc20677469b4814300c91fb8e foi incorporada antes da validação final. O núcleo do harness deve servir a vários clientes, sem misturar suas regras ou dados.
 
 ## Arquitetura
 

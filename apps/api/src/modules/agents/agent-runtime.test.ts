@@ -3293,6 +3293,16 @@ it("continues after a material answer without requiring a document for its own p
 });
 
 describe("createAgentRuntime with a reusable commercial harness", () => {
+  it("does not replace a session started by the website or another agent", async () => {
+    const prisma = buildPrisma({
+      aiAgent: { findFirst: vi.fn().mockResolvedValue({ ...baseAgent, behaviorConfig: { harness: { agente: "comercial", empresa: "Oficina Aurora", canais: [baseConversation.channelId] } } }) },
+      conversation: { findUnique: vi.fn().mockResolvedValue({ ...baseConversation, activeAgentSessionId: "existing-website-session" }), update: vi.fn() }
+    });
+    const result = await createAgentRuntime({ prisma, provider: buildProvider({ confidence: 1, reply: "", actions: [], handoff: { required: false, reason: null } }) }).activateForMessage({ workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation, messageId: ids.message });
+    expect(result.status).toBe("skipped");
+    expect(prisma.aiAgentSession.upsert).not.toHaveBeenCalled();
+    expect(prisma.conversation.update).not.toHaveBeenCalled();
+  });
   const slot = { startsAt: "2026-06-24T10:30:00-03:00", label: "quarta-feira, 24/06 às 10:30" };
   const meeting = { eventId: "ev-commercial", startsAt: slot.startsAt, label: slot.label, meetLink: "https://meet.google.com/abc-defg-hij", htmlLink: null };
   async function runCommercial(options: { body?: string; booking?: "booked" | "unavailable" | "failed"; channels?: string[] } = {}) {
