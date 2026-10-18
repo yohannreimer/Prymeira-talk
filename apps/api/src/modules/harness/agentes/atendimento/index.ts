@@ -29,7 +29,7 @@ export const atendimento: AgentDefinition<FichaDoAtendimento, ContextoDoAtendime
   aposEnvio,
   regras,
   // The passages the reader already pulled from the base are true facts the judge must also see.
-  orientacaoDaConversa: "Não repita informações sem necessidade. Responda novamente ao que o cliente perguntou de novo; retome um dado ainda pendente se ele aceitou avançar. Não repita ofertas de catálogo/vendedor. Use as fontes completas para confirmar cidades listadas e preservar ressalvas do produto.",
+  orientacaoDaConversa: "Não repita informações sem necessidade. Responda novamente ao que o cliente perguntou de novo; retome um dado ainda pendente se ele aceitou avançar. Não repita ofertas de catálogo/vendedor. Use as fontes completas para responder cidades e fornecimento já confirmados. Divergências técnicas ficam internas; não recite ressalvas não perguntadas.",
   fontesDoEscritor: (ficha) => Object.entries(ficha.trechosVistos).map(([id, texto]) => `[${id}] ${texto}`).join("\n"),
   fontesDoRevisor: (ficha) => Object.entries(ficha.trechosVistos).map(([id, texto]) => `[${id}] ${texto}`).join("\n"),
   janelaDeMensagens: 20,

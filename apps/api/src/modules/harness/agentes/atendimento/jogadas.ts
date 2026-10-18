@@ -95,17 +95,10 @@ function jogadaDaMensagem(ficha: FichaDoAtendimento, triagem: TriageResult | nul
       ? [`Vai anexado nesta mensagem: ${anexos.map((anexo) => anexo.titulo).join(", ")}. Diga em poucas palavras que está enviando.`]
       : pedido.anexos?.length ? ["Nenhum arquivo vai anexado nesta mensagem: não diga que está enviando catálogo ou arquivo."] : [])
   ];
-  // The company asked for this choice the first time a made-to-order item comes up.
   const respondidas = ficha.perguntas.filter((item) => item.status === "respondida").flatMap(citacoes);
-  if (respondidas.some(recusa)) extras.push("Atenção: a base diz que a empresa NÃO fornece ou NÃO atende parte do que foi pedido. Diga isso com clareza; não ofereça esse item.");
-  // Not after a "no": a catalogue offer right after refusing the item or the region reads as ignoring it.
-  // Offered once per conversation: asking it again on every reply read as a script in the test of 17/10.
-  const encomenda = !ficha.catalogoOferecido && !anexos.length && !(ficha.anexosEnviados ?? []).length && pedido.anexos?.some((anexo) => /catalogo/i.test(semAcento(anexo.titulo))) &&
-    respondidas.some((citacao) => /encomenda/i.test(citacao)) && !respondidas.some(recusa);
-  if (encomenda && (jogada.tipo === "responder" || jogada.tipo === "conversar")) {
-    extras.push("Primeiro responda explicitamente se fornecemos o produto e as condições relevantes citadas acima. Depois, por ser sob encomenda, pode terminar perguntando se prefere ver o catálogo em PDF ou falar com um vendedor. A oferta nunca substitui a resposta ao pedido.");
-    return { ...jogada, instrucao: `${jogada.instrucao} ${extras.join(" ")}`, dados: { ...jogada.dados, ofereceCatalogo: true } };
-  }
+  if (respondidas.some(recusa)) extras.push("Diga com clareza quais itens ou regiões não atendemos. Não ofereça esses itens nem encaminhe uma recusa simples.");
+  extras.push("Você representa a empresa nesta conversa. Responda os fatos conhecidos e faça a próxima pergunta de qualificação. Divergências e dados que exigem checagem ficam no resumo interno. Não acrescente vendedor, avaliação, confirmação, frete ou prazo não perguntado como ressalva automática. Não ofereça catálogo/vendedor como saída da coleta; anexe catálogo só quando solicitado.");
+  if(ficha.prequalificacao?.situacao === "coletando") extras.push(`Ainda precisamos de: ${ficha.prequalificacao.faltantes.join("; ")}. Pergunte o próximo dado necessário à etapa, sem repetir dados informados.`);
   return extras.length && !jogada.silencio ? { ...jogada, instrucao: `${jogada.instrucao} ${extras.join(" ")}` } : jogada;
 }
 
@@ -135,15 +128,21 @@ function jogadaDasPerguntas(ficha: FichaDoAtendimento): Jogada {
       dados: { podePrometerRetorno: true }
     };
   }
+  if (ficha.prequalificacao?.situacao === "pronta" || ficha.prequalificacao?.situacao === "impedida") {
+    const pronta = ficha.prequalificacao.situacao === "pronta";
+    return {tipo: pronta ? "prequalificacao_pronta" : "prequalificacao_impedida",
+      instrucao: pronta ? "O pedido está qualificado. Faça um resumo curto e diga que vai encaminhar para preparação do orçamento, sem declarar preço, venda ou pagamento confirmado." : "Há um impedimento real para continuar. Diga o assunto que precisa de atenção e que encaminhará para uma pessoa resolver, sem inventar resposta.",
+      avisarHumano: `${pronta ? "Pedido qualificado para orçamento" : "Impedimento na pré-qualificação"}: ${ficha.prequalificacao.resumo}. Divergências: ${ficha.prequalificacao.divergencias.join("; ") || "nenhuma"}`};
+  }
   if (semBase.length) {
     return {
-      tipo: "responder_e_passar",
+      tipo: "qualificar_com_pendencias",
       instrucao: [
         ...(respostas.length ? [`Responda com estas informações da base: ${respostas.join("; ")}. Use só o que responde a última mensagem; não repita informações antigas sem motivo. Se o cliente perguntou novamente ou pediu confirmação, responda esse ponto de novo.`] : []),
-        `Os documentos não respondem: ${semBase.map((item) => `"${item.texto}"`).join(", ")}. Diga, nomeando esse assunto, que o vendedor confirma isso com ele. Não diga nada genérico como "vou consultar as informações". E siga atendendo: o objetivo é deixar o pedido pronto para orçar. Termine perguntando o que ainda falta para o vendedor orçar (produto, medida, quantidade, cidade de entrega), tudo o que faltar numa pergunta só, sem repetir o que o cliente já disse.`
+        `Divergências internas ainda sem base: ${semBase.map(item => `"${item.texto}"`).join("; ")}. Não invente resposta nem prometa checar/retornar. Se o cliente perguntou um fato desconhecido, diga brevemente que o dado ainda não está definido (ex.: o valor será definido no orçamento), sem citar vendedor. Continue qualificando o pedido: aproveite os dados já fornecidos e pergunte o próximo detalhe necessário, respeitando a etapa da base. Uma especificação solicitada pode ficar registrada sem garantia da combinação exata.`
       ].join(" "),
-      avisarHumano: `Sem base nos documentos para: ${semBase.map((item) => item.texto).join(" | ")}`,
-      dados: { podePrometerRetorno: true, perguntasSemBase: semBase.map((item) => item.id) }
+      dados: { perguntasSemBase: semBase.map(item=>item.id) }
+
     };
   }
   if (respostas.length) {

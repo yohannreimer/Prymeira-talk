@@ -356,7 +356,7 @@ async function writeAndReview<Ficha, Pedido>(
       trace.push({ fase: "humano", detalhe: { motivo } });
       const aviso = aoVivo && typeof args?.mensagemAoContato === "string" ? args.mensagemAoContato.trim() : "";
       if (aviso) {
-        const revisao = await revisar(aviso);
+        const revisao = await revisar(aviso, true);
         trace.push({ fase: "revisao", detalhe: revisao });
         if (revisao.ok) return { humano: motivo, texto: aviso };
       }
@@ -386,12 +386,12 @@ async function writeAndReview<Ficha, Pedido>(
   }
   return repasse("O agente não conseguiu escrever uma mensagem aprovada.");
 
-  function revisar(texto: string) {
+  function revisar(texto: string, repasseExplicito = false) {
     return reviewMessage({
       texto,
       ficha: input.ficha,
       pedido: input.pedido,
-      jogada: input.jogada,
+      jogada: repasseExplicito ? { ...input.jogada, avisarHumano: "Repasse explícito solicitado na ferramenta pedir_humano" } : input.jogada,
       historico: input.historico,
       rules: agent.regras,
       judge: deps.judge,

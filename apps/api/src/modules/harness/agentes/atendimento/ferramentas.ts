@@ -316,7 +316,7 @@ const responderPergunta: Tool<z.infer<typeof respostaArgs>> = {
 const semBaseArgs = z.object({ perguntaId: idDaPergunta });
 const marcarSemBase: Tool<z.infer<typeof semBaseArgs>> = {
   name: "marcar_sem_base",
-  description: "Marca que os documentos não respondem a pergunta. Só depois de buscar. Uma pessoa da empresa vai responder essa parte.",
+  description: "Marca que os documentos não respondem a pergunta. Só depois de buscar. Fica pendente no resumo interno; continue coletando até o pedido estar qualificado ou haver impedimento real.",
   parameters: { type: "object", properties: { perguntaId: { type: "string" } }, required: ["perguntaId"], additionalProperties: false },
   schema: semBaseArgs,
   execute(args, context) {
@@ -361,7 +361,25 @@ const enviarAnexo: Tool<z.infer<typeof anexoArgs>> = {
   }
 };
 
-export const ferramentasDeLeitura = [registrarPergunta, buscarNaBase, ...ferramentasDoCatalogo, responderPergunta, marcarSemBase, pediuPessoa, enviarAnexo];
+const prequalificacaoArgs = z.object({
+  situacao: z.enum(["coletando", "pronta", "impedida"]),
+  resumo: z.string().trim().min(1).max(2000),
+  faltantes: z.array(z.string().trim().min(1)).max(12),
+  divergencias: z.array(z.string().trim().min(1)).max(12)
+});
+const registrarPrequalificacao: Tool<z.infer<typeof prequalificacaoArgs>> = {
+  name: "registrar_prequalificacao",
+  description: "Atualiza o resumo INTERNO para quem preparar o orçamento, os dados ainda faltantes e divergências (especificação sem fonte, abaixo do mínimo, frete/preço não definido). Coletando enquanto faltar dado necessário. Pronta apenas com pedido e condições aplicáveis qualificados, logística e cadastro conforme a base. Impedida só se não houver como avançar sem decisão humana, não por qualquer especificação a conferir depois. Não informa o cliente nem cria cotação.",
+  parameters: {type:"object",properties:{situacao:{type:"string",enum:["coletando","pronta","impedida"]},resumo:{type:"string"},faltantes:{type:"array",items:{type:"string"}},divergencias:{type:"array",items:{type:"string"}}},required:["situacao","resumo","faltantes","divergencias"],additionalProperties:false},
+  schema: prequalificacaoArgs,
+  execute(args,context) {
+    if(args.situacao === "pronta" && args.faltantes.length) throw new Error("Ainda há dados faltantes: continue coletando antes de concluir.");
+    context.setFicha({...context.ficha,prequalificacao:args});
+    return "Pré-qualificação interna atualizada. Não anuncie vendedor/avaliação/confirmação durante a coleta.";
+  }
+};
+
+export const ferramentasDeLeitura = [registrarPergunta, buscarNaBase, ...ferramentasDoCatalogo, responderPergunta, marcarSemBase, pediuPessoa, enviarAnexo, registrarPrequalificacao];
 
 const PALAVRAS_VAZIAS = new Set(["voces", "vcs", "tem", "qual", "quais", "para", "pra", "com", "que", "uma", "um", "dos", "das", "aceita", "aceitam", "fazem", "faz"]);
 const palavras = (text: string) => new Set((normalize(text).match(/[a-z0-9,]{3,}/g) ?? []).filter((word) => !PALAVRAS_VAZIAS.has(word)));

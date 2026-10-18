@@ -114,10 +114,17 @@ const semTermoInterno: Rule = {
   }
 };
 
+const semTerceirizar: Rule = {
+  id: "sem_terceirizar_prequalificacao",
+  check: ({texto,jogada}) => jogada.tipo !== "cobrar_pendencia" && !jogada.avisarHumano && !jogada.humano && /\b(vendedor(?:a)?|comercial|responsavel|ele confirma|eles confirmam)\b/.test(sem(texto))
+    ? {ok:false,regra:"sem_terceirizar_prequalificacao",motivo:"Você conduz a pré-qualificação. Retire a referência ao vendedor/comercial/responsável e faça a próxima pergunta necessária. Divergências ficam internas até o repasse real."}
+    : {ok:true}
+};
+
 const respondePerguntas: Rule = {
   id: "resposta_omitida",
   check: ({ texto, ficha, jogada }) => {
-    if (!["responder", "responder_e_passar"].includes(jogada.tipo)) return { ok: true };
+    if (!["responder", "responder_e_passar", "qualificar_com_pendencias"].includes(jogada.tipo)) return { ok: true };
     const perguntas = ficha.perguntas.filter(p => p.status === "respondida");
     return perguntas.length && soSaudacaoOuOferta(texto)
       ? { ok: false, regra: "resposta_omitida", motivo: `A mensagem só cumprimenta ou oferece catálogo/vendedor. Responda primeiro: ${perguntas.map(p => `${p.id}: ${p.texto}`).join("; ")}, usando as citações da ficha.` }
@@ -125,4 +132,4 @@ const respondePerguntas: Rule = {
   }
 };
 
-export const regras: Rule[] = [respondePerguntas, naoRepete, naoRepeteFrase, semValorNovo, semPressao, naoInverteRecusa, naoPrometeAnexo, semTermoInterno];
+export const regras: Rule[] = [respondePerguntas, semTerceirizar, naoRepete, naoRepeteFrase, semValorNovo, semPressao, naoInverteRecusa, naoPrometeAnexo, semTermoInterno];

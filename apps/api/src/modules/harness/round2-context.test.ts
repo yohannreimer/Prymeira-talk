@@ -20,8 +20,8 @@ describe("round 2: context before lexical similarity", () => {
     expect(result.humano?.motivo??"").not.toMatch(/Leitura incompleta/);
   });
   it.each([
-    {before:"O pedido mínimo de alumínio é de aproximadamente 300 kg, mas o vendedor avalia pedidos menores.", now:"Qual o prazo e tem pedido mínimo?",reply:"O pedido mínimo de alumínio é de aproximadamente 300 kg, mas o vendedor avalia pedidos menores."},
-    {before:"Para o vendedor cotar, qual medida da chapa você precisa?",now:"Pode cotar 300 kg então. Quero saber o valor antes de fechar.",reply:"Para o vendedor cotar, qual medida da chapa você precisa?"}
+    {before:"O pedido mínimo de alumínio é de aproximadamente 300 kg.", now:"Qual o prazo e tem pedido mínimo?",reply:"O pedido mínimo de alumínio é de aproximadamente 300 kg."},
+    {before:"Qual medida da chapa você precisa?",now:"Pode cotar 300 kg então. Quero saber o valor antes de fechar.",reply:"Qual medida da chapa você precisa?"}
   ])("permits answering a renewed question or clarifying a still missing measurement", async s=>{
     const result=await reviewMessage({texto:s.reply,ficha:fichaInicial(),pedido:{empresa:{nome:"Distribuidora",oQueVende:"Chapas"},maxFollowups:2},jogada:{tipo:"responder",instrucao:""},historico:[{autor:"agente",texto:s.before,em:"2026-10-18T01:00:00Z"},{autor:"contato",texto:s.now,em:"2026-10-18T01:01:00Z"}],rules:regras,fichaTexto:"",judge:async()=>({ok:true})});
     expect(result.ok).toBe(true);
