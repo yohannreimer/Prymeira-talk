@@ -16,11 +16,22 @@ describe('ingress HTTP error visibility', () => {
     const report = vi.spyOn(reporting, 'reportFailure').mockReturnValue(true);
     const app = appWith({ $transaction: vi.fn().mockRejectedValue(error) });
     try {
-      const response = await app.inject({ method: 'POST', url: '/webhooks/evolution/fixture', payload: {} });
+      const response = await app.inject({ method: 'POST', url: '/webhooks/meta/fixture', payload: {} });
       expect(response.statusCode).toBe(503);
       expect(response.json()).toEqual({ error: 'ingress_unavailable' });
       expect(report).toHaveBeenCalledWith('ingress_http', error);
       expect(reporting.failureCode(error)).toBe('P2024');
+    } finally { await app.close(); }
+  });
+  it('rejects invalid Evolution secrets and WAHA signatures without acquiring a database transaction', async () => {
+    const transaction = vi.fn().mockRejectedValue(Object.assign(new Error('database unavailable'), { code: 'P2024' }));
+    const app = appWith({ $transaction: transaction });
+    try {
+      for (const provider of ['evolution', 'waha']) {
+        const response = await app.inject({ method: 'POST', url: `/webhooks/${provider}/fixture`, payload: {} });
+        expect(response.statusCode).toBe(401);
+      }
+      expect(transaction).not.toHaveBeenCalled();
     } finally { await app.close(); }
   });
   it('does not turn an expected unauthorized source into a monitoring incident', async () => {

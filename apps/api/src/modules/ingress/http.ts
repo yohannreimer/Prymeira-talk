@@ -100,7 +100,11 @@ export function createIngressHttp(options: IngressHttpOptions) {
         if (!Buffer.isBuffer(request.body)) throw new HttpFailure(400, 'raw_json_required');
         const raw = request.body;
         // Authentication always precedes JSON parsing or private filesystem writes.
-        await options.db.$transaction(tx => credential(tx, provider, workspaceId, request, raw));
+        // Evolution/WAHA credentials use only the raw bytes and server-owned secrets.
+        // Do not reserve a pooled SQL transaction for this pure check. Meta reads its
+        // configured secret; every provider is authenticated again under the stage fence.
+        if (provider === 'meta_official') await options.db.$transaction(tx => credential(tx, provider, workspaceId, request, raw));
+        else await credential(options.db, provider, workspaceId, request, raw);
         let input: unknown;
         try { input = JSON.parse(raw.toString('utf8')); } catch { throw new HttpFailure(400, 'invalid_json'); }
         const publisher = options.publisher();

@@ -101,6 +101,41 @@ describe.skipIf(!url)('bounded durable WAHA recovery on owned PostgreSQL', () =>
         historyRecoveryCursor: null, historyRecoveryLeaseToken: null, historyRecoveryLeaseUntil: null, historyRecoveryFailures: 0 });
     } finally { release(); await blocker; await single.$disconnect(); }
   });
+  it('retains a finite lease if cleanup cannot acquire the pool, and resumes safely after its actual expiry', async () => {
+    const c = await fixture(), now = Date.now();
+    const singleUrl = new URL(url!); singleUrl.searchParams.set('connection_limit', '1');
+    const single = new PrismaClient({ datasources: { db: { url: singleUrl.href } } });
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let blocker: Promise<unknown> | null = null;
+    const read = provider([row(1, now - 500_000)]);
+    const persist = vi.fn(async (messages: WahaMessage[]) => ({ inserted: messages.length, held: 0 }));
+    try {
+      // Claim and initial cursor save succeed; occupy the only connection before error cleanup.
+      const unavailable = async () => {
+        let ready!: () => void; const acquired = new Promise<void>(resolve => { ready = resolve; });
+        blocker = single.$transaction(async tx => { await tx.$queryRaw`SELECT 1`; ready(); await gate; }, { timeout: 5000 });
+        await acquired;
+        throw Error('synthetic provider failure while pool is occupied');
+      };
+      await expect(recoverWahaWindow(single, c, { read: unavailable, persist }, { now })).rejects.toThrow('synthetic provider failure');
+      const retained = await load(c);
+      expect(retained.recoveredThroughAt).toEqual(c.recoveredThroughAt);
+      expect(retained.historyRecoveryCursor).toMatchObject({ version: 2, checkpoint: c.recoveredThroughAt!.toISOString(), offset: 0 });
+      expect(retained.historyRecoveryLeaseToken).not.toBeNull();
+      expect(retained.historyRecoveryLeaseUntil!.getTime()).toBeGreaterThan(now + 90_000);
+      release(); await blocker;
+      // Rescheduling due time alone cannot cancel ownership. No read or canonical write is permitted.
+      await due(c);
+      expect(await recoverWahaWindow(single, await load(c), { read, persist }, { now })).toMatchObject({ pending: true, recovered: 0 });
+      expect(read).not.toHaveBeenCalled(); expect(persist).not.toHaveBeenCalled();
+      // Advance the injected clock beyond the observed lease, without editing lease/cursor/checkpoint.
+      const afterExpiry = retained.historyRecoveryLeaseUntil!.getTime() + 1;
+      expect(await recoverWahaWindow(single, await load(c), { read, persist }, { now: afterExpiry, clock: () => afterExpiry })).toMatchObject({ advanced: true, recovered: 1 });
+      expect(read).toHaveBeenCalledTimes(4); expect(persist).toHaveBeenCalledOnce();
+      expect(await load(c)).toMatchObject({ historyRecoveryCursor: null, historyRecoveryLeaseToken: null, historyRecoveryLeaseUntil: null, historyRecoveryFailures: 0 });
+    } finally { release(); if (blocker) await blocker; await single.$disconnect(); }
+  });
   it('enforces the cumulative scan budget before persistence when a valid page plus durable manifests exceed 8MiB', async () => {
     const c=await fixture(),now=Date.now(),base=c.recoveredThroughAt!.getTime();
     await db.channelConnection.update({where:{id:c.id},data:{historyRecoveryCursor:{version:1,generation:c.lifecycleGeneration,checkpoint:c.recoveredThroughAt!.toISOString(),
