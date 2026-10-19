@@ -10,6 +10,7 @@ import { prismaPlugin } from "./plugins/prisma.js";
 import { inboxTimingPlugin } from "./plugins/inbox-timing.js";
 import { cnpjDatabasePlugin } from "./plugins/cnpj-database.js";
 import { createAgentFollowupRuntime } from "./modules/agents/agent-followup-runtime.js";
+import { createContextualFollowupRuntime } from "./modules/agents/contextual-followup-runtime.js";
 import { createAgentRuntime } from "./modules/agents/agent-runtime.js";
 import { createJevFollowupDecision } from "./modules/agents/jev-followup-decision.js";
 import { createJevFollowupEligibility } from "./modules/followups/jev-followup-eligibility.js";
@@ -601,6 +602,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
           outbound: followupOutbound,
           publisher: followupPublisher,
           followupBrain,
+          contextualFollowup: createContextualFollowupRuntime({ prisma: app.prisma, followups: followupService, outbound: followupOutbound, jev: harnessJev, publisher: followupPublisher }),
           harness: { jev: harnessJev }
         });
   const conversationFollowupScheduler = followupService

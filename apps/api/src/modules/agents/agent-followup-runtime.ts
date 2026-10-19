@@ -1,4 +1,6 @@
 import { buildProspectingInstructions } from "../prospecting/prospecting-instructions.js";
+import { resolveContextualFollowupEngine } from "../followups/contextual-followup-engine.js";
+import type { createContextualFollowupRuntime } from "./contextual-followup-runtime.js";
 import { autonomousAgentAllowed, findProspectingReservation } from "../prospecting/prospecting-policy.js";
 import { blocksAutonomousAgent } from "../assistant/assistant-policy.js";
 import type { ConversationOutboundTextDelivery } from "../conversations/conversations.service.js";
@@ -170,6 +172,7 @@ export function createAgentFollowupRuntime(input: {
   publisher?: ConversationFollowupPublisher;
   /** Single-call analysis for follow-ups created in brain mode (decision.mode === "brain"). */
   followupBrain?: FollowupBrain;
+  contextualFollowup?: Pick<ReturnType<typeof createContextualFollowupRuntime>, "runFollowup">;
   /** The new attendance agent's follow-up, on the channels its config lists (harness/agentes/atendimento/producao.ts). */
   harness?: {
     jev?: JevClient;
@@ -615,6 +618,14 @@ export function createAgentFollowupRuntime(input: {
       }
 
       const prospecting = await findProspectingReservation(prisma, runInput.workspaceId, followup.conversationId);
+      const contextualEngine = resolveContextualFollowupEngine({ decision: followup.decision });
+      if (contextualEngine.status !== "legacy") {
+        if (contextualEngine.status === "contained" || !input.contextualFollowup) {
+          await input.followups.recoverClaimedFollowup({ ...runInput, claim: claimToken, outcome: "failed", reason: "contextual_handler_unavailable" });
+          return { status: "failed", followupId: followup.id, message: "Contextual handler unavailable" };
+        }
+        return await input.contextualFollowup.runFollowup({ ...runInput, followup, claim: claimToken });
+      }
       if (prospecting && !await autonomousAgentAllowed(prisma, { workspaceId: runInput.workspaceId, conversationId: followup.conversationId, agentId: agent.id, sessionId: followup.sessionId, expectedGeneration: prospecting.generation })) { await markSkipped(followup, { outcome: "skip" }, "prospecting_stopped"); return { status: "cancelled", followupId: followup.id, reason: "prospecting_stopped" }; }
       const followupConfig = resolveFollowupPlan(agent.behaviorConfig, conversation.channel?.followupConfig, !!prospecting);
       if (followup.stepIndex > MAX_AUTOMATIC_FOLLOWUP_STEPS || followup.stepIndex > (followupConfig?.steps.length ?? 0)) {

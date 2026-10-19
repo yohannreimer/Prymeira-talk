@@ -7,7 +7,7 @@ import { releaseManifest, validateQualificationEvidence } from './validation.mjs
 const root = fileURLToPath(new URL('../../../../', import.meta.url)), output = join(root, 'validation-artifacts');
 const validation = JSON.parse(await readFile(join(output, 'validation-all.json'), 'utf8'));
 if (validation.sourceState !== 'clean-checkout') throw new Error('Release requires validation from a clean exact-SHA checkout');
-for (const required of ['typecheck', 'unit', 'api-build', 'web-build', 'disposable-migrations', 'postgres-rabbit-integration', 'controlled-load-qualification', 'migration-upgrade-qualification'])
+for (const required of ['typecheck', 'unit', 'contextual-followup-replay', 'api-build', 'web-build', 'disposable-migrations', 'postgres-rabbit-integration', 'controlled-load-qualification', 'migration-upgrade-qualification'])
   if (!validation.phases.includes(required)) throw new Error(`Missing validation evidence: ${required}`);
 for (const kind of ['load', 'upgrade']) validateQualificationEvidence(JSON.parse(await readFile(join(output, `qualification-${kind}.json`), 'utf8')), {
   kind, sha: validation.sha, sourceState: 'clean-checkout', runId: validation.runId, startedAt: validation.startedAt, completedAt: validation.completedAt

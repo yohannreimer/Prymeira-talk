@@ -7,6 +7,7 @@ import { resolveWahaDestination, WahaDestinationError } from '../waha/waha-desti
 import type { DispatchKind, OutboundDispatchJournal } from './outbound-dispatch-journal.js';
 import { classifySendFailure, OutboundPreSendError, writerCandidates, type RoutableChannel, type RoutableConnection } from './outbound-routing.js';
 import { sendCanonicalCampaignText, sendCanonicalProspectingText } from '../campaigns/campaign-canonical-send.js';
+import { sendCanonicalFollowupText, ContextualFollowupBlocked } from '../followups/contextual-followup-delivery.js';
 
 /** The single outbound router. It wraps the Evolution client, which every sender (human, AI, automations,
  * follow-ups, campaigns, prospecting) already uses, so all of them go through one place without being changed:
@@ -162,9 +163,20 @@ export function createOutboundRouter(options: {
 
   async function route(input: CommandScope, command: Command, legacy: () => Promise<Sent>): Promise<Sent> {
     const channel = await loadChannel(input);
-    if (options.routes && !options.routes(channel.workspaceId)) return legacy();
+    const contextual = command.kind === 'text' && command.input.contextualFollowupMessageId;
+    if (options.routes && !options.routes(channel.workspaceId)) {
+      if (contextual) throw new ContextualFollowupBlocked('Canonical routing disabled');
+      return legacy();
+    }
     const candidates = writerCandidates(channel) as ConnectionRef[];
     if (!candidates.length) throw new Error('NO_CONNECTION_AVAILABLE');
+    if (command.kind === 'text' && contextual) {
+      if (!options.campaignPrisma) throw new ContextualFollowupBlocked('Canonical source unavailable');
+      const connection = candidates[0]!;
+      return sendCanonicalFollowupText({ prisma: options.campaignPrisma, workspaceId: channel.workspaceId, channelId: channel.id,
+        messageId: contextual, connectionId: connection.id, provider: connection.provider, text: command.input.text,
+        send: () => dispatch(channel, [connection], command) });
+    }
     if (command.kind === 'text' && command.input.prospectingMessageId && options.campaignPrisma) {
       const connection = candidates[0]!;
       return sendCanonicalProspectingText({ prisma: options.campaignPrisma, workspaceId: channel.workspaceId,
@@ -232,6 +244,7 @@ export function createOutboundRouter(options: {
 
   const router: EvolutionClient = {
     ...base,
+    supportsCanonicalFollowups: !!options.campaignPrisma,
     sendText: (input: SendTextInput): Promise<SendTextResult> => route(input, { kind: 'text', destination: input.number, text: input.text, input }, () => base.sendText(input)),
     sendMedia: (input: SendMediaInput): Promise<SendMediaResult> => route(input, { kind: 'media', destination: input.number, text: input.caption ?? null, input }, () => base.sendMedia(input))
   };

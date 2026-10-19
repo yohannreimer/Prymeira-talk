@@ -1,4 +1,6 @@
 import type { Prisma } from "@prisma/client";
+import { resolveContextualFollowupEngine, contextualSequenceIds } from "./contextual-followup-engine.js";
+import { readContextualSnapshot } from "./contextual-followup-snapshot.js";
 import { enterCanonicalWorkspaceTransaction } from "../messaging/canonical-boundary.js";
 import { autonomousAgentAllowed, findProspectingReservation, lockProspectingObservation } from "../prospecting/prospecting-policy.js";
 import { calculateFollowupDueAt, resolveFollowupPlan } from "./channel-followup-plan.js";
@@ -230,11 +232,20 @@ export function createConversationFollowupsService(
     if (isManagedFollowupDelivery(candidate.message)) {
       return { status: "ignored" };
     }
-    if (options.screeningRequired && !options.eligibility) {
+    const engine = resolveContextualFollowupEngine({ newSequence: true, behaviorConfig: candidate.agent.behaviorConfig, channelId: candidate.conversation.channelId });
+    if (engine.status === "contained") return { status: "ignored" };
+    const snapshot = engine.status === "contextual" ? await readContextualSnapshot(prisma as never, {
+      workspaceId: input.workspaceId, conversationId: input.conversationId, agentId: candidate.agent.id,
+      sessionId: candidate.session?.id ?? null, anchorMessageId: candidate.message.id, stepIndex: 1, decision: {}
+    }, engine.engine.profile, new Date()) : null;
+    if (snapshot && snapshot.status !== "ready") return { status: "ignored" };
+    const contextual = engine.status === "contextual" && snapshot?.status === "ready";
+    if (contextual && !snapshot.context.messages.some(message => message.label === "cliente") && !snapshot.context.profile.formEvidenceMessageIds.length) return { status: "ignored" };
+    if (!contextual && options.screeningRequired && !options.eligibility) {
       return cancelForCustomerReply(prisma, input, candidate.message.ingestedAt, options.publisher, "outbound_replaced");
     }
 
-    if (input.source === "human" && await isCourtesyClosure(prisma, input, candidate.message)) {
+    if (!contextual && input.source === "human" && await isCourtesyClosure(prisma, input, candidate.message)) {
       return cancelForCustomerReply(prisma, input, candidate.message.ingestedAt, options.publisher, "outbound_replaced");
     }
 
@@ -247,7 +258,9 @@ export function createConversationFollowupsService(
       return cancelForCustomerReply(prisma, input, newerCustomerMessage.ingestedAt, options.publisher);
     }
 
-    const scheduledAt = await calculateFirstScheduledAt(prisma, candidate.message.createdAt, candidate.conversation, candidate.agent);
+    const scheduledAt = contextual
+      ? calculateFollowupDueAt(toDate(candidate.message.createdAt), snapshot.plan.steps[0]!.afterMinutes, snapshot.plan)
+      : await calculateFirstScheduledAt(prisma, candidate.message.createdAt, candidate.conversation, candidate.agent);
     if (!scheduledAt) {
       return { status: "ignored" };
     }
@@ -259,14 +272,14 @@ export function createConversationFollowupsService(
       agentId: candidate.agent.id,
       sessionId: candidate.session?.id ?? null,
       kind,
-      status: options.eligibility ? "evaluating" : "scheduled",
+      status: !contextual && options.eligibility ? "evaluating" : "scheduled",
       activeKey: "active",
       stepIndex: 1,
       anchorMessageId: candidate.message.id,
       anchorMessageAt: toDate(candidate.message.createdAt),
       anchorIngestedAt: toDate(candidate.message.ingestedAt),
       scheduledAt,
-      decision: {},
+      decision: contextual ? { contextualEngine: { ...engine.engine, policyRevision: snapshot.policyRevision }, sequenceFollowupIds: [] } : {},
       reason
     } as const;
 
@@ -327,7 +340,7 @@ export function createConversationFollowupsService(
         if (mutation.replacedId) await publish(input.workspaceId, mutation.replacedId);
         if (mutation.created) await publish(input.workspaceId, mutation.followup.id);
         const result = await finishOutboundScheduling(prisma, input, mutation.followup, options.publisher);
-        return result.status === "scheduled" && options.eligibility
+        return result.status === "scheduled" && !contextual && options.eligibility
           ? { ...result, status: "evaluating" as const }
           : result;
       } catch (error) {
@@ -373,6 +386,7 @@ export function createConversationFollowupsService(
     if (now.getTime() - toDate(message.createdAt).getTime() > BRAIN_FRESH_MESSAGE_MS) return null;
     const agent = await resolveConfiguredHumanAgent(prisma, conversation);
     if (!agent) return null;
+    if (resolveContextualFollowupEngine({ newSequence: true, behaviorConfig: agent.behaviorConfig, channelId: conversation.channelId }).status !== "legacy") return null;
     const plan = await loadPlan(prisma, input.workspaceId, conversation.channelId, agent.behaviorConfig, conversation.id);
     if (!plan?.steps.length) return null;
     const scheduledAt = calculateFollowupDueAt(now, options.brain?.quietMinutes ?? BRAIN_QUIET_MINUTES, plan);
@@ -436,6 +450,13 @@ export function createConversationFollowupsService(
       const validated = await revalidateActiveFollowup({ ...input, claim: { lockedAt } });
       if (validated.status !== "valid") return { status: validated.status };
       const { followup } = validated.context;
+      const engine = resolveContextualFollowupEngine({ decision: followup.decision });
+      if (engine.status !== "legacy") {
+        const updated = await prisma.conversationFollowup.updateMany({ where: { workspaceId: input.workspaceId, id: input.followupId, status: "evaluating", activeKey: "active", lockedAt },
+          data: engine.status === "contextual" ? { status: "scheduled", lockedAt: null } : { status: "failed", activeKey: null, lockedAt: null, reason: "contextual_version_unsupported" } });
+        if (updated.count === 1) await publish(input.workspaceId, input.followupId);
+        return { status: engine.status === "contextual" ? "scheduled" : "failed" };
+      }
       if (!options.eligibility || !prisma.message.findMany) {
         throw new Error("FOLLOWUP_ELIGIBILITY_UNAVAILABLE");
       }
@@ -734,7 +755,8 @@ export function createConversationFollowupsService(
     const conversation = await prisma.conversation.findUnique({
       where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.followup.conversationId } }
     });
-    const followupConfig = await loadPlan(prisma, input.workspaceId, conversation?.channelId, input.agentBehaviorConfig, conversation?.id);
+    const contextual = resolveContextualFollowupEngine({ decision: input.followup.decision }).status === "contextual";
+    const followupConfig = await loadPlan(prisma, input.workspaceId, conversation?.channelId, input.agentBehaviorConfig, contextual ? undefined : conversation?.id);
     const nextStep =
       followupConfig && input.followup.stepIndex < Math.min(MAX_AUTOMATIC_FOLLOWUP_STEPS, followupConfig.steps.length)
         ? followupConfig.steps[input.followup.stepIndex]
@@ -744,6 +766,8 @@ export function createConversationFollowupsService(
       : null;
 
     const result = await prisma.$transaction(async (tx) => {
+      const sentMessage = contextual ? await tx.message.findFirst({ where: { workspaceId: input.workspaceId, conversationId: input.followup.conversationId, id: input.sentMessageId ?? input.followup.id, direction: "outbound", status: { notIn: ["pending", "failed"] } } }) : null;
+      if (contextual && (!sentMessage?.ingestedAt || !sentMessage.createdAt)) return { status: "not_active" } as const;
       const markedSent = await tx.conversationFollowup.updateMany({
         where: {
           id: input.followupId,
@@ -789,10 +813,10 @@ export function createConversationFollowupsService(
           activeKey: "active",
           stepIndex: input.followup.stepIndex + 1,
           anchorMessageId: input.sentMessageId ?? input.followup.anchorMessageId,
-          anchorMessageAt: input.sentMessageAt ? toDate(input.sentMessageAt) : sentAt,
-          anchorIngestedAt: sentAt,
+          anchorMessageAt: contextual ? toDate(sentMessage!.createdAt) : input.sentMessageAt ? toDate(input.sentMessageAt) : sentAt,
+          anchorIngestedAt: contextual ? toDate(sentMessage!.ingestedAt!) : sentAt,
           scheduledAt: nextScheduledAt,
-          decision: nextStepDecision(input.followup.decision),
+          decision: nextStepDecision(input.decision, input.followup.id),
           reason: "agent_followup_step"
         }
       });
@@ -826,13 +850,16 @@ export function createConversationFollowupsService(
       ? await resolveConfiguredHumanAgent(prisma, conversation) : null;
     const agent = sessionAgent ?? (configuredAgent?.id === input.followup.agentId ? configuredAgent : null);
     if (!agent) return null;
-    const plan = await loadPlan(prisma, input.workspaceId, conversation.channelId, agent.behaviorConfig, conversation.id);
+    const contextual = resolveContextualFollowupEngine({ decision: input.followup.decision }).status === "contextual";
+    const plan = await loadPlan(prisma, input.workspaceId, conversation.channelId, agent.behaviorConfig, contextual ? undefined : conversation.id);
     const nextStep = plan?.steps[input.followup.stepIndex];
     if (!plan || !nextStep || input.followup.stepIndex >= MAX_AUTOMATIC_FOLLOWUP_STEPS) return null;
     const scheduledAt = calculateNextScheduledAt(input.followup, input.sentAt, nextStep.afterMinutes, plan);
     if (!scheduledAt) return null;
 
     const next = await prisma.$transaction(async (tx) => {
+      const sentMessage = contextual ? await tx.message.findFirst({ where: { workspaceId: input.workspaceId, conversationId: input.followup.conversationId, id: input.followup.id, direction: "outbound", status: { notIn: ["pending", "failed"] } } }) : null;
+      if (contextual && !sentMessage?.ingestedAt) return null;
       const customerReplied = await tx.message.findFirst({
         where: {
           workspaceId: input.workspaceId,
@@ -859,10 +886,10 @@ export function createConversationFollowupsService(
           activeKey: "active",
           stepIndex: input.followup.stepIndex + 1,
           anchorMessageId: input.followup.id,
-          anchorMessageAt: input.sentAt,
-          anchorIngestedAt: input.sentAt,
+          anchorMessageAt: contextual ? toDate(sentMessage!.createdAt) : input.sentAt,
+          anchorIngestedAt: contextual ? toDate(sentMessage!.ingestedAt!) : input.sentAt,
           scheduledAt,
-          decision: nextStepDecision(input.followup.decision),
+          decision: nextStepDecision(input.followup.decision, input.followup.id),
           reason: "manual_followup_step"
         }
       });
@@ -888,7 +915,9 @@ const BRAIN_QUIET_REASON = "brain_quiet_wait";
 const BRAIN_FRESH_MESSAGE_MS = 24 * 60 * 60_000;
 
 /** A step after a brain follow-up is analyzed again, with the previous attempts in view. */
-function nextStepDecision(decision: unknown) {
+function nextStepDecision(decision: unknown, sentFollowupId: string) {
+  const engine = resolveContextualFollowupEngine({ decision });
+  if (engine.status === "contextual") return { contextualEngine: engine.engine, sequenceFollowupIds: [...new Set([...contextualSequenceIds(decision), sentFollowupId])] };
   return asRecord(decision)?.mode === "brain" ? { mode: "brain" } : {};
 }
 

@@ -225,6 +225,8 @@ function buildRuntime(overrides: Record<string, any> = {}) {
     publisher: overrides.publisher,
     followupBrain: overrides.followupBrain,
     harness: overrides.harness,
+    // Future router dependency; keep this injection local until the contextual runtime exists.
+    ...("contextualFollowup" in overrides ? { contextualFollowup: overrides.contextualFollowup } : {}),
     now: overrides.now ?? (() => now)
   });
 
@@ -352,6 +354,61 @@ describe("follow-up brain mode", () => {
 });
 
 describe("createAgentFollowupRuntime", () => {
+  it("routes an opt-in commercial time-choice follow-up to a contextual review draft without transport", async () => {
+    const channelId = "synthetic_commercial_channel";
+    const contextualConfig = { version: 1, enabled: true, profile: "commercial", channels: [channelId] };
+    const agent = {
+      ...baseAgent,
+      systemPrompt: "Você é Lia da Oficina Aurora. Retome apenas a escolha do horário já oferecido; a agenda ainda não confirmou reserva.",
+      behaviorConfig: { followup: followupConfig, contextualFollowup: contextualConfig }
+    };
+    const conversation = {
+      ...baseConversation,
+      contactId: "synthetic_nora",
+      contact: { id: "synthetic_nora", name: "Nora Fictícia" },
+      channel: { ...baseConversation.channel, id: channelId,
+        followupConfig: { ...baseConversation.channel.followupConfig, humanCommercialDelivery: "review" } }
+    };
+    const messages = [
+      { id: "synthetic_nora_request", direction: "inbound", type: "text", body: "Quero conversar sobre o atendimento da Oficina Aurora.", createdAt: new Date("2026-09-22T10:00:00.000Z") },
+      { id: ids.anchor, direction: "outbound", type: "text", body: "Você prefere conversar na quarta às 10h ou às 15h?", createdAt: new Date("2026-09-22T10:01:00.000Z") }
+    ];
+    const draft = "Nora, conseguiu escolher entre os horários que te enviei para conversarmos?";
+    const updateMany = vi.fn().mockResolvedValue({ count: 1 });
+    // This stub proves routing only. Task 6 also exercises the real contextual handler.
+    const runContextualFollowup = vi.fn().mockImplementation(async () => {
+      await updateMany({
+        where: { workspaceId: ids.workspace, id: ids.followup, activeKey: "active" },
+        data: { status: "review", draftBody: draft, decision: {
+          type: "customer_message", body: draft, evidenceMessageIds: [ids.anchor]
+        } }
+      });
+      return { status: "review", followupId: ids.followup };
+    });
+    const harness = buildRuntime({
+      aiAgent: { findFirst: vi.fn().mockResolvedValue(agent) },
+      conversation: { findUnique: vi.fn().mockResolvedValue(conversation) },
+      message: { findMany: vi.fn().mockResolvedValue(messages) },
+      conversationFollowup: { updateMany },
+      revalidateActiveFollowup: vi.fn().mockResolvedValue({ status: "valid", context: {
+        ...validContext({ decision: { contextualEngine: {
+          version: 1, profile: "commercial", policyRevision: "synthetic_policy_revision"
+        } } }), conversation, agent
+      } }),
+      contextualFollowup: { runFollowup: runContextualFollowup }
+    });
+
+    await expect(harness.runtime.runFollowup({ workspaceId: ids.workspace, followupId: ids.followup }))
+      .resolves.toEqual({ status: "review", followupId: ids.followup });
+    expect(runContextualFollowup).toHaveBeenCalledTimes(1);
+    expect(updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ status: "review", draftBody: draft })
+    }));
+    expect(harness.provider.generate).not.toHaveBeenCalled();
+    expect(harness.decide).not.toHaveBeenCalled();
+    expect(harness.createPendingOutboundMessage).not.toHaveBeenCalled();
+  });
+
   it("drafts a qualification follow-up for review when the number has no automatic-send opt-in", async () => {
     const conversation = { ...baseConversation, channel: { provider: "evolution", providerKey: "instance_1" } };
     const harness = buildRuntime({ conversation: { findUnique: vi.fn().mockResolvedValue(conversation) } });

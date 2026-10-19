@@ -83,6 +83,7 @@ export interface SendTextInput extends ChannelCommandScope {
   number: string;
   text: string;
   prospectingMessageId?: string;
+  contextualFollowupMessageId?: string;
   linkPreview?: boolean;
   /** Milliseconds WhatsApp shows "digitando..." before the message arrives. */
   delay?: number;
@@ -186,6 +187,7 @@ export interface CheckWhatsappNumbersAvailabilityResult {
 }
 
 export interface EvolutionClient {
+  supportsCanonicalFollowups?: boolean;
   getWebhook?(input: ConnectInstanceInput): Promise<unknown>;
   getInstanceIdentity?(input: ConnectInstanceInput): Promise<string | null>;
   deleteMessageForEveryone?(input: DeleteMessageInput): Promise<void>;
