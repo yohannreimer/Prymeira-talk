@@ -276,13 +276,15 @@ describe.skipIf(!databaseUrl || !brokerUrl)('isolated matched VPS comparison (di
         const resumeStartedAt = new Date().toISOString();
         const freshConnections = await db.channelConnection.findMany({ where: { id: { in: recoveryConnections.map(c=>c.id) } } });
         const toResume = freshConnections.filter(c=>c.recoveredThroughAt!.getTime() <= recoveryConnections.find(original=>original.id===c.id)!.recoveredThroughAt!.getTime());
-        await captureRecovery('before-fixture-reschedule');
-        if (toResume.length) await db.channelConnection.updateMany({ where: { id: { in: toResume.map(c=>c.id) } }, data: { historyRecoveryNextAttemptAt: null } });
-        await captureRecovery('after-fixture-reschedule');
-        await until(() => db.channelConnection.count({ where: { OR: recoveryConnections.map(c=>({ id: c.id, recoveredThroughAt: { gt: c.recoveredThroughAt! }, historyRecoveryLeaseToken: null })) } }), n=>n===3, 90_000);
+        await captureRecovery('natural-resume-start');
+        // Observe real persisted eligibility: a due-time reset cannot cancel an active
+        // 120s lease, and racing a running turn can overwrite a fixture's reschedule.
+        const eligibilityAt = Math.max(Date.now(), ...toResume.map(c=>Math.max(c.historyRecoveryNextAttemptAt?.getTime()??0,c.historyRecoveryLeaseUntil?.getTime()??0)));
+        const naturalResumeBudgetMs = Math.min(300_000, Math.max(90_000, eligibilityAt-Date.now()+45_000));
+        await until(() => db.channelConnection.count({ where: { OR: recoveryConnections.map(c=>({ id: c.id, recoveredThroughAt: { gt: c.recoveredThroughAt! }, historyRecoveryLeaseToken: null })) } }), n=>n===3, naturalResumeBudgetMs);
         const finalRows = await db.canonicalMessageIdentity.findMany({ where: { workspaceId, rawId: { in: recoveredIds } } });
         expect(finalRows.map(r=>r.rawId).sort()).toEqual([...recoveredIds].sort());
-        recoveryCompletion = { enabled: true, resumeStartedAt, completedAt: new Date().toISOString(), fixtureRescheduledConnectionCount: toResume.length,
+        recoveryCompletion = { enabled: true, resumeStartedAt, completedAt: new Date().toISOString(), fixtureRescheduledConnectionCount: 0, naturalResumeBudgetMs, eligibilityAt: new Date(eligibilityAt).toISOString(), pendingAtResumeStart: toResume.length,
           recoveredIdentities: finalRows.length, state: await db.channelConnection.findMany({ where: { id: { in: recoveryConnections.map(c=>c.id) } } }) };
       }
       const allIdentities = await db.canonicalMessageIdentity.findMany({ where: { workspaceId, rawId: { startsWith: prefix } } });
