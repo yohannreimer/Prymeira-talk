@@ -6,8 +6,8 @@ function fixture() {
     { id: "anchor", workspaceId: "w", conversationId: "c", direction: "inbound", type: "text", body: "Preciso avaliar a oferta", createdAt: new Date("2026-10-19T12:00Z"), metadata: {} },
     { id: "seller", workspaceId: "w", conversationId: "c", direction: "outbound", type: "text", body: "Qual horário prefere?", createdAt: new Date("2026-10-19T12:01Z"), metadata: {} }
   ];
-  const agent = { id: "a", workspaceId: "w", name: "Any name", type: "attendance", status: "active", systemPrompt: "x".repeat(4500) + " REGRA FINAL", handoffConfig: { prospectingGoal: "Convidar para conversa" } };
-  const conversation = { id: "c", workspaceId: "w", activeAgentSessionId: "s", status: "open", aiControlStatus: "agent_allowed", assignedUserId: null, channel: { provider: "evolution", encryptedConfig: {} }, contact: { isGroup: false, phone: "5511999991111" } };
+  const agent = { id: "a", workspaceId: "w", name: "Any name", type: "attendance", status: "active", systemPrompt: "x".repeat(4500) + " REGRA FINAL", handoffConfig: { prospectingGoal: "Convidar para conversa" }, behaviorConfig: { contextualFollowup: { enabled: true } }, allowedActions: ["request_handoff"], limitsConfig: { max: 4 } };
+  const conversation = { id: "c", channelId: "channel", workspaceId: "w", activeAgentSessionId: "s", status: "open", aiControlStatus: "agent_allowed", assignedUserId: null, channel: { id: "channel", workspaceId: "w", provider: "evolution", status: "connected", encryptedConfig: {} as Record<string, unknown>, followupConfig: { enabled: true, steps: [{ afterMinutes: 120 }] } }, contact: { isGroup: false, phone: "5511999991111" } };
   const session = { id: "s", workspaceId: "w", agentId: "a", conversationId: "c", status: "active", firstResponseMessageId: "anchor", prospectingGeneration: "g", sourceRecipientId: "r", metadata: { harness: { ficha: { secret: "NEVER REUSE" } } } };
   const sources = [
     { id: "fact", workspaceId: "w", agentId: "a", status: "ready", title: "Oferta", content: "Somente o serviço aprovado", metadata: { approvalStatus: "confirmed" } },
@@ -151,6 +151,93 @@ describe("isolated contextual follow-up context", () => {
     expect(await f.build()({ ...f.request, budget: { maxCharacters: 10000, maxMessages: 2000, maxSources: 100 } })).toMatchObject({ status: "unavailable", reason: "context_limit" });
     const result = await f.build()(f.request);
     expect(result.status === "ready" && result.context.factualSources[0]!.content).toBe(f.sources[0]!.content);
+  });
+
+  it("resolves and validates the persisted active session when sessionId is omitted", async () => {
+    const f = fixture();
+    const result = await f.build()({ ...f.request, sessionId: undefined });
+    expect(result.status === "ready" && result.context.sessionId).toBe("s");
+    expect(f.db.aiAgentSession.findFirst).toHaveBeenCalledWith(expect.objectContaining({ where: { workspaceId: "w", id: "s", conversationId: "c", agentId: "a" } }));
+    f.session.agentId = "another-agent";
+    expect(await f.build()({ ...f.request, sessionId: undefined })).toMatchObject({ status: "unavailable", reason: "invalid_evidence" });
+  });
+
+  it("rejects a replaced active session even when the request omits the session", async () => {
+    const f = fixture(); f.conversation.activeAgentSessionId = "another-session";
+    expect(await f.build()({ ...f.request, sessionId: undefined })).toMatchObject({ status: "unavailable" });
+    f.db.aiAgentSession.findFirst.mockResolvedValue(null as never);
+    expect(await f.build()({ ...f.request, sessionId: undefined })).toMatchObject({ status: "unavailable" });
+  });
+
+  it("rejects conflicting channel assistant authority and preserves a legitimate sessionless form", async () => {
+    const f = fixture(); f.conversation.activeAgentSessionId = null as never;
+    f.messages[0]!.type = "system"; f.messages[0]!.metadata = { source: "automation_webhook" };
+    expect(await f.build()({ ...f.request, sessionId: undefined, profile: "commercial" })).toMatchObject({ status: "ready", context: { sessionId: null } });
+    f.conversation.channel.encryptedConfig = { assistant: { mode: "automatic_with_agent", agentId: "00000000-0000-4000-8000-000000000999" } };
+    expect(await f.build()({ ...f.request, sessionId: undefined, profile: "commercial" })).toMatchObject({ status: "unavailable", reason: "policy_changed" });
+  });
+
+  it("rejects a saturated raw page before duplicate audit filtering could hide an omitted oldest message", async () => {
+    const f = fixture();
+    const realMessages = Array.from({ length: 2001 }, (_, index) => ({ ...f.messages[0]!, id: index === 0 ? "anchor" : `real-${index}` }));
+    const audit = { ...f.messages[0]!, id: "newest-audit", metadata: { campaignDuplicateAudit: true } };
+    // A real database honors take=2001: this page has one audit and 2000 real messages, omitting real-2000.
+    f.db.message.findMany.mockResolvedValue([audit, ...realMessages].slice(0, 2001));
+    expect(await f.build()({ ...f.request, budget: { maxCharacters: 1000000, maxMessages: 2000, maxSources: 100 } })).toMatchObject({ status: "unavailable", reason: "context_limit" });
+  });
+
+  it("returns complete serializable policy inputs outside model-facing context", async () => {
+    const f = fixture();
+    f.conversation.channel.encryptedConfig = { privateProviderCredential: "DO NOT EXPOSE", assistant: { mode: "disabled" } };
+    const result = await f.build()(f.request);
+    expect(result.status).toBe("ready");
+    if (result.status !== "ready") return;
+    expect(result.policyInputs).toMatchObject({
+      profile: "attendance", stepInstruction: f.request.stepInstruction,
+      agent: { id: "a", name: "Any name", type: "attendance", status: "active", systemPrompt: f.agent.systemPrompt, allowedActions: ["request_handoff"], behaviorConfig: f.agent.behaviorConfig, handoffConfig: f.agent.handoffConfig, limitsConfig: { max: 4 } },
+      channel: { id: "channel", workspaceId: "w", provider: "evolution", status: "connected", assistant: { mode: "disabled" }, followupConfig: f.conversation.channel.followupConfig },
+      conversation: { id: "c", aiControlStatus: "agent_allowed", activeAgentSessionId: "s", historyResetAt: null },
+      session: { id: "s", agentId: "a", prospectingGeneration: "g", firstResponseMessageId: "anchor" },
+      reservation: null,
+      approvedSources: [expect.objectContaining({ id: "fact", classification: "factual", content: f.sources[0]!.content, metadata: { approvalStatus: "confirmed" } }), expect.objectContaining({ id: "behavior", classification: "behavioral", metadata: { approvalStatus: "behavioral" } })]
+    });
+    expect(JSON.parse(JSON.stringify(result.policyInputs))).toEqual(result.policyInputs);
+    expect(result.context).not.toHaveProperty("policyInputs");
+    expect(JSON.stringify(result.policyInputs)).not.toContain("NEVER REUSE");
+    expect(JSON.stringify(result)).not.toContain("DO NOT EXPOSE");
+    const firstSnapshot = JSON.stringify(result.policyInputs);
+    f.agent.limitsConfig.max = 5; f.conversation.channel.followupConfig.steps[0]!.afterMinutes = 1440;
+    const changed = await f.build()(f.request);
+    expect(changed.status === "ready" && JSON.stringify(changed.policyInputs)).not.toBe(firstSnapshot);
+  });
+
+  it.each(["automatic_with_agent", "automatic", "on_demand"])("allows a review draft with matching %s channel authority and no session", async mode => {
+    const f = fixture(); const agentId = "00000000-0000-4000-8000-000000000111";
+    f.agent.id = agentId; f.request.agentId = agentId; f.session.agentId = agentId; f.sources.forEach(source => { source.agentId = agentId; });
+    f.conversation.activeAgentSessionId = null as never;
+    f.messages[0]!.type = "system"; f.messages[0]!.metadata = { source: "automation_webhook" };
+    f.conversation.channel.encryptedConfig = { assistant: { mode, agentId } };
+    expect(await f.build()({ ...f.request, sessionId: undefined, profile: "commercial" })).toMatchObject({ status: "ready", context: { sessionId: null } });
+  });
+
+  it("preserves current reservation generation and first respondent in policy inputs", async () => {
+    const f = fixture(); f.agent.type = "prospecting";
+    f.db.campaignProspectingReservation.findUnique.mockResolvedValue({
+      workspaceId: "w", conversationId: "c", agentId: "a", campaignId: "campaign", recipientId: "r", generation: "g",
+      status: "confirmed", confirmedAt: new Date("2026-10-19T11:00Z"), dispatchIntentAt: new Date("2026-10-19T10:59Z"), pendingInboundMessageId: "anchor"
+    });
+    const result = await f.build()({ ...f.request, sessionId: undefined, profile: "prospecting", expectedGeneration: "g" });
+    expect(result).toMatchObject({ status: "ready", policyInputs: { reservation: { generation: "g", pendingInboundMessageId: "anchor", confirmedAt: "2026-10-19T11:00:00.000Z" }, session: { id: "s", prospectingGeneration: "g" } } });
+  });
+
+  it("normalizes nested policy object order and snapshots do not alias mutable configuration", async () => {
+    const f = fixture(); f.agent.behaviorConfig = { b: 2, a: 1 } as never;
+    const first = await f.build()(f.request);
+    f.agent.behaviorConfig = { a: 1, b: 2 } as never;
+    const reordered = await f.build()(f.request);
+    expect(first.status === "ready" && JSON.stringify(first.policyInputs)).toBe(reordered.status === "ready" && JSON.stringify(reordered.policyInputs));
+    f.agent.behaviorConfig = { a: 2, b: 2 } as never;
+    expect(first.status === "ready" && first.policyInputs.agent.behaviorConfig).toEqual({ a: 1, b: 2 });
   });
 
   it("counts only scoped confirmed sent attempts returned for the lifecycle's sequence", async () => {
