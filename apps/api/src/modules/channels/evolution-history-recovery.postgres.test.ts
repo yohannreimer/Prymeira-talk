@@ -1,5 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import { PrismaClient, type ChannelConnection } from '@prisma/client';
+import { execFileSync } from 'node:child_process';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { Prisma, PrismaClient, type ChannelConnection } from '@prisma/client';
+import { Client } from 'pg';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createEvolutionHistorySource, type HistoryRecord } from '../evolution/evolution-history.js';
 import { historyDigest } from './history-memory-budget.js';
@@ -14,6 +18,36 @@ describe.skipIf(!url)('durable bounded Evolution recovery on owned PostgreSQL', 
   async function fixture() { const workspaceId = randomUUID(); workspaces.push(workspaceId); const channel = await db.channel.create({ data: { workspaceId, provider: 'evolution', providerKey: randomUUID() } }); return db.channelConnection.create({ data: { workspaceId, channelId: channel.id, provider: 'evolution', sessionName: randomUUID(), status: 'connected', eligible: true, recoveredThroughAt: new Date(Date.now() - 600_000) } }); }
   const load = (c: ChannelConnection) => db.channelConnection.findUniqueOrThrow({ where: { id: c.id } });
   const due = (c: ChannelConnection) => db.channelConnection.update({ where: { id: c.id }, data: { historyRecoveryNextAttemptAt: null } });
+  function knownCleanupTimeout(error: unknown) {
+    const value = error as { code?: string; message?: string; meta?: { code?: string } };
+    return (value?.code === 'P2028' && /Transaction not found|expired transaction|Transaction already closed/i.test(value.message ?? ''))
+      || (value?.code === 'P2010' && ['55P03', '57014'].includes(value.meta?.code ?? ''));
+  }
+  /** Observe only the 250 ms cleanup boundary. Other SQL/provider failures are
+   * never treated as a yielded turn. Preserve the exact last durable cursor. */
+  function observeCleanup(c: ChannelConnection, firstCleanup?: () => Promise<() => Promise<void>>) {
+    const timeouts = new Map<unknown, { before: ChannelConnection; elapsedMs: number }>(); let cleanups = 0;
+    const proxy = new Proxy(db, { get(target, property) {
+      if (property === '$transaction') return async (work: (tx: Prisma.TransactionClient) => Promise<unknown>, options?: { timeout?: number; maxWait?: number; isolationLevel?: Prisma.TransactionIsolationLevel }) => {
+        if (options?.timeout !== 250) return target.$transaction(work, options);
+        const before = await load(c), release = ++cleanups === 1 ? await firstCleanup?.() : undefined, began = Date.now();
+        try { return await target.$transaction(work, options); }
+        catch (error) { const elapsedMs = Date.now()-began; if (knownCleanupTimeout(error) && elapsedMs >= 230 && elapsedMs < 1000) timeouts.set(error, { before, elapsedMs }); throw error; }
+        finally { await release?.(); }
+      };
+      const value = Reflect.get(target, property, target); return typeof value === 'function' ? value.bind(target) : value;
+    } });
+    return { proxy, timeouts };
+  }
+  async function assertYieldedCleanup(c: ChannelConnection, before: ChannelConnection) {
+    const current = await load(c);
+    expect(current.recoveredThroughAt).toEqual(c.recoveredThroughAt);
+    expect(current.historyRecoveryCursor).toEqual(before.historyRecoveryCursor);
+    expect(current.historyRecoveryLeaseToken).toBeNull(); expect(current.historyRecoveryLeaseUntil).toBeNull();
+    expect(current.historyRecoveryFailures).toBeGreaterThan(0);
+    expect(current.historyRecoveryNextAttemptAt!.getTime()).toBeGreaterThan(Date.now());
+    return current;
+  }
   function provider(rows: HistoryRecord[], mutate?: (body: any, data: any) => void) {
     const fetch = vi.fn(async (url: unknown, init?: RequestInit) => {
       expect(init?.signal).toBeInstanceOf(AbortSignal);
@@ -99,9 +133,45 @@ describe.skipIf(!url)('durable bounded Evolution recovery on owned PostgreSQL', 
       }
       return Response.json({messages:{records:[],currentPage:body.page,total:0,pages:0}});
     });
-    const source=createEvolutionHistorySource({baseUrl:'https://evolution.invalid',apiKey:'synthetic',fetch});let advanced=false;
-    for(let i=0;i<12&&!advanced;i++){await due(c);advanced=(await recoverEvolutionWindow(db,await load(c),source,async()=>({inserted:0,held:0}),{now,maxPages:4})).advanced;}
+    const source=createEvolutionHistorySource({baseUrl:'https://evolution.invalid',apiKey:'synthetic',fetch}), observed=observeCleanup(c); let advanced=false, completedTurns=0, cleanupYields=0;
+    while(completedTurns<12&&!advanced){
+      await due(c); const began=Date.now();
+      try { advanced=(await recoverEvolutionWindow(observed.proxy,await load(c),source,async()=>({inserted:0,held:0}),{now,maxPages:4})).advanced; completedTurns++; }
+      catch(error){
+        const timeout=observed.timeouts.get(error); if(!timeout)throw error;
+        expect(++cleanupYields).toBeLessThanOrEqual(2); expect(Date.now()-began).toBeLessThan(6000);
+        await assertYieldedCleanup(c,timeout.before);
+      }
+    }
     expect(advanced).toBe(true);expect(shifted).toBe(true);expect(fetch.mock.calls.filter(([url,init])=>String(url).includes('findChats')&&JSON.parse(String(init?.body)).skip===0).length).toBe(3);
+  });
+  it('preserves partial progress when the first 250 ms cleanup hits a real row lock, then resumes only after fixture due time', async () => {
+    const c=await fixture(),now=Date.now(),p=provider(Array.from({length:3},(_,i)=>row(i,now-500_000+i*1000))),seen=new Set<string>();
+    const persist=async(records:HistoryRecord[])=>{let inserted=0;for(const record of records)if(!seen.has(record.key.id)){seen.add(record.key.id);inserted++;}return {inserted,held:0};};
+    const blocker=new Client({connectionString:url});await blocker.connect();
+    const observed=observeCleanup(c,async()=>{
+      await blocker.query('BEGIN');
+      await blocker.query('SELECT id FROM channel_connections WHERE workspace_id=$1 AND id=$2::uuid FOR UPDATE',[c.workspaceId,c.id]);
+      return async()=>{await blocker.query('ROLLBACK');};
+    });
+    const began=Date.now();let thrown:unknown;
+    try {
+      try {await recoverEvolutionWindow(observed.proxy,c,p.source,persist,{now,maxMs:1000,maxPages:2,maxItems:1});}catch(error){thrown=error;}
+      const failedTurnMs=Date.now()-began,timeout=observed.timeouts.get(thrown);expect(timeout, String(thrown)).toBeDefined();expect(failedTurnMs).toBeLessThan(1800);
+      expect(timeout!.before.historyRecoveryCursor).toMatchObject({partial:{completed:1}});expect(seen.size).toBe(1);
+      const yielded=await assertYieldedCleanup(c,timeout!.before),reads=p.fetch.mock.calls.length;
+      expect(await recoverEvolutionWindow(db,yielded,p.source,persist,{now})).toMatchObject({advanced:false,pending:true});expect(p.fetch).toHaveBeenCalledTimes(reads);
+      await due(c);
+      expect(await recoverEvolutionWindow(db,await load(c),p.source,persist,{now,maxPages:8})).toMatchObject({advanced:true});
+      const resumed=await load(c);expect([...seen].sort()).toEqual(['M0000','M0001','M0002']);expect(resumed.historyRecoveryCursor).toBeNull();
+      const error=thrown as {code?:string;meta?:{code?:string}},output=join(process.cwd(),'../../validation-artifacts');await mkdir(output,{recursive:true});
+      await writeFile(join(output,`evolution-cleanup-timeout-observations-${Date.now()}.json`),JSON.stringify({schemaVersion:1,kind:'evolution-cleanup-timeout-observations',observationsOnly:true,
+        sourceSha:execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim(),sourceState:execFileSync('git',['status','--porcelain'],{encoding:'utf8'}).trim()?'working-tree':'clean-checkout',harnessRunId:process.env.TALK_VALIDATION_RUN_ID??null,
+        errorCode:error.code,postgresCode:error.meta?.code??null,cleanupElapsedMs:timeout!.elapsedMs,failedTurnMs,
+        checkpointPreserved:yielded.recoveredThroughAt?.getTime()===c.recoveredThroughAt?.getTime(),cursorPreserved:JSON.stringify(yielded.historyRecoveryCursor)===JSON.stringify(timeout!.before.historyRecoveryCursor),
+        partialCompleted:1,leaseReleased:yielded.historyRecoveryLeaseToken===null&&yielded.historyRecoveryLeaseUntil===null,consecutiveFailures:yielded.historyRecoveryFailures,backoffMillisecondsAtObservation:yielded.historyRecoveryNextAttemptAt!.getTime()-(began+failedTurnMs),
+        providerReadsBlockedBeforeFixtureDue:true,resumedAfterFixtureDue:true,resumedIdentities:seen.size,checkpointAdvanced:resumed.recoveredThroughAt!.getTime()>c.recoveredThroughAt!.getTime(),cursorCleared:resumed.historyRecoveryCursor===null},null,2));
+    } finally {await blocker.query('ROLLBACK');await blocker.end();}
   });
   it('enforces a cumulative scan budget across a bounded batch, cursor and identity manifests', async () => {
     const c=await fixture(),now=Date.now(),base=c.recoveredThroughAt!.getTime();
