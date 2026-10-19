@@ -69,9 +69,10 @@ export function createContextualFollowupContextBuilder(db: ContextualFollowupSto
       if (sessionId && (!session || session.workspaceId !== input.workspaceId || session.agentId !== input.agentId
         || session.conversationId !== input.conversationId || session.id !== sessionId)) return unavailable("invalid_evidence", "session_scope_mismatch");
       const assistant = assistantChannelSettingsSchema.safeParse(asRecord(conversation.channel.encryptedConfig).assistant ?? {});
-      // Drafting authority requires the assigned agent. Assistant delivery mode
-      // does not itself prohibit a review draft; final send policy is separate.
-      if (!assistant.success || (assistant.data.mode !== "disabled" && assistant.data.agentId !== input.agentId)) {
+      // A validated active session is the conversation's assigned agent; the
+      // channel default only assigns sessionless drafts. Campaign/automation
+      // sessions may legitimately use another agent on the same number.
+      if (!assistant.success || (!sessionId && assistant.data.mode !== "disabled" && assistant.data.agentId !== input.agentId)) {
         return unavailable("policy_changed", "channel_not_authorized");
       }
       if (conversation.status === "closed" || conversation.aiControlStatus !== "agent_allowed" || conversation.assignedUserId

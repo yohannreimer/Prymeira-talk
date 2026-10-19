@@ -176,6 +176,13 @@ describe("isolated contextual follow-up context", () => {
     f.conversation.channel.encryptedConfig = { assistant: { mode: "automatic_with_agent", agentId: "00000000-0000-4000-8000-000000000999" } };
     expect(await f.build()({ ...f.request, sessionId: undefined, profile: "commercial" })).toMatchObject({ status: "unavailable", reason: "policy_changed" });
   });
+  it("uses the validated active session instead of mistaking the channel default for its agent", async () => {
+    const f = fixture();
+    f.conversation.channel.encryptedConfig = { assistant: { mode: "automatic_with_agent", agentId: "00000000-0000-4000-8000-000000000999" } };
+    expect(await f.build()(f.request)).toMatchObject({ status: "ready", context: { agentId: "a", sessionId: "s" } });
+    f.session.agentId = "another-agent";
+    expect(await f.build()(f.request)).toMatchObject({ status: "unavailable", reason: "invalid_evidence" });
+  });
 
   it("rejects a saturated raw page before duplicate audit filtering could hide an omitted oldest message", async () => {
     const f = fixture();

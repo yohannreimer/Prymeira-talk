@@ -130,6 +130,8 @@ describe.skipIf(!url)("contextual follow-ups at the real PostgreSQL frontier", (
   });
 
   async function prospecting(f: Awaited<ReturnType<typeof fixture>>) {
+    const defaultAgent = await db.aiAgent.create({ data: { workspaceId: f.ws, name: "Synthetic channel default", status: "active", systemPrompt: "Synthetic default" } });
+    await db.channel.update({ where: { id: f.channel.id }, data: { encryptedConfig: { assistant: { mode: "automatic_with_agent", agentId: defaultAgent.id } } } });
     await db.workspaceMirror.create({ data: { workspaceId: f.ws, limits: { modules: { campaignProspecting: true } } } });
     const campaign = await db.campaign.create({ data: { workspaceId: f.ws, channelId: f.channel.id, name: "Synthetic campaign", messageBody: "Synthetic opening", status: "completed" } });
     const recipient = await db.campaignRecipient.create({ data: { workspaceId: f.ws, channelId: f.channel.id, campaignId: campaign.id, contactId: f.contact.id, status: "sent" } });
