@@ -344,6 +344,12 @@ model ChannelConnection {
   recoveredThroughAt    DateTime?                 @map("recovered_through_at")
   /// When this connection's own history was imported to complement the other connection's (WAHA after Evolution).
   historyImportedAt     DateTime?                 @map("history_imported_at")
+  /// Bounded recovery metadata only: no message content or credentials.
+  historyRecoveryCursor Json?                     @map("history_recovery_cursor")
+  historyRecoveryLeaseToken String?               @map("history_recovery_lease_token") @db.Uuid
+  historyRecoveryLeaseUntil DateTime?              @map("history_recovery_lease_until") @db.Timestamptz
+  historyRecoveryNextAttemptAt DateTime?           @map("history_recovery_next_attempt_at") @db.Timestamptz
+  historyRecoveryFailures Int                     @default(0) @map("history_recovery_failures")
   createdAt             DateTime                  @default(now()) @map("created_at")
   updatedAt             DateTime                  @updatedAt @map("updated_at")
   channel               Channel                   @relation(fields: [workspaceId, channelId], references: [workspaceId, id], onDelete: Cascade)

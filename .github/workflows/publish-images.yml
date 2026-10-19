@@ -89,8 +89,19 @@ jobs:
           if-no-files-found: error
           overwrite: true
 
+  provider-contract:
+    name: Validate pinned GOWS pagination adapter
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - run: docker build -f infra/waha-recovery/Dockerfile -t talk-waha-recovery-test .
+      - run: docker run --rm --entrypoint node talk-waha-recovery-test /app/talk-recovery-smoke.cjs
+
   publish:
-    needs: validate
+    needs: [validate, provider-contract]
     if: github.event_name != 'pull_request'
     name: Publish ${{ matrix.name }}
     runs-on: ubuntu-latest
@@ -107,6 +118,9 @@ jobs:
           - name: web
             image: prymeira-talk-web
             dockerfile: apps/web/Dockerfile
+          - name: waha
+            image: prymeira-talk-waha-recovery
+            dockerfile: infra/waha-recovery/Dockerfile
     steps:
       - name: Checkout exact validated revision
         uses: actions/checkout@v4

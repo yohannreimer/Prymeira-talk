@@ -61,7 +61,7 @@ export type AfterPersist = {
  * rather than silently skipping any other chat which reused the native id.
  */
 export async function persistProviderMessages(input: {
-  prisma: PrismaClient; channel: CanonicalHistoryChannel; connection: { id: string; provider: 'evolution' | 'waha' };
+  prisma: PrismaClient; channel: CanonicalHistoryChannel; connection: { id: string; provider: 'evolution' | 'waha'; lifecycleGeneration?: number; sessionName?: string };
   mode: 'history' | 'recovered_live'; items: ProviderMessageItem[]; batchId: string; after?: AfterPersist;
 }): Promise<CanonicalHistoryResult> {
   const { prisma, channel, connection, mode, batchId } = input;
@@ -73,6 +73,8 @@ export async function persistProviderMessages(input: {
       await enterCanonicalWorkspaceTransaction(tx, channel.workspaceId);
       const context = await deriveTrustedMessagingContext(tx, { workspaceId: channel.workspaceId, channelId: channel.id,
         authenticatedSource: { provider: connection.provider, connectionId: connection.id }, mode, observedAt: new Date().toISOString() });
+      if ((connection.lifecycleGeneration !== undefined && context.lifecycleGeneration !== connection.lifecycleGeneration)
+        || (connection.sessionName !== undefined && context.sessionName !== connection.sessionName)) throw new StaleMessagingSourceError('Recovery source changed');
       const sourceChannel = await tx.channel.findUniqueOrThrow({ where: { id: channel.id } });
       const anchor = normalizeWhatsappPhone(sourceChannel.verifiedMessagingPhoneNumber);
       if (anchor) {

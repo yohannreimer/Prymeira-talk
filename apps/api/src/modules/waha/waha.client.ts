@@ -46,6 +46,8 @@ type SessionInput = { session: string };
 type ChatInput = SessionInput & { chatId: string };
 type BinaryFile = { data: string; mimetype: string; filename: string };
 type Page = { limit?: number; offset?: number };
+export type WahaRecoveryPage = { messages: WahaMessage[]; rawDigest: string; rawCount: number; nextOffset: number; exhausted: boolean };
+export type WahaRecoveryQuery = { session: string; from: number; to: number; offset: number; limit: number };
 type ContactInput = SessionInput & { contactId: string };
 type GroupInput = SessionInput & { groupId: string };
 
@@ -65,17 +67,19 @@ export function createWahaClient(options: { baseUrl: string; apiKey: string; fet
     const text = params.toString();
     return text ? `?${text}` : '';
   };
-  async function response(url: string, method = 'GET', body?: unknown, timeoutMs = options.timeoutMs ?? 15_000) {
+  async function response(url: string, method = 'GET', body?: unknown, timeoutMs = options.timeoutMs ?? 15_000, extraHeaders: Record<string, string> = {}) {
     const result = await fetcher(url, {
       method, redirect: 'error', signal: AbortSignal.timeout(timeoutMs),
-      headers: { 'X-Api-Key': options.apiKey, Accept: 'application/json', ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
+      headers: { 'X-Api-Key': options.apiKey, Accept: 'application/json', ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), ...extraHeaders },
       ...(body === undefined ? {} : { body: JSON.stringify(body) })
     });
     if (!result.ok) throw new WahaClientError(result.status);
     return result;
   }
   async function request<T = unknown>(path: string, method = 'GET', body?: unknown, timeoutMs?: number): Promise<T> {
-    const result = await response(`${baseUrl}${path}`, method, body, timeoutMs);
+    return readJson<T>(await response(`${baseUrl}${path}`, method, body, timeoutMs));
+  }
+  async function readJson<T>(result: Response): Promise<T> {
     if (Number(result.headers.get('content-length')) > maxResponseBytes) {
       await result.body?.cancel().catch(() => {}); throw new WahaResponseLimitError();
     }
@@ -213,6 +217,28 @@ export function createWahaClient(options: { baseUrl: string; apiKey: string; fet
     },
     getChats: (input: SessionInput & Page) => request<Array<{ id: string; name?: string }>>(`/api/${enc(input.session)}/chats${query({ limit: input.limit ?? 100, offset: input.offset ?? 0 })}`),
     getMessages: (input: ChatInput & Page) => request<WahaMessage[]>(`${chats(input)}/messages${query({ limit: input.limit ?? 100, offset: input.offset ?? 0, downloadMedia: false })}`),
+    /** Pinned GOWS + recovery metadata shim: filtered SQL pagination, before omitted control rows. */
+    async getRecoveryMessages(input: WahaRecoveryQuery): Promise<WahaRecoveryPage> {
+      if (![input.from, input.to, input.offset, input.limit].every(Number.isSafeInteger) || input.from < 0 || input.to < input.from || input.offset < 0 || input.limit < 1 || input.limit > 100) throw new Error('HISTORY_QUERY');
+      const version = await request<{ engine?: string }>('/api/server/version');
+      if (version.engine !== 'GOWS') throw new Error('HISTORY_FILTER_UNSUPPORTED');
+      const result = await response(`${baseUrl}${chats({ session: input.session, chatId: 'all' })}/messages${query({
+        limit: input.limit, offset: input.offset, downloadMedia: false, sortBy: 'timestamp', sortOrder: 'asc',
+        'filter.timestamp.gte': input.from, 'filter.timestamp.lte': input.to
+      })}`, 'GET', undefined, undefined, { 'x-talk-recovery-pagination': '1' });
+      const rawDigest = result.headers.get('x-talk-recovery-raw-digest');
+      const raw = result.headers.get('x-talk-recovery-raw-count'), next = result.headers.get('x-talk-recovery-next-offset'), end = result.headers.get('x-talk-recovery-exhausted');
+      if (result.headers.get('x-talk-recovery-pagination') !== '1' || !/^[a-f0-9]{64}$/.test(rawDigest ?? '') || !/^\d+$/.test(raw ?? '') || !/^\d+$/.test(next ?? '') || !['true', 'false'].includes(end ?? '')) {
+        await result.body?.cancel(); throw new Error('HISTORY_PAGINATION_UNSUPPORTED');
+      }
+      const rawCount = Number(raw), nextOffset = Number(next), exhausted = end === 'true';
+      if (!Number.isSafeInteger(rawCount) || rawCount > input.limit || nextOffset !== input.offset + rawCount || exhausted !== (rawCount === 0)) {
+        await result.body?.cancel(); throw new Error('HISTORY_PAGINATION');
+      }
+      const messages = await readJson<WahaMessage[]>(result);
+      if (!Array.isArray(messages) || messages.length > rawCount) throw new Error('HISTORY_SHAPE');
+      return { messages, rawDigest: rawDigest!, rawCount, nextOffset, exhausted };
+    },
     /** Legacy unvalidated API. Canonical callers must use findMessageExact. */
     getMessage: (input: ChatInput & { messageId: string }) => request<WahaMessage>(`${messagePath(input)}?downloadMedia=true`),
     deleteMessage: (input: ChatInput & { messageId: string }) => request<void>(messagePath(input), 'DELETE'),

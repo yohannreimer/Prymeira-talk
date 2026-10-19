@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { recoverWahaWindow } from './waha-history-recovery.js';
+import { lidsIn } from '../waha/waha-lid-resolver.js';
 import type { ChannelConnection, PrismaClient } from '@prisma/client';
 import { normalizeEvolutionWebhook } from '../evolution/evolution-event-normalizer.js';
 import type { EvolutionHistorySource, HistoryRecord } from '../evolution/evolution-history.js';
@@ -16,7 +18,7 @@ import { fillContactDetails, persistProviderMessages, type AfterPersist, type Ca
  * the same canonical store and the store's exact identity keeps one message per WhatsApp message.
  */
 export type ProviderChat = { remoteJid: string; chatAddress: string; name: string | null; avatarUrl: string | null; lastActivityMs: number | null; lidMappings?: LidMapping[] };
-export type ProviderHistoryDeps = { evolution?: Pick<EvolutionHistorySource, 'recentChats' | 'recentMessages'> & Partial<Pick<EvolutionHistorySource, 'recoveryChats' | 'recoveryMessages'>> | null; waha?: Pick<WahaClient, 'getChats' | 'getMessages'> | null; wahaLids?: Pick<WahaLidResolver, 'lookup'> | null; after?: AfterPersist };
+export type ProviderHistoryDeps = { evolution?: Pick<EvolutionHistorySource, 'recentChats' | 'recentMessages'> & Partial<Pick<EvolutionHistorySource, 'recoveryChats' | 'recoveryMessages'>> | null; waha?: (Pick<WahaClient, 'getChats' | 'getMessages'> & Partial<Pick<WahaClient, 'getRecoveryMessages'>>) | null; wahaLids?: Pick<WahaLidResolver, 'lookup'> | null; after?: AfterPersist };
 
 const HISTORY_WINDOW_MS = 15 * 24 * 60 * 60 * 1000;
 const RECOVERY_OVERLAP_MS = 10 * 60 * 1000;
@@ -204,6 +206,24 @@ export async function importConnectionHistory(prisma: PrismaClient, deps: Provid
  */
 export async function recoverConnectionGap(prisma: PrismaClient, deps: ProviderHistoryDeps, connection: ChannelConnection, options: { now?: number; chatLimit?: number; perChat?: number } = {}) {
   const now = options.now ?? Date.now();
+  if (connection.provider === 'waha' && deps.waha?.getRecoveryMessages) {
+    const channel = await channelOf(prisma, connection);
+    return recoverWahaWindow(prisma, connection, {
+      read: query => deps.waha!.getRecoveryMessages!(query),
+      persist: async messages => {
+        const mappings: LidMapping[] = [];
+        for (const lid of new Set(messages.flatMap(message => lidsIn({ id: message.id, from: message.from, to: message.to, participant: message.participant }, 10)))) {
+          const pn = await deps.wahaLids?.lookup(connection.sessionName, lid);
+          if (!pn) throw new Error('HISTORY_CHAT_IDENTITY_INCOMPLETE');
+          mappings.push({ lid, pn });
+        }
+        return persistProviderMessages({ prisma, channel, connection: { id: connection.id, provider: 'waha', lifecycleGeneration: connection.lifecycleGeneration, sessionName: connection.sessionName }, mode: 'recovered_live',
+          items: wahaItems(connection.sessionName, messages, mappings), batchId: randomUUID(), after: deps.after });
+      }
+    }, { now });
+  }
+  // Compatibility for injected legacy adapters. The real WAHA client always supplies the bounded
+  // method above; errors/unsupported engines NEVER fall through to this exhaustive legacy path.
   const end = now - RECOVERY_SETTLE_MS;
   const start = (connection.recoveredThroughAt?.getTime() ?? now - RECOVERY_FIRST_WINDOW_MS) - RECOVERY_OVERLAP_MS;
   if (end <= start) return { recovered: 0, chats: 0, advanced: false };
@@ -260,6 +280,14 @@ export async function recoverGapsSweep(prisma: PrismaClient, deps: ProviderHisto
   let recovered = 0;
   for (const connection of await pairedConnections(prisma, input)) {
     if (input.deferWahaUntilImported && connection.provider === 'waha' && !connection.historyImportedAt) continue;
+    // The scheduler wakes frequently to resume bounded WAHA pages; Evolution keeps its 5-minute cadence.
+    if (connection.provider === 'evolution') {
+      const now = new Date();
+      const claimed = await prisma.channelConnection.updateMany({ where: { id: connection.id, lifecycleGeneration: connection.lifecycleGeneration,
+        OR: [{ historyRecoveryNextAttemptAt: null }, { historyRecoveryNextAttemptAt: { lte: now } }] },
+        data: { historyRecoveryNextAttemptAt: new Date(now.getTime() + 5 * 60_000) } });
+      if (!claimed.count) continue;
+    }
     try { recovered += (await recoverConnectionGap(prisma, deps, connection)).recovered; }
     catch (error) { input.onError?.(error, connection.id); }
   }
