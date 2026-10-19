@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { PrismaClient } from "@prisma/client";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createPurchasingService, PurchasingError } from "./purchasing.service.js";
 
 const url = process.env.PURCHASING_TEST_DATABASE_URL;
@@ -13,7 +13,10 @@ describe.skipIf(!url)("Orçamentos on PostgreSQL", () => {
   const service = createPurchasingService(db);
   const workspaceId = `purchasing-${randomUUID()}`;
   const actor = { workspaceId, userId: "user_owner" };
-  afterAll(async () => { await db.$disconnect(); });
+  // The fixture's response deadline is October 18. Keep this flow before that
+  // deadline so a later CI date does not turn a partial response into a decision.
+  beforeAll(() => { vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(new Date("2026-10-17T12:00:00Z")); });
+  afterAll(async () => { vi.useRealTimers(); await db.$disconnect(); });
 
   it("runs a request from suppliers to approval, keeping the choradinha visible and the price paid", async () => {
     const silva = await service.createSupplier(workspaceId, { name: "Móveis Silva", phone: "(47) 99999-0001", categories: ["Móveis"] });
