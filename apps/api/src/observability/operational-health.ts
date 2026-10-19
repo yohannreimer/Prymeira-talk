@@ -1,7 +1,7 @@
 import type { PrismaClient } from '@prisma/client';
 import { writerCandidates } from '../modules/channels/outbound-routing.js';
 
-type Db = Pick<PrismaClient, 'ingressReceipt' | 'ingressDelivery' | 'ingressApplication' | 'ingressEffect' | 'ingressEventProgress' | 'outboundDispatch' | 'channel'>;
+type Db = Pick<PrismaClient, 'ingressReceipt' | 'ingressDelivery' | 'ingressApplication' | 'ingressEffect' | 'ingressEventProgress' | 'outboundDispatch' | 'channel' | 'channelConnection'>;
 const age = (at: Date | null, now: Date) => at ? Math.max(0, Math.floor((now.getTime() - at.getTime()) / 1000)) : null;
 const iso = (at: Date | null) => at?.toISOString() ?? null;
 function queue(pending: number, oldest: Date | null, progress: Date | null, blocked: number, now: Date, delaySeconds: number) {
@@ -16,7 +16,7 @@ function queue(pending: number, oldest: Date | null, progress: Date | null, bloc
 export async function readOperationalHealth(db: Db, input: { workspaceId: string; now?: Date; delaySeconds?: number }) {
   const now = input.now ?? new Date(), delaySeconds = input.delaySeconds ?? 120;
   const where = { workspaceId: input.workspaceId };
-  const [transport, confirmed, deadLetters, application, applied, held, effects, completed, failed, outbound, settled, uncertain, channels] = await Promise.all([
+  const [transport, confirmed, deadLetters, application, applied, held, effects, completed, failed, outbound, settled, uncertain, channels, heldMessages, recovery] = await Promise.all([
     db.ingressReceipt.aggregate({ where: { ...where, delivery: { state: { in: ['staged', 'routed'] } } }, _count: { _all: true }, _min: { createdAt: true } }),
     db.ingressDelivery.aggregate({ where, _max: { confirmedAt: true } }),
     db.ingressDelivery.count({ where: { ...where, state: 'dead_letter' } }),
@@ -30,19 +30,31 @@ export async function readOperationalHealth(db: Db, input: { workspaceId: string
     db.outboundDispatch.aggregate({ where: { ...where, state: { not: 'sending' } }, _max: { updatedAt: true } }),
     db.outboundDispatch.count({ where: { ...where, state: 'uncertain', resolvedAt: null } }),
     db.channel.findMany({ where: { ...where, provider: 'evolution', archivedAt: null }, select: { redundancyEnabled: true, activeConnectionId: true, verifiedMessagingPhoneNumber: true,
-      connections: { select: { id: true, provider: true, status: true, health: true, eligible: true, verifiedPhoneNumber: true, lastHealthyAt: true, lifecycleGeneration: true } } } })
+      connections: { select: { id: true, provider: true, status: true, health: true, eligible: true, verifiedPhoneNumber: true, lastHealthyAt: true, lifecycleGeneration: true } } } }),
+    db.ingressEventProgress.count({ where: { ...where, state: 'held', OR: [{ result: { path: ['kind'], equals: 'message' } }, { observation: { is: { kind: 'message' } } }] } }),
+    db.channelConnection.findMany({ where: { ...where, status: 'connected', eligible: true, channel: { archivedAt: null } }, select: { lifecycleGeneration: true, recoveredThroughAt: true, historyRecoveryFailures: true,
+      historyRecoveryLeaseUntil: true, historyRecoveryNextAttemptAt: true } })
   ]);
   const writers = channels.map(channel => writerCandidates(channel));
   const usable = writers.filter(connections => connections.length > 0).length;
   const channelHealth = { status: !channels.length ? 'idle' : usable ? 'available' : 'unavailable', total: channels.length, usable,
     unavailable: channels.length - usable, withoutRedundancy: writers.filter(connections => connections.length === 1).length, evidence: 'persisted_connections' };
-  const transportHealth = { ...queue(transport._count._all, transport._min.createdAt, confirmed._max.confirmedAt, deadLetters, now, delaySeconds), deadLetters };
-  const applicationHealth = { ...queue(application._count._all, application._min.createdAt, applied._max.appliedAt, held, now, delaySeconds), held };
+  const transportHealth = { ...queue(transport._count._all, transport._min.createdAt, confirmed._max.confirmedAt, deadLetters, now, delaySeconds), deadLetters, evidence: 'sql_receipts_and_delivery_state', brokerDeadReferences: 'unobserved' };
+  const applicationHealth = { ...queue(application._count._all, application._min.createdAt, applied._max.appliedAt, held, now, delaySeconds), held, heldMessages, heldControlOrUnclassified: Math.max(0, held - heldMessages) };
   const effectHealth = { ...queue(effects._count._all, effects._min.createdAt, completed._max.completedAt, failed, now, delaySeconds), failed };
   const outboundHealth = { ...queue(outbound._count._all, outbound._min.createdAt, settled._max.updatedAt, uncertain, now, delaySeconds), uncertain };
+  const eligibleRecovery = recovery.filter(c => c.lifecycleGeneration % 2 === 0);
+  const recoveryHealth = { evidence: 'persisted_metadata', scope: 'eligible_connected_even_generation_unarchived', runtimeEnabled: 'unobserved', connections: eligibleRecovery.length,
+    withoutCheckpoint: eligibleRecovery.filter(c => !c.recoveredThroughAt).length,
+    maximumCoverageLagSeconds: eligibleRecovery.reduce<number | null>((lag, c) => { const value = age(c.recoveredThroughAt, now); return value === null ? lag : Math.max(lag ?? 0, value); }, null),
+    connectionsWithFailures: eligibleRecovery.filter(c => c.historyRecoveryFailures > 0).length,
+    consecutiveFailuresTotal: eligibleRecovery.reduce((sum, c) => sum + c.historyRecoveryFailures, 0),
+    activeLeases: eligibleRecovery.filter(c => c.historyRecoveryLeaseUntil && c.historyRecoveryLeaseUntil > now).length,
+    expiredLeases: eligibleRecovery.filter(c => c.historyRecoveryLeaseUntil && c.historyRecoveryLeaseUntil <= now).length,
+    waitingNextAttempt: eligibleRecovery.filter(c => c.historyRecoveryNextAttemptAt && c.historyRecoveryNextAttemptAt > now).length };
   const degraded = [transportHealth, applicationHealth, effectHealth, outboundHealth, channelHealth].some(component => ['delayed', 'attention', 'unavailable'].includes(component.status));
   return { status: degraded ? 'degraded' : 'ok', checkedAt: now.toISOString(), database: { status: 'available' },
-    transport: transportHealth, application: applicationHealth, effects: effectHealth, outbound: outboundHealth, channels: channelHealth,
+    transport: transportHealth, application: applicationHealth, effects: effectHealth, outbound: outboundHealth, channels: channelHealth, recovery: recoveryHealth,
     // API does not own a RabbitMQ connection or worker heartbeat. A previous
     // confirmation is evidence of progress, never a claim of live broker health.
     broker: { status: 'unobserved', lastConfirmedAt: iso(confirmed._max.confirmedAt) },

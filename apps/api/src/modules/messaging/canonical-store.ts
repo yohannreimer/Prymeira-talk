@@ -42,8 +42,8 @@ type MessageEvent = Extract<NormalizedMessagingEvent, { kind: 'message' }>;
 /** One event per transaction. Every canonical writer acquires the workspace lock FIRST.
  * This deliberately serializes Contact creation across channels and late identity merges.
  * Call first inside a READ COMMITTED transaction; stronger snapshot isolation is rejected.
- * Do not wrap a history batch or network I/O in this transaction. Legacy writers are not
- * coordinated until 2a.3; this store is currently disconnected from runtime.
+ * Do not wrap a history batch or network I/O in this transaction. Runtime ingress and
+ * provider recovery use this store; consult docs/messaging/README.md before changing it.
  */
 export function createCanonicalStore({ hash = sha }: { hash?: (value: string) => string } = {}) {
   function digest(value: unknown) {

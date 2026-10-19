@@ -24,18 +24,19 @@ jobs:
     timeout-minutes: 45
     services:
       postgres:
-        image: postgres:16-alpine
+        image: postgres:16.13-alpine@sha256:4e6e670bb069649261c9c18031f0aded7bb249a5b6664ddec29c013a89310d50
         env:
           POSTGRES_USER: talk_test
           POSTGRES_PASSWORD: talk_test
           POSTGRES_DB: postgres
+          PGDATA: /var/lib/postgresql/data/talk_fixture
         ports:
           - 55439:5432
         options: >-
           --health-cmd "pg_isready -U talk_test -d postgres"
           --health-interval 5s --health-timeout 5s --health-retries 20
       rabbitmq:
-        image: rabbitmq:3.13-alpine
+        image: rabbitmq:3.12.14-alpine@sha256:97907aceae0a6fbfb24847724adadf12f536a2b9bf547a42bc9dad153ed74e99
         env:
           RABBITMQ_DEFAULT_USER: talk_test
           RABBITMQ_DEFAULT_PASS: talk_test
@@ -55,13 +56,20 @@ jobs:
           version: 10.0.0
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 22.23.3
           cache: pnpm
       - name: Checkout pinned companion alert bridge for contract validation
         uses: actions/checkout@v4
         with:
           ref: dacb23577e9924540c51756040c6294d3a11f0d2
           path: .validation/alert-bridge
+      - name: Checkout immutable schema baseline
+        uses: actions/checkout@v4
+        with:
+          ref: 27fa3a06513d459e594f69c883fd777913764c5d
+          path: .validation/schema-base
+      - name: Make immutable baseline commit available for checksum and compatibility proof
+        run: git fetch --no-tags origin 27fa3a06513d459e594f69c883fd777913764c5d
       - name: Prepare isolated alert contract dependencies
         run: |
           python3 -m venv "$RUNNER_TEMP/talk-alert-python"
@@ -77,6 +85,7 @@ jobs:
           sudo install -d -m 1777 /private/tmp
       - name: Typecheck, unit, builds, migrations and serial PostgreSQL/RabbitMQ integration
         env:
+          TALK_TEST_POSTGRES_DATA_DIRECTORY: /var/lib/postgresql/data/talk_fixture
           TALK_TEST_DATABASE_ADMIN_URL: postgresql://talk_test:talk_test@127.0.0.1:55439/postgres
           INGRESS_TEST_AMQP_URL: amqp://talk_test:talk_test@127.0.0.1:56739/talk_test
         run: node apps/api/scripts/validation/run.mjs
@@ -168,7 +177,7 @@ jobs:
           ref: ${{ github.sha }}
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 22.23.3
       - uses: actions/download-artifact@v4
         with:
           pattern: '*-${{ github.sha }}'

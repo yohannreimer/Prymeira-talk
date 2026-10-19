@@ -1,9 +1,10 @@
+import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Client } from 'pg';
-import { workspaceUnitCommand, databaseVariables, validateInfrastructure, findIntegrationTests, runSerialIntegration } from './validation.mjs';
+import { workspaceUnitCommand, databaseVariables, validateInfrastructure, findIntegrationTests, runSerialIntegration, validateQualificationEvidence, assertOwnedUpgradeDatabase } from './validation.mjs';
 
 const root = fileURLToPath(new URL('../../../../', import.meta.url));
 const phase = process.argv[2] ?? 'all';
@@ -16,10 +17,11 @@ const run = (command, args, env = process.env, capture = false) => new Promise((
   if (capture) child.stdout.on('data', chunk => { text += chunk; });
   child.on('error', reject); child.on('close', code => code === 0 ? resolve(text.trim()) : reject(new Error(`${command} exited ${code}`)));
 });
+const runId = randomUUID(), startedAt = new Date().toISOString();
 const sha = await run('git', ['rev-parse', 'HEAD'], process.env, true);
 const sourceState = (await run('git', ['status', '--porcelain'], process.env, true)) ? 'working-tree' : 'clean-checkout';
 if (process.env.GITHUB_SHA && process.env.GITHUB_SHA !== sha) throw new Error('Checkout does not match GITHUB_SHA');
-await writeFile(join(output, 'validation-started.json'), JSON.stringify({ sha, sourceState, phase, state: 'started', startedAt: new Date().toISOString() }, null, 2));
+await writeFile(join(output, 'validation-started.json'), JSON.stringify({ sha, sourceState, runId, phase, state: 'started', startedAt }, null, 2));
 const unitEnv = { ...process.env };
 for (const key of [...Object.keys(databaseVariables), 'INGRESS_TEST_AMQP_URL', 'TALK_TEST_POSTGRES_PORT', 'TALK_TEST_AMQP_PORT']) delete unitEnv[key];
 const phases = [];
@@ -35,19 +37,37 @@ if (phase === 'all' || phase === 'build') {
 if (['all', 'prepare', 'integration'].includes(phase)) {
   const postgresPort = process.env.TALK_TEST_POSTGRES_PORT ?? '55439', amqpPort = process.env.TALK_TEST_AMQP_PORT ?? '56739';
   const infra = validateInfrastructure({ adminUrl: process.env.TALK_TEST_DATABASE_ADMIN_URL, brokerUrl: process.env.INGRESS_TEST_AMQP_URL, postgresPort, amqpPort });
-  const integrationEnv = { ...unitEnv, TALK_TEST_POSTGRES_PORT: postgresPort, TALK_TEST_AMQP_PORT: amqpPort, INGRESS_TEST_AMQP_URL: infra.brokerUrl };
+  const integrationEnv = { ...unitEnv, TALK_VALIDATION_RUN_ID: runId, TALK_TEST_POSTGRES_PORT: postgresPort, TALK_TEST_AMQP_PORT: amqpPort, INGRESS_TEST_AMQP_URL: infra.brokerUrl };
   for (const [key, database] of Object.entries(databaseVariables)) integrationEnv[key] = infra.urls[database];
   if (phase === 'all' || phase === 'prepare') {
     const admin = new Client({ connectionString: infra.adminUrl }); await admin.connect();
     try {
-      for (const database of infra.databases) {
+      for (const database of [...infra.databases, 'talk_upgrade_test']) {
         if (!(await admin.query('SELECT 1 FROM pg_database WHERE datname = $1', [database])).rowCount) await admin.query(`CREATE DATABASE "${database}"`);
       }
     } finally { await admin.end(); }
     for (const database of infra.databases) await run('pnpm', ['--filter', '@prymeira-talk/api', 'exec', 'prisma', 'migrate', 'deploy', '--schema', 'prisma/schema.prisma'], { ...integrationEnv, DATABASE_URL: infra.urls[database] });
+    const upgradeUrl = infra.urls.talk_upgrade_test;
+    const upgrade = new Client({ connectionString: upgradeUrl }); await upgrade.connect();
+    try {
+      const observed = (await upgrade.query("SELECT current_database() AS database, current_setting('data_directory') AS directory")).rows[0];
+      assertOwnedUpgradeDatabase({ databaseUrl: upgradeUrl, postgresPort, expectedDataDirectory: process.env.TALK_TEST_POSTGRES_DATA_DIRECTORY, actualDatabase: observed.database, actualDataDirectory: observed.directory });
+      await upgrade.query('DROP SCHEMA public CASCADE'); await upgrade.query('CREATE SCHEMA public');
+    } finally { await upgrade.end(); }
+    const baselineSchema = process.env.TALK_SCHEMA_BASELINE_PRISMA ?? join(root, '.validation/schema-base/apps/api/prisma/schema.prisma');
+    const baselineMigrations = join(dirname(baselineSchema), 'migrations');
+    const entries = (await readdir(baselineMigrations, { withFileTypes: true })).filter(entry => entry.isDirectory()).sort((a,b) => a.name.localeCompare(b.name));
+    if (entries.length !== 82) throw new Error('Immutable baseline must contain exactly 82 migrations');
+    for (const entry of entries) {
+      const sql = await readFile(join(baselineMigrations, entry.name, 'migration.sql'));
+      const original = await run('git', ['show', `27fa3a06513d459e594f69c883fd777913764c5d:apps/api/prisma/migrations/${entry.name}/migration.sql`], process.env, true);
+      if (sql.toString().trim() !== original) throw new Error(`Immutable baseline SQL mismatch: ${entry.name}`);
+    }
+    await run('pnpm', ['--filter', '@prymeira-talk/api', 'exec', 'prisma', 'migrate', 'deploy', '--schema', baselineSchema], { ...integrationEnv, DATABASE_URL: upgradeUrl });
     phases.push('disposable-migrations');
   }
   if (phase === 'all' || phase === 'integration') {
+    for (const kind of ['load', 'upgrade']) await rm(join(output, `qualification-${kind}.json`), { force: true });
     const tests = await findIntegrationTests(join(root, 'apps/api/src'));
     const reports = [], failures = [];
     await runSerialIntegration(tests, async file => {
@@ -65,8 +85,13 @@ if (['all', 'prepare', 'integration'].includes(phase)) {
     });
     await writeFile(join(output, 'integration-summary.json'), JSON.stringify({ sha, serial: true, reports, failures }, null, 2));
     if (failures.length) throw new Error(`${failures.length} integration suites failed; see integration-summary.json`);
-    phases.push('postgres-rabbit-integration');
+    for (const kind of ['load', 'upgrade']) {
+      const report = JSON.parse(await readFile(join(output, `qualification-${kind}.json`), 'utf8'));
+      validateQualificationEvidence(report, { kind, sha, sourceState, runId, startedAt });
+    }
+    phases.push('postgres-rabbit-integration', 'controlled-load-qualification', 'migration-upgrade-qualification');
   }
 }
-await writeFile(join(output, `validation-${phase}.json`), JSON.stringify({ sha, sourceState, completedAt: new Date().toISOString(), phases }, null, 2));
+if ((await run('git', ['rev-parse', 'HEAD'], process.env, true)) !== sha || (sourceState === 'clean-checkout' && await run('git', ['status', '--porcelain'], process.env, true))) throw new Error('Source changed during validation');
+await writeFile(join(output, `validation-${phase}.json`), JSON.stringify({ sha, sourceState, runId, startedAt, completedAt: new Date().toISOString(), phases }, null, 2));
 console.log(`Validated ${sourceState} based on ${sha}: ${phases.join(', ')}`);

@@ -59,3 +59,39 @@ test('workspace unit command forwards Vitest options through real pnpm run', asy
     assert.match(result.stdout, /\["--maxWorkers=2"\]/);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test('qualification gate rejects reused SHA artifacts, working-tree evidence and skipped or empty reports', async () => {
+  const { validateQualificationEvidence } = await import('./validation.mjs');
+  const context = { kind: 'load', sha: 'a'.repeat(40), sourceState: 'clean-checkout', runId: 'this-run', startedAt: '2026-10-19T12:00:00Z', completedAt: '2026-10-19T12:01:00Z' };
+  const metrics = { canonicalMessages: 80, dualProviderEnvelopes: 160, oracleIdentities: 83, canonicalAddresses: 2930, durationMs: 10_000, trafficDurationMs: 10_000,
+    ingressP95Ms: 100, applicationP95Ms: 200, overlapEnvelopes: 20, overlapApplicationP95Ms: 250, restartDuplicatePreserved: true,
+    recovery: { connections: 3, autonomousHistoricalEffects: 0, unexpectedFailures: 0, firstTurnAdvancedConnections: 0, firstTurnClaimedBackoffConnections: 2, untouchedConnectionsAfterContention: 1, observedContentionYields: 3, backoffAndResumeProved: true, sweepMs: 1200, requestsPerConnection: [4,4,4] }, resources: { sampleCount: 40, durationMs: 9750, averageCpuPercent: 20, cpuWindowSeconds: 2, maximumRssKiB: 100_000 } };
+  const report = { schemaVersion: 1, kind: 'load', sha: context.sha, sourceState: context.sourceState, runId: context.runId, startedAt: context.startedAt, completedAt: context.completedAt, passed: true, testsExecuted: 1, metrics };
+  assert.equal(validateQualificationEvidence(report, context), report);
+  for (const bad of [null, { ...report, sha: 'b'.repeat(40) }, { ...report, runId: 'previous-run' }, { ...report, sourceState: 'working-tree' },
+    { ...report, testsExecuted: 0 }, { ...report, passed: false }, { ...report, startedAt: '2026-10-18T12:00:00Z' }, { ...report, completedAt: 'invalid' }, { ...report, metrics: {} },
+    { ...report, metrics: { ...metrics, resources: { maximumRssKiB: 100_000 } } }, { ...report, metrics: { ...metrics, oracleIdentities: 82 } }, { ...report, metrics: { ...metrics, applicationP95Ms: 2001 } },
+    { ...report, metrics: { ...metrics, recovery: { ...metrics.recovery, requestsPerConnection: [5,4,4] } } }])
+    assert.throws(() => validateQualificationEvidence(bad, context));
+});
+
+test('upgrade release gate requires preservation, validation and rollback compatibility evidence', async () => {
+  const { validateQualificationEvidence } = await import('./validation.mjs');
+  const context = { kind: 'upgrade', sha: 'a'.repeat(40), sourceState: 'clean-checkout', runId: 'upgrade-run', startedAt: '2026-10-19T12:00:00Z', completedAt: '2026-10-19T12:01:00Z' };
+  const metrics = { baselineSha: '27fa3a06513d459e594f69c883fd777913764c5d', baselineMigrations: 82, candidateMigrations: 83, preservedCanonicalIdentities: 1, preservedReceiptBackedEffects: 10, preservedMedia: 1, invalidCoordinatesRejected: 7,
+    checkpointPreserved: true, validatedConstraint: true, ledgerChecksumsVerified: true, lockTimeoutAtomicRollback: true, validationLockDmlCompatible: true, presentationObligationCompleted: true, oldWahaCursorRescannedOriginalCheckpoint: true, unchangedHandlers: ['effect-handlers.ts','effect-runner.ts'] };
+  const report = { schemaVersion: 1, kind: 'upgrade', sha: context.sha, sourceState: context.sourceState, runId: context.runId, startedAt: context.startedAt, completedAt: context.completedAt, passed: true, testsExecuted: 1, metrics };
+  assert.equal(validateQualificationEvidence(report, context), report);
+  for (const key of ['checkpointPreserved','validatedConstraint','ledgerChecksumsVerified','lockTimeoutAtomicRollback','validationLockDmlCompatible','presentationObligationCompleted','oldWahaCursorRescannedOriginalCheckpoint'])
+    assert.throws(() => validateQualificationEvidence({ ...report, metrics: { ...metrics, [key]: false } }, context));
+  assert.throws(() => validateQualificationEvidence({ ...report, metrics: { ...metrics, baselineMigrations: 81 } }, context));
+});
+
+test('upgrade schema reset guard rejects another DB, port, host or unobserved ownership', async () => {
+  const { assertOwnedUpgradeDatabase } = await import('./validation.mjs');
+  const input = { databaseUrl: 'postgresql://fixture@127.0.0.1:55439/talk_upgrade_test', postgresPort: '55439', expectedDataDirectory: '/owned/fixture', actualDataDirectory: '/owned/fixture', actualDatabase: 'talk_upgrade_test' };
+  assert.doesNotThrow(() => assertOwnedUpgradeDatabase(input));
+  for (const bad of [{ ...input, databaseUrl: input.databaseUrl.replace('127.0.0.1','remote') }, { ...input, actualDatabase: 'messaging_test' },
+    { ...input, databaseUrl: input.databaseUrl.replace('55439','5432') }, { ...input, expectedDataDirectory: '' }, { ...input, actualDataDirectory: '/production' }])
+    assert.throws(() => assertOwnedUpgradeDatabase(bad));
+});

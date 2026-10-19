@@ -1,3 +1,5 @@
+> Historical design and rollout notes. Current recovery contracts, bounds and supported engines are defined in [the messaging reference](../messaging/README.md); full-window scan and old cadence descriptions below are superseded.
+
 # Evolution + WAHA e RabbitMQ — operação e qualificação
 
 Este documento acompanha a integração. Inventário e testes observados são evidências; os critérios de publicação abaixo ainda precisam ser concluídos.

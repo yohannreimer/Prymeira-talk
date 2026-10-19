@@ -1,3 +1,5 @@
+> Historical rollout diary. Current contracts, recovery bounds, supported engines and safety invariants are in [docs/messaging/README.md](../messaging/README.md). WPP fallback and full-scan recovery descriptions below are superseded; they are not instructions for a new rollout.
+
 # Evolution + WAHA + RabbitMQ — rollout
 
 Ordem de ativação, primeiro só com o número de teste do Yohann, depois para todos. Cada passo é reversível e **tudo é
