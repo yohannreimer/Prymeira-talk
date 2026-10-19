@@ -1,9 +1,14 @@
+import { canPerform } from "../access/roles.js";
+import { updateProspectingModule } from "../prospecting/module-settings.js";
+import { createConversationsService } from "../conversations/conversations.service.js";
+import type { PrismaLike as ConversationsPrismaLike } from "../conversations/conversations.service.js";
 import type { FastifyPluginAsync, FastifyReply } from "fastify";
 import type { Prisma } from "@prisma/client";
 import type { UserRole } from "@prymeira-talk/shared";
 import { z } from "zod";
 import { EvolutionClientError } from "../evolution/evolution.client.js";
 import { resolveMetaRuntime } from "../meta/meta-runtime.js";
+import type { EvolutionRuntime } from '../evolution/evolution-runtime.js';
 import { createMetaTemplatesService } from "../meta/meta.templates.service.js";
 import { createSettingsService, SettingsValidationError } from "./settings.service.js";
 import type { PrismaLike } from "./settings.service.js";
@@ -70,7 +75,7 @@ function requireSettingsManage(
   return false;
 }
 
-export const settingsRoutes: FastifyPluginAsync = async (app) => {
+export const settingsRoutes: FastifyPluginAsync<{ evolution?: EvolutionRuntime; handoffBriefService?: { schedule(input: { workspaceId: string; conversationId: string }): unknown } }> = async (app, options) => {
   const service = createSettingsService(app.prisma as unknown as PrismaLike);
 
   app.get("/settings", async (request) =>
@@ -105,6 +110,20 @@ export const settingsRoutes: FastifyPluginAsync = async (app) => {
     }
   });
 
+  app.patch("/settings/modules", async (request, reply) => {
+    if (!canPerform(request.talk.role, "workspace.manage")) return reply.code(403).send({ error: "Forbidden." });
+    const body = z.object({ campaignProspecting: z.boolean() }).strict().safeParse(request.body);
+    if (!body.success) return reply.code(400).send({ error: "Invalid module settings." });
+    const workspaceId = request.talk.workspaceId;
+    const stopped = await updateProspectingModule(app.prisma, workspaceId, body.data.campaignProspecting);
+    for (const conversationId of stopped) {
+      const payload = await createConversationsService(app.prisma as unknown as ConversationsPrismaLike).getConversationDto({ workspaceId, conversationId });
+      app.realtime.publish({ type: 'conversation.updated', workspaceId, payload });
+      options.handoffBriefService?.schedule({ workspaceId, conversationId });
+    }
+    return service.getSettings({ workspaceId });
+  });
+
   app.patch("/settings/agent-behavior", async (request, reply) => {
     if (!requireSettingsManage(request.talk.role, reply)) {
       return reply;
@@ -135,7 +154,8 @@ export const settingsRoutes: FastifyPluginAsync = async (app) => {
     }
 
     const runtime = await resolveMetaRuntime(app.prisma, {
-      workspaceId: request.talk.workspaceId
+      workspaceId: request.talk.workspaceId,
+      expectedEvolutionWebhook: options.evolution ? { webhookUrl: options.evolution.publicWebhookUrl(request.talk.workspaceId), webhookSecret: options.evolution.webhookSecret } : undefined
     });
 
     if (!runtime.active || !runtime.client || !runtime.wabaId) {
@@ -164,7 +184,8 @@ export const settingsRoutes: FastifyPluginAsync = async (app) => {
     }
 
     const runtime = await resolveMetaRuntime(app.prisma, {
-      workspaceId: request.talk.workspaceId
+      workspaceId: request.talk.workspaceId,
+      expectedEvolutionWebhook: options.evolution ? { webhookUrl: options.evolution.publicWebhookUrl(request.talk.workspaceId), webhookSecret: options.evolution.webhookSecret } : undefined
     });
 
     if (

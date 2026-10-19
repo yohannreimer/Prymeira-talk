@@ -1,6 +1,8 @@
 import { z } from "zod";
 
 export type AgentReplyPreflightInput = {
+  agentRules?: string;
+  followupPurpose?: "missing_qualification" | "proposal_checkin" | "objection_help" | "confirm_active";
   currentMessage: {
     id: string;
     body: string;
@@ -14,6 +16,7 @@ export type AgentReplyPreflightInput = {
     createdAt: string | null;
   }>;
   selectedKnowledge: Array<{
+    id?: string;
     title: string;
     content: string;
   }>;
@@ -41,6 +44,7 @@ export type AgentReplyPreflightPlan = {
     | "state_made_to_order_conditions"
     | "handoff"
     | "wait_for_customer"
+    | "followup_checkin"
     | "silence";
 };
 
@@ -56,7 +60,7 @@ export type AgentReplyQualityAuditInput = AgentReplyPreflightInput & {
 export type AgentReplyQualityAuditResult =
   | { outcome: "send" }
   | { outcome: "suppress"; reason: "redundant_or_unhelpful" }
-  | { outcome: "handoff"; reason: "commercial_policy_risk" | "plan_mismatch" };
+  | { outcome: "handoff"; reason: "commercial_policy_risk" | "plan_mismatch" | "stalled_quote" };
 
 export type AgentReplyPreflight = {
   evaluate(input: AgentReplyPreflightInput): Promise<AgentReplyPreflightResult>;
@@ -92,6 +96,7 @@ const nextActionSchema = z.enum([
   "state_made_to_order_conditions",
   "handoff",
   "wait_for_customer",
+  "followup_checkin",
   "silence"
 ]);
 
@@ -121,7 +126,8 @@ const auditResponseSchema = z.object({
     disposition: choiceAnswerSchema(z.enum(["send", "suppress", "handoff"])),
     followsPlan: z.object({ type: z.literal("noul"), noul: z.number().min(0).max(1) }),
     assertsUnsupportedCommercialFact: z.object({ type: z.literal("noul"), noul: z.number().min(0).max(1) }),
-    advancesOpenQualification: z.object({ type: z.literal("noul"), noul: z.number().min(0).max(1) })
+    advancesOpenQualification: z.object({ type: z.literal("noul"), noul: z.number().min(0).max(1) }),
+    stalledQuoteNeedsSeller: z.object({ type: z.literal("noul"), noul: z.number().min(0).max(1) })
   })
 });
 
@@ -139,8 +145,8 @@ const replyPreflightQuestions = {
     type: "choice",
     instructions: "Qual é a etapa dominante da conversa?",
     criteria: {
-      new_quote: "Novo pedido de cotação ainda não tratado.",
-      qualification: "Coleta ou confirmação de dados para uma cotação em andamento.",
+      new_quote: "Novo pedido de cotação ainda não tratado; não é resposta à qualificação anterior do agente sobre o mesmo pedido.",
+      qualification: "Coleta ou confirmação de dados para uma cotação em andamento, inclusive resposta do cliente à pergunta de qualificação feita pelo agente sobre o mesmo pedido.",
       seller_owned: "Um vendedor humano já está tratando cotação, negociação, entrega ou exceção.",
       post_proposal: "Proposta enviada, ajuste de proposta ou acompanhamento posterior.",
       closure: "Assunto concluído, despedida, agradecimento ou recusa sem demanda aberta.",
@@ -151,26 +157,27 @@ const replyPreflightQuestions = {
   commercialPath: {
     type: "choice",
     instructions:
-      "Usando somente o histórico e o conhecimento aprovado fornecido, qual caminho comercial se aplica ao pedido atual? Não trate uma inferência como fato confirmado.",
+      "Usando somente o histórico, as regras do agente e o conhecimento aprovado fornecido, qual caminho comercial se aplica ao pedido atual? Não trate uma inferência como fato confirmado. Uma negativa explícita nas regras do agente é fonte válida para not_sold; uma família genérica não confirma toda variante.",
     criteria: {
-      stock: "O conhecimento aprovado identifica o item como linha de estoque.",
-      made_to_order: "O conhecimento aprovado identifica o item como sob encomenda.",
-      not_sold: "O conhecimento aprovado identifica o item ou serviço como não vendido.",
-      ambiguous: "Há pedido comercial, mas item ou disponibilidade não pode ser classificado com segurança.",
+      stock: "O conhecimento aprovado identifica a família como linha de estoque e a variante solicitada não contradiz medidas, material ou norma aprovados. Linha de estoque não confirma saldo nem disponibilidade da variante.",
+      made_to_order: "O conhecimento aprovado ou as regras do agente identificam o item ou sua família como sob encomenda.",
+      not_sold: "Há negativa explícita aplicável ao item ou serviço descrito pelo cliente nas regras do agente ou no conhecimento aprovado; não inferir exclusão apenas por ausência no catálogo.",
+      ambiguous: "Há pedido comercial, mas a variante tem medida fora da faixa aprovada, material ou norma não confirmados, ou outra especificação que impede classificar o fornecimento com segurança. Uma família genérica de estoque não resolve a divergência da variante.",
       not_applicable: "Não há decisão comercial aplicável nesta mensagem."
     }
   },
   nextAction: {
     type: "choice",
     instructions:
-      "Qual único próximo movimento evita repetir a conversa e respeita o histórico? Não invente fatos comerciais nem reinicie uma negociação humana.",
+      "Qual único próximo movimento evita repetir a conversa e respeita o histórico? Siga a sequência de atendimento das regras do agente. Saudação, apresentação ou \"tudo bem?\" sem pedido concreto: escolha answer_current_request para cumprimentar e perguntar como ajudar, nunca handoff. Na primeira menção de um item sob encomenda em pedido novo, siga as regras do agente (informar o mínimo e oferecer catálogo ou vendedor) com offer_catalog_or_seller, não handoff. Antes do repasse comum, colete o que as regras do agente exigem antes do handoff (dados técnicos ausentes, logística, empresa e CNPJ ou nome) com ask_missing_technical, uma pendência curta por vez. Quando o cliente já deu especificações e quantidades para cotação, a IA já explicou o mínimo/limitação e ofereceu catálogo ou vendedor, mas a nova mensagem só esclarece o material sem resolver a viabilidade, escolha handoff: a cotação precisa de avaliação do vendedor, não de outra rodada de condições. Se a variante está fora da faixa aprovada ou o cliente pediu material/norma não confirmados, não confirme o item: escolha handoff para consulta ao vendedor quando os dados de repasse das regras do agente já foram coletados ou recusados, ou quando o cliente pediu vendedor ou urgência; antes disso, escolha ask_missing_technical para pedir os dados de repasse ausentes, dizendo que o vendedor verificará a variante. Não escolha answer_current_request para encerrar essa pendência. Se há negativa explícita aplicável, escolha answer_current_request para recusa curta, sem handoff apenas para repetir a regra. Não invente fatos comerciais nem reinicie uma negociação humana.",
     criteria: {
-      answer_current_request: "Responder diretamente uma pergunta atual com informação aprovada.",
-      ask_missing_technical: "Pedir somente os dados técnicos realmente ausentes de uma cotação em andamento.",
+      answer_current_request: "Responder diretamente com informação aprovada, inclusive saudação ou abertura sem pedido (cumprimentar e perguntar como ajudar) e recusa objetiva de item explicitamente não vendido. Não confirmar fornecimento, disponibilidade ou equivalência de variante sem evidência; uma resposta de que será consultada não substitui handoff quando a variante está fora da faixa aprovada ou a especificação solicitada não foi confirmada.",
+      ask_missing_technical: "Pedir somente os dados realmente ausentes de uma cotação em andamento: técnicos primeiro, depois logística e cadastro (empresa e CNPJ ou nome) exigidos pelas regras do agente antes do repasse.",
       offer_catalog_or_seller: "Para novo item sob encomenda, oferecer catálogo aprovado ou vendedor antes de checklist técnico adicional.",
       state_made_to_order_conditions: "Informar condições de encomenda ainda não apresentadas e perguntar se atendem.",
-      handoff: "Encaminhar para humano por decisão, exceção, risco ou incerteza relevante.",
-      wait_for_customer: "O cliente precisa responder uma pendência já apresentada; não criar nova pergunta.",
+      handoff: "Encaminhar para humano quando o cliente pedir vendedor ou urgência, quando o pedido já tem os dados de repasse exigidos pelas regras do agente (ou o cliente recusou fornecê-los), quando variante fora da faixa ou especificação não confirmada exigir consulta comercial depois dessa coleta, quando houver objeção ou exceção comercial concreta, ou quando uma cotação com medidas e quantidades já fornecidas não avança após a IA explicar o mesmo bloqueio comercial; nunca para saudação ou abertura sem pedido, nem para repetir uma negativa aprovada e aplicável ao pedido.",
+      wait_for_customer: "Ainda não chegou informação nova do cliente e ele precisa responder uma pendência já apresentada. Se a mensagem atual traz informação nova, avalie a próxima ação ou handoff; não use esta opção para justificar uma nova pergunta genérica.",
+      followup_checkin: "Retomar brevemente uma avaliação ou decisão pendente do cliente após uma explicação, catálogo solicitado e entregue ou proposta confirmada, sem repetir o conteúdo nem inventar condição comercial.",
       silence: "Não enviar resposta para encerramento social sem pendência."
     }
   }
@@ -179,11 +186,11 @@ const replyPreflightQuestions = {
 const replyQualityAuditQuestions = {
   disposition: {
     type: "choice",
-    instructions: "A resposta candidata deve ser enviada, suprimida ou encaminhada para humano? Avalie `candidateReply` contra `agentPreflight`, `currentMessage` e `conversationMessages`. Uma recusa objetiva de item explicitamente classificado como not_sold no plano e sustentado pelo conhecimento aprovado segue o plano. Uma mensagem que apenas informa que um vendedor verificará disponibilidade ou especificação também segue um plano handoff e não afirma que o item está disponível. Nunca escolha suppress para uma resposta que confirma uma informação nova do cliente e solicita o próximo dado necessário de uma qualificação em aberto.",
+    instructions: "Decida se a candidateReply deve ser enviada, suprimida ou bloqueada para revisão humana. Atenção: handoff nesta auditoria significa bloquear a candidateReply; é diferente de agentPreflight.nextAction=handoff, que pode exigir enviar ao cliente um aviso seguro de encaminhamento. Avalie `candidateReply` contra `agentPreflight`, `currentMessage`, `conversationMessages`, `agentRules` e conhecimento aprovado. Se já há pedido com medidas e quantidades, a IA explicou o bloqueio comercial e a nova resposta volta a repetir condições ou pedir aceite genérico sem tornar a cotação viável, escolha handoff para o vendedor. Uma recusa objetiva de item explicitamente classificado como not_sold no plano e sustentado por regra explícita do agente ou conhecimento aprovado segue o plano. Uma mensagem que apenas informa que um vendedor verificará disponibilidade ou especificação segue um plano handoff e não afirma que o item está disponível. Nunca escolha suppress para uma resposta que confirma uma informação nova do cliente e solicita o próximo dado necessário de uma qualificação em aberto.",
     criteria: {
-      send: "A resposta avança a demanda, segue o plano interno e não afirma fato comercial sem fonte aprovada. Inclui uma recusa curta sustentada quando agentPreflight.commercialPath é not_sold e um aviso de encaminhamento/verificação quando nextAction é handoff. Exemplo: depois de o atendente perguntar 'Será entrega ou retirada?' e o cliente responder 'Retirada', a resposta 'Certo, retirada em Joinville. Para seguir, informe a empresa e CNPJ ou, se for pessoa física, seu nome.' deve ser send: confirma a informação nova e coleta o próximo dado, sem prometer preço, estoque ou prazo.",
+      send: "A resposta avança a demanda, segue o plano interno e não afirma fato comercial sem regra explícita do agente ou conhecimento aprovado. Inclui uma recusa curta sustentada quando agentPreflight.commercialPath é not_sold. Mesmo com agentPreflight.nextAction=handoff, escolha send para um aviso como 'Vou encaminhar ao vendedor para verificar a disponibilidade e a especificação', desde que não afirme disponibilidade, equivalência ou outra condição não verificada. Exemplo: depois de o atendente perguntar 'Será entrega ou retirada?' e o cliente responder 'Retirada', a resposta 'Certo, retirada em Joinville. Para seguir, informe a empresa e CNPJ ou, se for pessoa física, seu nome.' deve ser send: confirma a informação nova e coleta o próximo dado, sem prometer preço, estoque ou prazo.",
       suppress: "Somente quando candidateReply for uma duplicação real de resposta já enviada, ou uma confirmação social/encerramento sem pergunta, sem novo dado e sem pendência aberta. Não é suppress uma etapa que registra uma decisão do cliente e pede o próximo dado de qualificação.",
-      handoff: "A resposta afirma, promete ou decide preço, estoque, prazo, frete, pagamento, especificação ou exceção sem base aprovada, ou conflita com o plano."
+      handoff: "Bloqueie a candidateReply para revisão humana se ela afirma, promete ou decide preço, estoque, prazo, frete, pagamento, especificação ou exceção sem base aprovada, conflita com o plano, ou prolonga uma cotação travada com condições já explicadas em vez de solicitar avaliação do vendedor; não escolha handoff apenas porque o texto comunica um encaminhamento ao vendedor para verificar algo ainda não confirmado, nem para saudação, pergunta de como ajudar ou pedido de dado de qualificação que não afirma fato comercial."
     }
   },
   followsPlan: {
@@ -193,7 +200,7 @@ const replyQualityAuditQuestions = {
   },
   assertsUnsupportedCommercialFact: {
     type: "noul",
-    instructions: "A resposta candidata afirma, promete ou oferece como certo um fato comercial ou equivalente técnico sem evidência explícita no conhecimento aprovado? Uma recusa que repete fielmente um item explicitamente não vendido no conhecimento aprovado é suportada. Dizer que um vendedor ainda verificará disponibilidade ou especificação não afirma disponibilidade, estoque ou especificação.",
+    instructions: "A resposta candidata afirma, promete ou oferece como certo um fato comercial ou equivalente técnico sem evidência explícita nas regras do agente ou no conhecimento aprovado? Uma recusa que repete fielmente um item explicitamente não vendido nessas fontes é suportada. Dizer que um vendedor ainda verificará disponibilidade ou especificação não afirma disponibilidade, estoque ou especificação.",
     criteria: {
       true: "Afirma ou promete estoque, preço, prazo, frete, pagamento, especificação, substituição ou equivalência técnica sem fonte aprovada.",
       false: "Não afirma, promete ou oferece fato comercial protegido sem evidência."
@@ -206,6 +213,14 @@ const replyQualityAuditQuestions = {
       true: "A resposta reconhece dado novo e avança uma pendência aberta com a próxima pergunta ou ação necessária, sem inventar fato comercial.",
       false: "A resposta apenas repete algo já respondido, encerra socialmente, ou não há qualificação/cotação pendente que ela faça avançar."
     }
+  },
+  stalledQuoteNeedsSeller: {
+    type: "noul",
+    instructions: "O cliente já pediu cotação com medidas e quantidades; a IA já explicou o mínimo ou outra limitação comercial; a mensagem atual não resolve a viabilidade; e candidateReply volta a condições ou pergunta genérica em vez de obter um dado técnico realmente ausente ou encaminhar ao vendedor? Julgue o histórico inteiro. Marque alto somente quando o vendedor precisa avaliar a cotação agora. Não marque alto para primeira explicação, escolha de catálogo, nova pergunta específica do cliente ou próximo dado concreto de qualificação.",
+    criteria: {
+      true: "A conversa comercial está travada e a resposta candidata prolonga o ciclo sem poder avançar a cotação; requer vendedor.",
+      false: "A resposta atende uma pergunta nova, entrega o catálogo solicitado ou coleta um dado concreto necessário que a IA consegue usar."
+    }
   }
 } as const;
 
@@ -214,6 +229,19 @@ export function createJevReplyPreflight(input: JevReplyPreflightOptions): AgentR
 
   return {
     async evaluate(state) {
+      const questions = state.followupPurpose
+        ? {
+            ...replyPreflightQuestions,
+            shouldReply: {
+              ...replyPreflightQuestions.shouldReply,
+              instructions: "Este é um follow-up agendado após silêncio do cliente, não uma resposta imediata à última mensagem dele. Leia o histórico inteiro. Ainda há avaliação, decisão ou dado do cliente pendente? Catálogo que o cliente pediu e recebeu pode exigir avaliação posterior sem proposta enviada. Responda não se houve resposta posterior, recusa, despedida, resolução ou ação pendente da empresa.",
+              criteria: {
+                true: "Há próximo passo concreto do cliente ainda pendente após o último atendimento da empresa.",
+                false: "O cliente respondeu, recusou, encerrou, a demanda foi resolvida ou a próxima ação pertence à empresa."
+              }
+            }
+          }
+        : replyPreflightQuestions;
       const response = await fetchImpl("https://api.typesafe.ai/v1/systemone", {
         method: "POST",
         signal: AbortSignal.timeout(12_000),
@@ -224,7 +252,7 @@ export function createJevReplyPreflight(input: JevReplyPreflightOptions): AgentR
         body: JSON.stringify({
           state: toJevState(state),
           model: input.model ?? "jev-latest",
-          questions: replyPreflightQuestions
+          questions
         })
       });
 
@@ -252,6 +280,15 @@ export function createJevReplyPreflight(input: JevReplyPreflightOptions): AgentR
       };
     },
     async audit(auditInput) {
+      const questions = auditInput.followupPurpose
+        ? {
+            ...replyQualityAuditQuestions,
+            disposition: {
+              ...replyQualityAuditQuestions.disposition,
+              instructions: `${replyQualityAuditQuestions.disposition.instructions} Este envio é um follow-up após o intervalo configurado. Uma pergunta breve sobre a avaliação de catálogo solicitado e entregue não é duplicação só por retomar o tema; suprima se o cliente respondeu, recusou, encerrou ou se a mensagem repete o conteúdo já enviado.`
+            }
+          }
+        : replyQualityAuditQuestions;
       const response = await fetchImpl("https://api.typesafe.ai/v1/systemone", {
         method: "POST",
         signal: AbortSignal.timeout(12_000),
@@ -266,7 +303,7 @@ export function createJevReplyPreflight(input: JevReplyPreflightOptions): AgentR
             candidateReply: auditInput.candidateReply.slice(0, 1_500)
           },
           model: input.model ?? "jev-latest",
-          questions: replyQualityAuditQuestions
+          questions
         })
       });
 
@@ -286,8 +323,13 @@ export function createJevReplyPreflight(input: JevReplyPreflightOptions): AgentR
       ) {
         return { outcome: "handoff", reason: "commercial_policy_risk" };
       }
-      if (answers.followsPlan.noul < 0.2) {
+      // A reply that is softer than a planned handoff (e.g. a greeting) already passed the
+      // commercial-fact check above; blocking it would only send the generic handoff notice.
+      if (answers.followsPlan.noul < 0.2 && auditInput.plan.nextAction !== "handoff") {
         return { outcome: "handoff", reason: "plan_mismatch" };
+      }
+      if (answers.stalledQuoteNeedsSeller.noul >= 0.8) {
+        return { outcome: "handoff", reason: "stalled_quote" };
       }
       if (answers.advancesOpenQualification.noul >= 0.8) {
         return { outcome: "send" };
@@ -302,17 +344,20 @@ export function createJevReplyPreflight(input: JevReplyPreflightOptions): AgentR
 
 function toJevState(input: AgentReplyPreflightInput) {
   return {
+    agentRules: input.agentRules ?? null,
+    followupPurpose: input.followupPurpose ?? null,
     currentMessage: input.currentMessage,
-    conversationMessages: input.conversationMessages.slice(-10).map((message) => ({
+    conversationMessages: input.conversationMessages.slice(-20).map((message) => ({
       id: message.id,
       label: message.label,
       type: message.type,
-      body: message.body?.slice(0, 2_000) ?? null,
+      body: message.body,
       createdAt: message.createdAt
     })),
-    approvedKnowledge: input.selectedKnowledge.slice(0, 8).map((source) => ({
-      title: source.title.slice(0, 240),
-      content: source.content.slice(0, 1_500)
+    approvedKnowledge: input.selectedKnowledge.map((source) => ({
+      id: source.id ?? null,
+      title: source.title,
+      content: source.content
     }))
   };
 }

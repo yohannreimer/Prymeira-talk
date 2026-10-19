@@ -3,6 +3,26 @@ import { realtimeEventSchema } from "@prymeira-talk/shared";
 import { EvolutionClientError } from "../evolution/evolution.client.js";
 import { createAutomationRunner } from "./automation-runner.js";
 import type { AutomationRunnerPrisma } from "./automation-runner.js";
+import { prymeiraWhatsappFlow } from "../agents/prymeira-whatsapp-definition.js";
+
+describe("Prymeira direct WhatsApp routing", () => {
+  it.each([
+    { kind: "new direct message", channel: true, site: false, previous: 0, activates: true },
+    { kind: "another channel", channel: false, site: false, previous: 0, activates: false },
+    { kind: "website lead", channel: true, site: true, previous: 0, activates: false },
+    { kind: "continuation of existing conversation", channel: true, site: false, previous: 2, activates: false }
+  ])("activates only the intended entry: $kind", async scenario => {
+    const rule = { ...baseRule, actions: prymeiraWhatsappFlow(channelId, agentId) };
+    const target = { ...conversation, channel: { ...conversation.channel, id: scenario.channel ? channelId : "other-channel" }, tags: scenario.site ? [{ tag: { id: "site", name: "Site | Raio-X | Origem" } }] : [] };
+    const prisma = createMockPrisma({ automationRule: { findMany: vi.fn().mockResolvedValue([rule]) }, message: {
+      findUnique: vi.fn().mockResolvedValue({ ...currentMessage, conversation: target }), count: vi.fn().mockResolvedValue(scenario.previous), findFirst: vi.fn().mockResolvedValue(null), create: vi.fn()
+    } } as Partial<AutomationRunnerPrisma>);
+    const activateForMessage = vi.fn().mockResolvedValue({ status: "completed", sessionId: "commercial-session" });
+    await createAutomationRunner({ prisma, agentRuntime: { activateForMessage } }).runForInboundMessage({ workspaceId, messageId, eventKey: `routing:${scenario.kind}` });
+    expect(activateForMessage).toHaveBeenCalledTimes(scenario.activates ? 1 : 0);
+    if (scenario.activates) expect(activateForMessage).toHaveBeenCalledWith(expect.objectContaining({ workspaceId, agentId, conversationId, messageId }));
+  });
+});
 
 const workspaceId = "workspace_a";
 const automationId = "00000000-0000-4000-8000-000000000101";
@@ -95,22 +115,28 @@ const baseRule = {
 };
 
 function createMockPrisma(overrides: Partial<AutomationRunnerPrisma> = {}) {
+  const durableRuns = new Map<string, any>();
   const prisma = {
     automationRule: {
       findMany: vi.fn().mockResolvedValue([baseRule])
     },
     automationRun: {
-      upsert: vi.fn().mockImplementation(async (args) => ({
-        id: "00000000-0000-4000-8000-000000000901",
-        workspaceId: args.create.workspaceId,
-        ruleId: args.create.ruleId,
-        eventKey: args.create.eventKey,
-        status: args.create.status,
-        input: args.create.input,
-        result: args.create.result,
-        createdAt: new Date("2026-05-24T12:00:01.000Z"),
-        updatedAt: new Date("2026-05-24T12:00:01.000Z")
-      }))
+      upsert: vi.fn(async (args: any) => {
+        const key = JSON.stringify(args.where);
+        const previous = durableRuns.get(key);
+        const row = previous ? { ...previous, ...args.update } : {
+          id: args.create.id ?? "00000000-0000-4000-8000-000000000901",
+          ...args.create,
+          createdAt: new Date("2026-05-24T12:00:01.000Z"), updatedAt: new Date("2026-05-24T12:00:01.000Z")
+        };
+        durableRuns.set(key, row); return { ...row };
+      }),
+      updateMany: vi.fn(async ({ where, data }: any) => {
+        const row = [...durableRuns.values()].find(r => r.id === where.id && r.workspaceId === where.workspaceId &&
+          (!where.executionToken || r.executionToken === where.executionToken) && (!where.status || r.status === where.status));
+        if (!row) return { count: 0 };
+        Object.assign(row, data); return { count: 1 };
+      })
     },
     message: {
       findUnique: vi.fn().mockResolvedValue({ ...currentMessage, conversation }),
@@ -163,6 +189,29 @@ function createMockPrisma(overrides: Partial<AutomationRunnerPrisma> = {}) {
 }
 
 describe("automation runner", () => {
+  it("rejects an old hidden source without actions or run recreation", async () => {
+    const prisma = createMockPrisma();
+    vi.mocked(prisma.message.findUnique).mockResolvedValue({ ...currentMessage, direction: "inbound", type: "text", conversation, hiddenByReset: true });
+    const runs = await createAutomationRunner({ prisma }).runForInboundMessage({ workspaceId, messageId, eventKey: "reset-source" });
+    expect(runs).toEqual([]);
+    expect(prisma.message.create).not.toHaveBeenCalled();
+    expect(prisma.automationRun.upsert).not.toHaveBeenCalled();
+  });
+
+  it("stops later flow actions and run recreation when reset happens during the first send", async () => {
+    const prisma = createMockPrisma();
+    const sendText = vi.fn(async () => {
+      vi.mocked(prisma.message.findUnique).mockResolvedValue({ ...currentMessage, direction: "inbound", type: "text", conversation, hiddenByReset: true });
+      return { providerMessageId: "already-sent" };
+    });
+    await createAutomationRunner({ prisma, evolution: { mode: "real", client: { sendText } as any } })
+      .runForInboundMessage({ workspaceId, messageId, eventKey: "reset-during-send" });
+    expect(prisma.tag.upsert).not.toHaveBeenCalled();
+    // The durable pre-send claim remains, but reset cannot create a new run.
+    expect(prisma.automationRun.upsert).toHaveBeenCalledTimes(1);
+    expect(prisma.automationRun.upsert).toHaveBeenCalledWith(expect.objectContaining({ create: expect.objectContaining({ status: 'running' }) }));
+  });
+
   it("executes a first-message flow with real text send and tag actions", async () => {
     const prisma = createMockPrisma();
     const evolutionClient = {
@@ -222,16 +271,9 @@ describe("automation runner", () => {
       workspaceId,
       conversationId
     });
-    expect(prisma.automationRun.upsert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        create: expect.objectContaining({
-          workspaceId,
-          ruleId: automationId,
-          eventKey: "message.received:wamid-inbound",
-          status: "completed",
-          result: expect.objectContaining({ mode: "real" })
-        })
-      })
+    expect(prisma.automationRun.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ workspaceId }),
+        data: expect.objectContaining({ status: 'completed', result: expect.objectContaining({ mode: 'real' }) }) })
     );
     expect(runs).toHaveLength(1);
     expect(runs[0]?.result).toMatchObject({
@@ -277,9 +319,9 @@ describe("automation runner", () => {
 
     expect(runs).toHaveLength(1);
     expect(runs[0]?.status).toBe("skipped");
-    expect(prisma.automationRun.upsert).toHaveBeenCalledWith(
+    expect(prisma.automationRun.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        create: expect.objectContaining({
+        data: expect.objectContaining({
           status: "skipped",
           result: expect.objectContaining({
             skippedReason: "trigger_not_matched",
@@ -1380,5 +1422,265 @@ describe("automation runner", () => {
         { nodeId: "handoff-log", status: "completed" }
       ]
     });
+  });
+
+  describe("webhook trigger", () => {
+    const webhookMessage = {
+      ...currentMessage,
+      providerMessageId: null,
+      providerEventId: "automation-webhook:rule:webhook.received:abc:1",
+      type: "system",
+      body: "Formulário recebido (Webhook externo)\nNome: Joana\nDor: Caixa apertado",
+      conversation
+    };
+    const variables = { nome: "Joana", dor: "Caixa apertado", "utm.source": "instagram" };
+
+    function webhookFlowRule(nodes: unknown[], edges: unknown[]) {
+      return {
+        ...baseRule,
+        trigger: "webhook.received",
+        actions: {
+          version: 1,
+          nodes: [
+            {
+              id: "trigger-1",
+              type: "trigger_webhook",
+              position: { x: 0, y: 0 },
+              data: { title: "Webhook externo", config: { channelId } }
+            },
+            ...nodes
+          ],
+          edges
+        }
+      };
+    }
+
+    const leadFlow = webhookFlowRule(
+      [
+        {
+          id: "tag-1",
+          type: "add_tag",
+          position: { x: 260, y: 0 },
+          data: { title: "Adicionar tag", config: { tagName: "Lead do site" } }
+        },
+        {
+          id: "note-1",
+          type: "create_internal_note",
+          position: { x: 520, y: 0 },
+          data: { title: "Nota", config: { note: "Dor informada: {{dor}}" } }
+        },
+        {
+          id: "send-1",
+          type: "send_message",
+          position: { x: 780, y: 0 },
+          data: { title: "Enviar mensagem", config: { message: "Oi {{nome}}, tudo bem? Vi aqui teu formulário ({{utm.source}})." } }
+        },
+        {
+          id: "agent-1",
+          type: "run_agent",
+          position: { x: 1040, y: 0 },
+          data: { title: "Ativar agente", config: { agentId, instruction: "Agende uma call com {{nome}} sobre {{dor}}." } }
+        }
+      ],
+      [
+        { id: "edge-1", source: "trigger-1", target: "tag-1" },
+        { id: "edge-2", source: "tag-1", target: "note-1" },
+        { id: "edge-3", source: "note-1", target: "send-1" },
+        { id: "edge-4", source: "send-1", target: "agent-1" }
+      ]
+    );
+
+    function webhookPrisma() {
+      return createMockPrisma({
+        message: {
+          ...createMockPrisma().message,
+          findUnique: vi.fn().mockResolvedValue(webhookMessage)
+        }
+      } as Partial<AutomationRunnerPrisma>);
+    }
+
+    it("executes the flow from the webhook trigger with form variables", async () => {
+      const prisma = webhookPrisma();
+      const sendText = vi.fn().mockResolvedValue({ providerMessageId: "wamid-opener" });
+      const agentRuntime = {
+        activateForMessage: vi.fn().mockResolvedValue({ status: "completed", sessionId: "session-1" })
+      };
+      const agentReplyScheduler = {
+        scheduleActiveSessionForMessage: vi.fn().mockResolvedValue({
+          scheduled: true,
+          scheduledAt: new Date("2026-05-24T12:00:40.000Z")
+        })
+      };
+      const runner = createAutomationRunner({
+        prisma,
+        agentRuntime,
+        agentReplyScheduler,
+        evolution: { mode: "real", client: { sendText, sendMedia: vi.fn() } }
+      });
+
+      const run = await runner.runForWebhookEvent({
+        workspaceId,
+        rule: leadFlow as never,
+        messageId,
+        eventKey: "webhook.received:abc:1",
+        variables,
+        runInput: { phone: "5547999991234" }
+      });
+
+      expect(prisma.tag.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({ create: expect.objectContaining({ name: "Lead do site" }) })
+      );
+      expect(prisma.contactNote.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ body: "Dor informada: Caixa apertado", conversationId })
+      });
+      expect(sendText).toHaveBeenCalledWith({
+        instanceName: "talk-instance",
+        number: "5547991396920",
+        text: "Oi Joana, tudo bem? Vi aqui teu formulário (instagram)."
+      });
+      expect(agentRuntime.activateForMessage).toHaveBeenCalledWith({
+        workspaceId,
+        agentId,
+        conversationId,
+        messageId,
+        instruction: "Agende uma call com Joana sobre Caixa apertado."
+      });
+      expect(agentReplyScheduler.scheduleActiveSessionForMessage).toHaveBeenCalledWith({
+        workspaceId,
+        conversationId,
+        messageId
+      });
+      expect(prisma.automationRun.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ workspaceId }),
+          data: expect.objectContaining({
+            status: "completed",
+            input: expect.objectContaining({
+              source: "automation_webhook",
+              trigger: "webhook.received",
+              messageId,
+              phone: "5547999991234"
+            })
+          })
+        })
+      );
+      expect(run?.status).toBe("completed");
+      expect(run?.result).toMatchObject({
+        triggerNodeId: "trigger-1",
+        actionResults: [
+          { nodeId: "trigger-1", status: "completed" },
+          { nodeId: "tag-1", status: "completed" },
+          { nodeId: "note-1", status: "completed" },
+          { nodeId: "send-1", status: "completed" },
+          { nodeId: "agent-1", status: "completed", replyScheduled: true }
+        ]
+      });
+    });
+
+    it("skips WhatsApp sends with a clear reason and keeps CRM steps on blocked channels", async () => {
+      const prisma = webhookPrisma();
+      const sendText = vi.fn();
+      const agentRuntime = { activateForMessage: vi.fn() };
+      const runner = createAutomationRunner({
+        prisma,
+        agentRuntime,
+        evolution: { mode: "real", client: { sendText, sendMedia: vi.fn() } }
+      });
+
+      const run = await runner.runForWebhookEvent({
+        workspaceId,
+        rule: leadFlow as never,
+        messageId,
+        eventKey: "webhook.received:meta:1",
+        variables,
+        outboundBlockedReason: "Canal Meta exige template."
+      });
+
+      expect(prisma.tag.upsert).toHaveBeenCalled();
+      expect(prisma.contactNote.create).toHaveBeenCalled();
+      expect(sendText).not.toHaveBeenCalled();
+      expect(prisma.message.create).not.toHaveBeenCalled();
+      expect(agentRuntime.activateForMessage).not.toHaveBeenCalled();
+      expect(run?.status).toBe("skipped");
+      expect(run?.result).toMatchObject({
+        skippedReason: "outbound_blocked",
+        skippedMessage: "Canal Meta exige template.",
+        actionResults: [
+          { nodeId: "trigger-1", status: "completed" },
+          { nodeId: "tag-1", status: "completed" },
+          { nodeId: "note-1", status: "completed" },
+          { nodeId: "send-1", status: "skipped", message: "Canal Meta exige template." },
+          { nodeId: "agent-1", status: "skipped", message: "Canal Meta exige template." }
+        ]
+      });
+    });
+
+    it("does not run webhook flows for inbound WhatsApp messages", async () => {
+      const prisma = createMockPrisma({
+        automationRule: { findMany: vi.fn().mockResolvedValue([{ ...leadFlow, trigger: "message.received" }]) }
+      } as Partial<AutomationRunnerPrisma>);
+      const runner = createAutomationRunner({ prisma });
+
+      const runs = await runner.runForInboundMessage({
+        workspaceId,
+        messageId,
+        eventKey: "message.received:wamid-inbound"
+      });
+
+      expect(runs).toEqual([]);
+      expect(prisma.automationRun.upsert).not.toHaveBeenCalled();
+    });
+
+    it("leaves message-triggered flows without variables untouched", async () => {
+      const rule = {
+        ...baseRule,
+        actions: {
+          ...baseRule.actions,
+          nodes: [
+            baseRule.actions.nodes[0],
+            {
+              id: "send-1",
+              type: "send_message",
+              position: { x: 260, y: 0 },
+              data: { title: "Enviar mensagem", config: { message: "Use {{nome}} literalmente" } }
+            }
+          ],
+          edges: [{ id: "edge-1", source: "trigger-1", target: "send-1" }]
+        }
+      };
+      const prisma = createMockPrisma({
+        automationRule: { findMany: vi.fn().mockResolvedValue([rule]) }
+      } as Partial<AutomationRunnerPrisma>);
+      const runner = createAutomationRunner({ prisma });
+
+      await runner.runForInboundMessage({ workspaceId, messageId, eventKey: "message.received:literal" });
+
+      expect(prisma.message.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ body: "Use {{nome}} literalmente" })
+      });
+    });
+  });
+});
+
+
+describe("audit: durable automation execution", () => {
+  it("reuses the same inbound event without repeating sends or notes", async () => {
+    const prisma = createMockPrisma();
+    const sendText = vi.fn(async () => ({ providerMessageId: "accepted" }));
+    const runner = createAutomationRunner({ prisma, evolution: { mode: "real", client: { sendText } as any } });
+    const event = { workspaceId, messageId, eventKey: "same-durable-event" };
+    await runner.runForInboundMessage(event);
+    await runner.runForInboundMessage(event);
+    expect(sendText).toHaveBeenCalledTimes(1);
+    expect(prisma.conversationTag.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not run actions when durable claim persistence fails", async () => {
+    const prisma = createMockPrisma();
+    vi.mocked(prisma.automationRun.upsert).mockRejectedValue(new Error("database unavailable"));
+    const sendText = vi.fn();
+    const runner = createAutomationRunner({ prisma, evolution: { mode: "real", client: { sendText } as any } });
+    await runner.runForInboundMessage({ workspaceId, messageId, eventKey: "unclaimed" }).catch(() => undefined);
+    expect(sendText).not.toHaveBeenCalled();
   });
 });

@@ -4,6 +4,7 @@ import { realtimeEventSchema } from "@prymeira-talk/shared";
 import { OutboundDeliveryUncertainError } from "../conversations/conversations.service.js";
 import { EvolutionClientError } from "../evolution/evolution.client.js";
 import { conversationFollowupsRoutes } from "./conversation-followups.routes.js";
+import { DEFAULT_CHANNEL_FOLLOWUP_CONFIG } from "./channel-followup-plan.js";
 
 const ids = {
   workspaceA: "workspace_a",
@@ -13,7 +14,8 @@ const ids = {
   agent: "00000000-0000-4000-8000-000000000703",
   conversation: "00000000-0000-4000-8000-000000000704",
   session: "00000000-0000-4000-8000-000000000705",
-  anchor: "00000000-0000-4000-8000-000000000706"
+  anchor: "00000000-0000-4000-8000-000000000706",
+  channel: "00000000-0000-4000-8000-000000000707"
 };
 const initialUpdatedAt = new Date("2026-09-21T12:00:00.000Z");
 const fixedNow = new Date("2026-09-21T22:00:00.000Z");
@@ -24,7 +26,7 @@ type Followup = {
   conversationId: string;
   agentId: string;
   sessionId: string;
-  kind: "qualification" | "human_commercial";
+  kind: "qualification" | "human_commercial" | "seller_reminder";
   status: "scheduled" | "processing" | "review" | "sent" | "cancelled" | "failed" | "skipped" | "expired";
   activeKey: string | null;
   stepIndex: number;
@@ -102,10 +104,17 @@ function matches(value: unknown, where: Record<string, unknown>): boolean {
   if (!value || typeof value !== "object") return false;
   const record = value as Record<string, unknown>;
   return Object.entries(where).every(([key, expected]) => {
+    if (key === "NOT") return (Array.isArray(expected) ? expected : [expected])
+      .every((condition) => !matches(record, condition as Record<string, unknown>));
+    if (key === "conversation" && expected && typeof expected === "object") {
+      const filter = expected as { is?: { channelId?: string } };
+      return record.conversationId === ids.conversation && filter.is?.channelId === ids.channel;
+    }
     const actual = record[key];
     if (expected && typeof expected === "object" && !(expected instanceof Date)) {
-      const condition = expected as { in?: unknown[] };
+      const condition = expected as { in?: unknown[]; startsWith?: string };
       if (condition.in) return condition.in.includes(actual);
+      if (condition.startsWith) return typeof actual === "string" && actual.startsWith(condition.startsWith);
     }
     if (expected instanceof Date) {
       return actual instanceof Date && actual.getTime() === expected.getTime();
@@ -116,6 +125,7 @@ function matches(value: unknown, where: Record<string, unknown>): boolean {
 
 function createMemoryPrisma(records: Followup[]) {
   const messages: Array<Record<string, unknown>> = [];
+  const channel = { id: ids.channel, workspaceId: ids.workspaceA, followupConfig: {} as unknown };
   let sequence = initialUpdatedAt.getTime();
   const touch = (record: Followup) => {
     sequence += 1_000;
@@ -145,6 +155,15 @@ function createMemoryPrisma(records: Followup[]) {
     create: vi.fn()
   };
   const db = {
+    channel: {
+      findUnique: vi.fn(async ({ where }: { where: { workspaceId_id: { workspaceId: string; id: string } } }) =>
+        where.workspaceId_id.workspaceId === channel.workspaceId && where.workspaceId_id.id === channel.id ? channel : null
+      ),
+      update: vi.fn(async ({ data }: { data: { followupConfig: unknown } }) => {
+        channel.followupConfig = data.followupConfig;
+        return channel;
+      })
+    },
     conversationFollowup: store,
     message: {
       findUnique: vi.fn(async ({ where }: { where: { workspaceId_id: { workspaceId: string; id: string } } }) =>
@@ -206,9 +225,11 @@ function createMemoryPrisma(records: Followup[]) {
         status: "open",
         aiControlStatus: "agent_allowed",
         activeAgentSessionId: ids.session
-      })
+      }),
+      updateMany: vi.fn().mockResolvedValue({ count: 1 })
     },
     aiAgentSession: {
+      updateMany: vi.fn().mockResolvedValue({ count: 1 }),
       findFirst: vi.fn().mockResolvedValue({
         id: ids.session,
         workspaceId: ids.workspaceA,
@@ -223,8 +244,10 @@ function createMemoryPrisma(records: Followup[]) {
         }
       })
     },
+    aiAgentPendingReply: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
     userProfile: { findFirst: vi.fn().mockResolvedValue({ id: "user_current" }) },
     records,
+    channelRecord: channel,
     messages,
     $transaction: vi.fn(async (callback: (tx: unknown) => Promise<unknown>) => {
       const recordSnapshot = records.map((record) => ({ ...record }));
@@ -279,6 +302,86 @@ function expected(record: Followup) {
 
 describe("conversation follow-up review routes", () => {
   beforeEach(() => vi.clearAllMocks());
+
+  it("keeps each number's cadence editable only by managers", async () => {
+    const owner = await buildRouteApp();
+    const agent = await buildRouteApp({ role: "agent" });
+    try {
+      const initial = await owner.app.inject(`/followups/config/${ids.channel}`);
+      expect(initial.statusCode).toBe(200);
+      expect(initial.json()).toMatchObject({ customized: false, config: DEFAULT_CHANNEL_FOLLOWUP_CONFIG });
+
+      const config = { ...DEFAULT_CHANNEL_FOLLOWUP_CONFIG, steps: [
+        { afterMinutes: 20 }, { afterMinutes: 40 }, { afterMinutes: 60 }, { afterMinutes: 360 }
+      ] };
+      const saved = await owner.app.inject({ method: "PUT", url: `/followups/config/${ids.channel}`, payload: config });
+      expect(saved.statusCode).toBe(200);
+      expect(saved.json()).toMatchObject({ customized: true, config });
+      expect(owner.db.channelRecord.followupConfig).toEqual(config);
+
+      const forbidden = await agent.app.inject({ method: "PUT", url: `/followups/config/${ids.channel}`, payload: config });
+      expect(forbidden.statusCode).toBe(403);
+      const invalid = await owner.app.inject({ method: "PUT", url: `/followups/config/${ids.channel}`, payload: { ...config, steps: [] } });
+      expect(invalid.statusCode).toBe(400);
+    } finally {
+      await owner.app.close();
+      await agent.app.close();
+    }
+  });
+
+  it("pauses a number without deleting its cadence and cancels queued follow-ups", async () => {
+    const pending = followup({ status: "scheduled", activeKey: "active" });
+    const { app, db } = await buildRouteApp({ records: [pending] });
+    try {
+      const paused = await app.inject({
+        method: "PUT", url: `/followups/config/${ids.channel}`,
+        payload: { ...DEFAULT_CHANNEL_FOLLOWUP_CONFIG, enabled: false }
+      });
+      expect(paused.statusCode).toBe(200);
+      expect(paused.json().config.enabled).toBe(false);
+      expect(paused.json().config.steps).toEqual(DEFAULT_CHANNEL_FOLLOWUP_CONFIG.steps);
+      expect(pending).toMatchObject({ status: "cancelled", activeKey: null, reason: "channel_paused" });
+
+      const resumed = await app.inject({
+        method: "PUT", url: `/followups/config/${ids.channel}`,
+        payload: { ...DEFAULT_CHANNEL_FOLLOWUP_CONFIG, enabled: true }
+      });
+      expect(resumed.statusCode).toBe(200);
+      expect(pending.status).toBe("cancelled");
+      expect(db.channelRecord.followupConfig).toMatchObject({ enabled: true });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("keeps a reviewed draft unsent when the number is outside its service hours", async () => {
+    const { app, db, outbound } = await buildRouteApp();
+    db.channelRecord.followupConfig = DEFAULT_CHANNEL_FOLLOWUP_CONFIG;
+    db.conversation.findUnique.mockResolvedValue({
+      id: ids.conversation,
+      workspaceId: ids.workspaceA,
+      channelId: ids.channel,
+      status: "open",
+      aiControlStatus: "human_controlled",
+      activeAgentSessionId: ids.session
+    });
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: `/followups/${ids.followup}/send`,
+        payload: { body: "Posso retomar?", expectedUpdatedAt: expected(db.records[0]) }
+      });
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toMatchObject({
+        code: "FOLLOWUP_OUTSIDE_BUSINESS_HOURS",
+        nextAllowedAt: "2026-09-22T11:00:00.000Z"
+      });
+      expect(outbound).not.toHaveBeenCalled();
+      expect(db.records[0]?.status).toBe("review");
+    } finally {
+      await app.close();
+    }
+  });
 
   it("lists only the talk workspace and emits a safe review DTO", async () => {
     const { app, db } = await buildRouteApp({
@@ -337,10 +440,11 @@ describe("conversation follow-up review routes", () => {
     }
   });
 
-  it("lists all terminal failures in the cancelled tab with a bounded query", async () => {
+  it("lists operational failures while hiding candidates rejected during screening", async () => {
     const { app, db } = await buildRouteApp({ records: [
       followup({ id: ids.followup, status: "failed", activeKey: null, reason: "private_provider_failure" }),
-      followup({ id: ids.followupB, status: "skipped", activeKey: null, reason: "private_decision" })
+      followup({ id: ids.followupB, status: "skipped", activeKey: null, reason: "private_decision" }),
+      followup({ id: "screened_out", status: "skipped", activeKey: null, reason: "eligibility_seller_action_pending" })
     ] });
     try {
       const response = await app.inject("/followups?status=cancelled");
@@ -348,7 +452,11 @@ describe("conversation follow-up review routes", () => {
       expect(response.json().map((item: { status: string }) => item.status)).toEqual(["failed", "skipped"]);
       expect(response.body).not.toContain("private_provider_failure");
       expect(db.conversationFollowup.findMany).toHaveBeenCalledWith(expect.objectContaining({
-        where: { workspaceId: ids.workspaceA, status: { in: ["cancelled", "failed", "skipped", "expired"] } },
+        where: {
+          workspaceId: ids.workspaceA,
+          status: { in: ["cancelled", "failed", "skipped", "expired"] },
+          NOT: [{ reason: { startsWith: "eligibility_" } }, { reason: { startsWith: "brain_" } }]
+        },
         orderBy: [{ updatedAt: "desc" }],
         take: 100
       }));
@@ -388,6 +496,13 @@ describe("conversation follow-up review routes", () => {
         payload: { body: "Oi, consigo te ajudar com mais alguma informação?", expectedUpdatedAt: expected(db.records[0]) }
       });
       expect(response.statusCode).toBe(200);
+      expect(db.conversation.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({ aiControlStatus: "human_controlled" })
+      }));
+      expect(db.aiAgentPendingReply.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({ status: "cancelled" })
+      }));
+      expect(db.conversation.updateMany.mock.invocationCallOrder[0]).toBeLessThan(outbound.mock.invocationCallOrder[0]);
       expect(outbound).toHaveBeenCalledWith(expect.objectContaining({
         workspaceId: ids.workspaceA,
         conversationId: ids.conversation,
@@ -744,6 +859,49 @@ describe("conversation follow-up review routes", () => {
       });
       expect(suppressed.statusCode).toBe(200);
       expect(suppressed.json()).toEqual(expect.objectContaining({ status: "cancelled", reason: "no_followup", cancelledByUserId: "user_current" }));
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("lists seller reminders apart and closes one when the seller did it", async () => {
+    const reminder = followup({ kind: "seller_reminder", draftBody: null, reason: "seller_reminder",
+      decision: { mode: "brain", brain: { situation: "waiting_company", pendingItem: "Enviar a NF na terça", nextStep: null,
+        timingNote: "terça", rationale: "O vendedor prometeu a NF.", confidence: 0.9, suggestedMessage: "Lembrete: enviar a NF" } } });
+    const { app, db } = await buildRouteApp({ records: [reminder] });
+    try {
+      const reminders = await app.inject("/followups?status=reminders");
+      expect(reminders.json()).toEqual([expect.objectContaining({
+        kind: "seller_reminder",
+        analysis: { situation: "waiting_company", pendingItem: "Enviar a NF na terça", nextStep: null, timingNote: "terça",
+          rationale: "O vendedor prometeu a NF.", confidence: 0.9 }
+      })]);
+      expect((await app.inject("/followups?status=review")).json()).toEqual([]);
+
+      const strip = await app.inject(`/conversations/${ids.conversation}/followup`);
+      expect(strip.json().followup).toMatchObject({ id: ids.followup, kind: "seller_reminder" });
+
+      const done = await app.inject({
+        method: "POST",
+        url: `/followups/${ids.followup}/done`,
+        payload: { expectedUpdatedAt: expected(db.records[0]) }
+      });
+      expect(done.statusCode).toBe(200);
+      expect(done.json()).toEqual(expect.objectContaining({ status: "cancelled", reason: "seller_done" }));
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("only closes reminders as done", async () => {
+    const { app, db } = await buildRouteApp();
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: `/followups/${ids.followup}/done`,
+        payload: { expectedUpdatedAt: expected(db.records[0]) }
+      });
+      expect(response.statusCode).toBe(409);
     } finally {
       await app.close();
     }

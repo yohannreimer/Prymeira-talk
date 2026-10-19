@@ -2,6 +2,88 @@ import { describe, expect, it } from "vitest";
 import { isDocumentDependentQuestion, selectRelevantKnowledge } from "./knowledge-retrieval.js";
 
 describe("selectRelevantKnowledge", () => {
+  it("selects a relevant approved improvement without sending unrelated improvements", () => {
+    const result = selectRelevantKnowledge({
+      latestMessage: "Vocês fazem oxicorte neste material?",
+      conversationHistory: "cliente: Preciso de material oxicortado.",
+      instruction: null,
+      sources: [
+        {
+          id: "improvement-oxicorte",
+          title: "Escopo de oxicorte",
+          content: "Não fornecemos serviço de oxicorte nem material cortado por oxicorte.",
+          metadata: { source: "approved_agent_improvement", aliases: ["oxicorte", "oxicortado"] }
+        },
+        {
+          id: "improvement-frete",
+          title: "Prazo de frete",
+          content: "O vendedor confirma o prazo de frete para cada cidade.",
+          metadata: { source: "approved_agent_improvement", aliases: ["frete", "entrega"] }
+        }
+      ]
+    });
+
+    expect(result.selected.map((source) => source.id)).toEqual(["improvement-oxicorte"]);
+    expect(result.selected[0]?.content).toContain("Não fornecemos serviço de oxicorte");
+  });
+
+  it("treats an alias as a retrieval hint, not as a new negative commercial fact", () => {
+    const result = selectRelevantKnowledge({
+      latestMessage: "Preciso de barra para viga baldrame de 10mm",
+      conversationHistory: "",
+      instruction: null,
+      sources: [{
+        id: "improvement-baldrame",
+        title: "Aplicação de baldrame",
+        content: "A aplicação em viga baldrame precisa de confirmação do material antes de decidir o fornecimento.",
+        metadata: { aliases: ["viga baldrame"] }
+      }]
+    });
+
+    expect(result.selected[0]?.id).toBe("improvement-baldrame");
+    expect(result.selected[0]?.content).not.toMatch(/não (?:vendemos|fornecemos)/i);
+  });
+
+  it("ranks the active product request ahead of an older unrelated pricing topic", () => {
+    const result = selectRelevantKnowledge({
+      latestMessage: "Barra para viga baldrame\n10mm",
+      conversationHistory: "cliente: Qual o preço da chapa?\natendente: Vou verificar.\ncliente: Barra para viga baldrame\ncliente: 10mm",
+      instruction: null,
+      sources: [
+        {
+          id: "old-pricing",
+          title: "Tabela de preços",
+          content: "Preços de chapas são confirmados pelo vendedor.",
+          metadata: { category: "precos", keywords: ["preço", "chapa"] }
+        },
+        {
+          id: "current-baldrame",
+          title: "Aplicação em viga baldrame",
+          content: "Barra para viga baldrame exige confirmação de material.",
+          metadata: { aliases: ["viga baldrame"] }
+        }
+      ]
+    });
+
+    expect(result.selected[0]?.id).toBe("current-baldrame");
+  });
+
+  it("still uses recent history when the current answer is only a dimension", () => {
+    const result = selectRelevantKnowledge({
+      latestMessage: "10mm",
+      conversationHistory: "cliente: Barra para viga baldrame\natendente: Qual diâmetro?\ncliente: 10mm",
+      instruction: null,
+      sources: [{
+        id: "baldrame",
+        title: "Aplicação baldrame",
+        content: "O material para viga baldrame exige confirmação técnica.",
+        metadata: { aliases: ["viga baldrame"] }
+      }]
+    });
+
+    expect(result.selected[0]?.id).toBe("baldrame");
+  });
+
   it("selects the pricing document for a pricing question", () => {
     const result = selectRelevantKnowledge({
       latestMessage: "Quanto custa o plano profissional?",

@@ -33,9 +33,18 @@ export function contactDisplayName(conversation: ConversationDto) {
   return conversation.contactName ?? conversation.contactPhone ?? `Contato ${conversation.contactId.slice(0, 8)}`;
 }
 
-export function getChannelFilterOptions(conversations: ConversationDto[]): ChannelFilterOption[] {
+export function getChannelFilterOptions(
+  conversations: ConversationDto[],
+  channels: Array<{ id: string; displayName: string | null }> = []
+): ChannelFilterOption[] {
   const options: ChannelFilterOption[] = [{ id: "all", label: "Todos" }];
   const seenChannelIds = new Set<string>();
+
+  for (const channel of channels) {
+    if (seenChannelIds.has(channel.id)) continue;
+    seenChannelIds.add(channel.id);
+    options.push({ id: channel.id, label: channel.displayName ?? `Canal ${channel.id.slice(0, 8)}` });
+  }
 
   for (const conversation of conversations) {
     if (seenChannelIds.has(conversation.channelId)) continue;

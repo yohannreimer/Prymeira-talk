@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { CONTEXT_FIRST, CONTEXT_FIRST_OPERATIONAL_RULES } from "./conversation-reasoning-policy.js";
+import { usesOpenAiReasoningParameters } from "./openai-reasoning-model.js";
 
 const agentActionSchema = z
   .object({
@@ -57,6 +58,8 @@ export interface AgentProviderInput {
 }
 
 export interface AgentProvider {
+  /** Simulation must be explicitly recognizable before it can reach a real channel. */
+  mode?: 'simulated';
   generate(input: AgentProviderInput): Promise<AgentOutput>;
 }
 
@@ -108,7 +111,18 @@ function normalizeAgentOutputShape(value: unknown) {
   const outputRecord = nested ? { ...record, ...nested } : record;
   const confidence = normalizeConfidence(outputRecord.confidence ?? outputRecord.score);
   const actions = normalizeActions(outputRecord.actions);
-  const alternateReply = readReply(outputRecord) ?? readReplyFromActions(actions);
+  // A private handoff brief may be returned directly as JSON rather than in
+  // the generic agent envelope. Keep it in reply for the brief validator.
+  const directBrief = typeof outputRecord.nextAction === "string" &&
+    typeof outputRecord.summary === "string" &&
+    Array.isArray(outputRecord.evidenceMessageIds)
+    ? JSON.stringify({
+      nextAction: outputRecord.nextAction,
+      summary: outputRecord.summary,
+      evidenceMessageIds: outputRecord.evidenceMessageIds
+    })
+    : undefined;
+  const alternateReply = readReply(outputRecord) ?? directBrief ?? readReplyFromActions(actions);
   const handoff = normalizeHandoff(
     outputRecord.handoff ?? outputRecord.shouldHandoff ?? outputRecord.handoffRequired
   );
@@ -234,6 +248,10 @@ function normalizeActionType(type: string) {
     ].includes(normalized)
   ) {
     return "request_handoff";
+  }
+
+  if (["schedule_meeting", "book_meeting", "schedule_call", "book_call", "create_meeting", "marcar_call", "agendar"].includes(normalized)) {
+    return "schedule_meeting";
   }
 
   if (["add_tag", "add_contact_tag", "tag_contact", "tag_conversation", "tag"].includes(normalized)) {
@@ -416,10 +434,6 @@ async function createProviderResponseError(response: Response) {
   );
 }
 
-function isGpt56Model(model: string) {
-  return /^gpt-5\.6(?:-|$)/i.test(model.trim());
-}
-
 function buildOpenAiCompatibleRequestBody(input: {
   chatModel: string;
   systemPrompt: string;
@@ -465,7 +479,7 @@ function buildOpenAiCompatibleRequestBody(input: {
     ]
   };
 
-  return isGpt56Model(input.chatModel)
+  return usesOpenAiReasoningParameters(input.chatModel)
     ? { ...sharedBody, reasoning_effort: input.reasoningEffort ?? "none", ...(input.reasoningEffort === "low" ? { max_completion_tokens: 8192 } : {}) }
     : { ...sharedBody, temperature: 0.2 };
 }
@@ -661,7 +675,7 @@ function buildOpenAiCompatibleSystemPrompt(systemPrompt: string, contextFirst = 
     ]),
     "- preserve original customer item descriptions, codes, units, quantities and latest corrections in internal notes; separate uncertain or missing fields explicitly",
     "- use only supported action types from context.allowedActions",
-"- supported action type names are: send_message, send_attachment, add_tag, remove_tag, change_priority, create_internal_note, assign_user, assign_department, request_handoff",
+"- supported action type names are: send_message, send_attachment, add_tag, remove_tag, change_priority, create_internal_note, assign_user, assign_department, request_handoff, schedule_meeting",
     "- for send_attachment use {\"type\":\"send_attachment\",\"attachmentUrl\":\"...\",\"caption\":\"optional short caption\"}",
     "- attachmentUrl must be picked from the workspace's approved attachments referenced in the agent's knowledge sources; never invent or fabricate URLs",
     "- when sending an attachment, also include a short textual reply so the customer sees a context message alongside the file",
@@ -669,6 +683,9 @@ function buildOpenAiCompatibleSystemPrompt(systemPrompt: string, contextFirst = 
     "- if context.allowedTags is empty, do not call add_tag",
     "- use create_internal_note for conversation-specific details that should not become a reusable tag",
     "- for internal notes use {\"type\":\"create_internal_note\",\"body\":\"...\"}",
+    "- schedule_meeting is only usable when context.meetingScheduling is present; offer 2 or 3 options taken from context.meetingScheduling.availableSlots, written with their label, and never offer or confirm a time outside that list",
+    "- when the contact clearly picks one offered time, use {\"type\":\"schedule_meeting\",\"startsAt\":\"<exact startsAt of the chosen slot>\",\"email\":\"contact e-mail if known, else omit\"} and reply with a short confirmation of the day and time; the system books it and appends the Google Meet link, so never write or invent a meeting link",
+    "- if context.meetingScheduling.bookedMeeting is present a call is already booked: remind its label when relevant and only use schedule_meeting again if the contact asks to change the time (the new booking replaces the old one)",
     "- do not use action names like reply, respond_message, offer_handoff_to_sales, create_note, or add_contact_tag",
     '- required JSON shape: {"confidence": number between 0 and 1, "reply": string or null, "actions": array of objects with "type", "handoff": {"required": boolean, "reason": string or null}, "sources": array of cited selected documents or empty array}'
   ].join("\n");
@@ -715,6 +732,7 @@ function buildAllowedTagsContextBlock(value: unknown) {
 
 export function createSimulatedAgentProvider(): AgentProvider {
   return {
+    mode: 'simulated',
     async generate(input) {
       const messageBody =
         typeof input.context.messageBody === "string" ? input.context.messageBody : "";

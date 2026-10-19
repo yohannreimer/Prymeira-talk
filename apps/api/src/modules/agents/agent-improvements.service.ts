@@ -1,3 +1,4 @@
+import { enterCanonicalWorkspaceTransaction } from "../messaging/canonical-boundary.js";
 import type { Prisma } from "@prisma/client";
 import {
   aiAgentImprovementNormalizationSchema,
@@ -9,6 +10,8 @@ import type {
   AgentImprovementKind,
   AgentImprovementNormalizer
 } from "./jev-agent-improvement.js";
+import type { AgentImprovementRuleWriter } from "./openai-agent-improvement.js";
+import { readAssistantSettings } from "../assistant/assistant-policy.js";
 
 type DateLike = Date | string;
 type ImprovementStatus = AiAgentImprovementDto["status"];
@@ -23,6 +26,12 @@ type AgentRecord = {
 type HandoffSessionRecord = {
   id: string;
   agentId: string;
+  lastRunAt?: DateLike | null;
+};
+
+type ConversationRecord = {
+  activeAgentSessionId: string | null;
+  channel?: { encryptedConfig: unknown } | null;
 };
 
 type MessageRecord = {
@@ -68,11 +77,17 @@ type TransactionPrismaLike = {
 };
 
 export interface AgentImprovementsPrismaLike {
+  conversation: {
+    findFirst(args: unknown): Promise<ConversationRecord | null>;
+  };
   aiAgent: {
     findFirst(args: unknown): Promise<AgentRecord | null>;
   };
   aiAgentSession: {
     findFirst(args: unknown): Promise<HandoffSessionRecord | null>;
+  };
+  aiAgentRun: {
+    findFirst(args: unknown): Promise<{ createdAt: DateLike } | null>;
   };
   message: {
     findFirst(args: unknown): Promise<MessageRecord | null>;
@@ -93,6 +108,10 @@ export interface AgentImprovementObserver {
     conversationId: string;
     messageId: string;
   }): Promise<{ created: boolean; reason?: string }>;
+  observeLatestHumanReplyAfterHandoff(input: {
+    workspaceId: string;
+    conversationId: string;
+  }): Promise<{ created: boolean; reason?: string }>;
 }
 
 export class AgentImprovementsServiceError extends Error {
@@ -104,8 +123,13 @@ export class AgentImprovementsServiceError extends Error {
       | "IMPROVEMENT_CLARIFICATION_REQUIRED"
       | "IMPROVEMENT_NORMALIZATION_REQUIRED"
       | "IMPROVEMENT_NORMALIZER_UNAVAILABLE"
-      | "IMPROVEMENT_NORMALIZATION_AMBIGUOUS",
-    message: string
+      | "IMPROVEMENT_NORMALIZATION_AMBIGUOUS"
+      | "IMPROVEMENT_DRAFT_INCONSISTENT"
+      | "IMPROVEMENT_WRITER_UNAVAILABLE"
+      | "IMPROVEMENT_WRITER_FAILED"
+      | "IMPROVEMENT_JEV_FAILED",
+    message: string,
+    public readonly cause?: unknown
   ) {
     super(message);
     this.name = "AgentImprovementsServiceError";
@@ -314,6 +338,21 @@ function isAiAgentMessage(message: MessageRecord) {
   );
 }
 
+function isExplicitCatalogRefusal(reply: string): boolean {
+  return /\b(?:n[aã]o\s+(?:trabalhamos|vendemos|comercializamos|fornecemos)|(?:trabalhamos|vendemos|comercializamos|fornecemos)\s+n[aã]o)\b/i.test(reply);
+}
+
+function recentCustomerRequest(messages: MessageRecord[]): string | null {
+  const inbound = messages.filter((message) => message.direction === "inbound" && message.body?.trim()).slice(-6);
+  const latest = inbound.at(-1);
+  if (!latest) return null;
+  const latestAt = new Date(latest.createdAt).getTime();
+  const relevant = inbound.filter((message) =>
+    !Number.isFinite(latestAt) || latestAt - new Date(message.createdAt).getTime() <= 2 * 60 * 60 * 1000
+  );
+  return relevant.map((message) => message.body!.trim()).join("\n").slice(0, 2_500);
+}
+
 function buildProposal(input: {
   kind: AgentImprovementKind;
   customerMessage: string;
@@ -332,7 +371,7 @@ function buildProposal(input: {
       title: "Produto não comercializado — revisar",
       content: [
         ...base,
-        "Quando uma consulta futura corresponder claramente ao mesmo item ou variação, informe de forma objetiva que não trabalhamos com esse produto. Não generalize para materiais parecidos; se houver diferença de medida, acabamento, furação ou equivalência, faça handoff para o comercial."
+        "O escopo desta decisão ainda precisa ser confirmado pelo time. Depois da revisão, aplique a recusa somente às variações confirmadas e encaminhe consultas fora desse escopo ao comercial."
       ].join("\n"),
       rationale:
         "O humano confirmou que o item solicitado não é comercializado. A revisão define o limite exato dessa orientação antes de ela entrar na base."
@@ -362,9 +401,23 @@ function buildProposal(input: {
   };
 }
 
+function contentForRuleWriter(improvement: ImprovementRecord): string {
+  if (improvement.kind !== "not_sold") return improvement.content;
+  // Pending proposals created before scope review included this conflicting instruction.
+  // Do not let it override an explicit answer that includes all item variations.
+  return improvement.content.replace(
+    "Quando uma consulta futura corresponder claramente ao mesmo item ou variação, informe de forma objetiva que não trabalhamos com esse produto. Não generalize para materiais parecidos; se houver diferença de medida, acabamento, furação ou equivalência, faça handoff para o comercial.",
+    "Use a decisão humana e as respostas de escopo para definir as variações abrangidas. Encaminhe somente consultas fora do escopo confirmado ao comercial."
+  );
+}
+
 export function createAgentImprovementsService(
   prisma: AgentImprovementsPrismaLike,
-  options: { detector?: AgentImprovementDetector; normalizer?: AgentImprovementNormalizer } = {}
+  options: {
+    detector?: AgentImprovementDetector;
+    normalizer?: AgentImprovementNormalizer;
+    writer?: AgentImprovementRuleWriter;
+  } = {}
 ) {
   async function ensureAgent(input: { workspaceId: string; agentId: string }) {
     const agent = await prisma.aiAgent.findFirst({
@@ -412,11 +465,7 @@ export function createAgentImprovementsService(
       conversationId: string;
       messageId: string;
     }): Promise<{ created: boolean; reason?: string }> {
-      if (!options.detector) {
-        return { created: false, reason: "detector_unavailable" };
-      }
-
-      const [existing, humanReply, session] = await Promise.all([
+      const [existing, humanReply, conversation] = await Promise.all([
         prisma.aiAgentImprovement.findFirst({
           where: { workspaceId: input.workspaceId, sourceMessageId: input.messageId }
         }),
@@ -424,16 +473,13 @@ export function createAgentImprovementsService(
           where: {
             workspaceId: input.workspaceId,
             conversationId: input.conversationId,
-            id: input.messageId
+            id: input.messageId,
+            hiddenByReset: false
           }
         }),
-        prisma.aiAgentSession.findFirst({
-          where: {
-            workspaceId: input.workspaceId,
-            conversationId: input.conversationId,
-            status: "handoff_requested"
-          },
-          orderBy: { updatedAt: "desc" }
+        prisma.conversation.findFirst({
+          where: { workspaceId: input.workspaceId, id: input.conversationId },
+          select: { activeAgentSessionId: true, channel: { select: { encryptedConfig: true } } }
         })
       ]);
 
@@ -450,14 +496,29 @@ export function createAgentImprovementsService(
         return { created: false, reason: "not_a_text_human_reply" };
       }
 
-      if (!session) {
-        return { created: false, reason: "no_agent_handoff" };
-      }
+      const session = conversation?.activeAgentSessionId
+        ? await prisma.aiAgentSession.findFirst({
+          where: {
+            workspaceId: input.workspaceId,
+            id: conversation.activeAgentSessionId,
+            conversationId: input.conversationId,
+            status: { in: ["handoff_requested", "paused_by_human"] }
+          }
+          })
+        : null;
+      const configuredAgentId = readAssistantSettings(conversation?.channel?.encryptedConfig).agentId;
+      const configuredAgent = !session && configuredAgentId
+        ? await prisma.aiAgent.findFirst({ where: { workspaceId: input.workspaceId, id: configuredAgentId } })
+        : null;
+      const targetAgentId = session?.agentId ?? configuredAgent?.id;
+      if (!targetAgentId) return { created: false, reason: "no_agent_context" };
 
       const messages = await prisma.message.findMany({
         where: {
           workspaceId: input.workspaceId,
-          conversationId: input.conversationId
+          conversationId: input.conversationId,
+          hiddenByReset: false,
+          createdAt: { lte: new Date(humanReply.createdAt) }
         },
         orderBy: { createdAt: "desc" },
         take: 16
@@ -465,58 +526,113 @@ export function createAgentImprovementsService(
       const chronological = [...messages].reverse();
       const humanReplyIndex = chronological.findIndex((message) => message.id === input.messageId);
       const previousMessages = humanReplyIndex === -1 ? chronological : chronological.slice(0, humanReplyIndex);
-      const customerMessage = [...previousMessages]
-        .reverse()
-        .find((message) => message.direction === "inbound" && Boolean(message.body?.trim()));
+      const customerMessage = recentCustomerRequest(previousMessages);
 
-      if (!customerMessage?.body?.trim()) {
+      if (!customerMessage) {
         return { created: false, reason: "no_customer_request" };
       }
 
-      const assessment = await options.detector.assess({
-        customerMessage: customerMessage.body,
-        humanReply: humanReply.body,
-        conversationMessages: chronological.map((message) => ({
-          label: messageLabel(message),
-          body: message.body,
-          createdAt: toIso(message.createdAt)
-        }))
-      });
-
-      if (assessment.outcome === "ignore") {
-        return { created: false, reason: assessment.reason };
+      const directRefusal = isExplicitCatalogRefusal(humanReply.body);
+      if (!options.detector && !directRefusal) return { created: false, reason: "detector_unavailable" };
+      let detected: AgentImprovementAssessment;
+      try {
+        detected = options.detector ? await options.detector.assess({
+          workspaceId: input.workspaceId,
+          customerMessage,
+          humanReply: humanReply.body,
+          conversationMessages: chronological.map((message) => ({
+            label: messageLabel(message),
+            body: message.body,
+            createdAt: toIso(message.createdAt)
+          }))
+        }) : { outcome: "ignore", reason: "detector_unavailable" };
+      } catch (error) {
+        if (!directRefusal) throw error;
+        detected = { outcome: "ignore", reason: "detector_failed" };
       }
+      // A direct refusal is still only a proposal. Reviewers must define its
+      // exact catalog scope before it can become agent knowledge.
+      const assessment = detected.outcome === "ignore" && directRefusal
+        ? { outcome: "suggest" as const, kind: "not_sold" as const, confidence: 0.8 }
+        : detected;
+      if (assessment.outcome === "ignore") return { created: false, reason: assessment.reason };
 
       const proposal = buildProposal({
         kind: assessment.kind,
-        customerMessage: customerMessage.body,
+        customerMessage,
         humanReply: humanReply.body,
         assessment
       });
-      await prisma.aiAgentImprovement.create({
-        data: {
-          workspaceId: input.workspaceId,
-          agentId: session.agentId,
-          conversationId: input.conversationId,
-          sourceMessageId: input.messageId,
-          status: "pending",
-          kind: assessment.kind,
-          title: proposal.title,
-          content: proposal.content,
-          rationale: proposal.rationale,
-          sourceCustomerMessage: customerMessage.body,
-          sourceHumanReply: humanReply.body,
-          detector: {
-            provider: "jev",
-            confidence: assessment.confidence,
-            kind: assessment.kind
-          },
-          clarificationAnswers: {},
-          clarificationNormalization: {}
+      const humanReplyBody = humanReply.body;
+      try {
+        const created = await prisma.$transaction(async tx => {
+          const store = tx as unknown as Partial<Prisma.TransactionClient>;
+          if (store.$queryRaw && store.$executeRaw) await enterCanonicalWorkspaceTransaction(store as Prisma.TransactionClient, input.workspaceId);
+          const source = await (store.message ?? prisma.message).findFirst({ where: { workspaceId: input.workspaceId, conversationId: input.conversationId, id: input.messageId, hiddenByReset: false } });
+          if (!source) return false;
+          await (store.aiAgentImprovement ?? prisma.aiAgentImprovement).create({
+            data: {
+              workspaceId: input.workspaceId,
+              agentId: targetAgentId,
+              conversationId: input.conversationId,
+              sourceMessageId: input.messageId,
+              status: "pending",
+              kind: assessment.kind,
+              title: proposal.title,
+              content: proposal.content,
+              rationale: proposal.rationale,
+              sourceCustomerMessage: customerMessage,
+              sourceHumanReply: humanReplyBody,
+              detector: {
+                provider: detected.outcome === "ignore" ? "explicit_human_refusal" : detected.provider ?? "jev",
+                confidence: assessment.confidence,
+                kind: assessment.kind
+              },
+              clarificationAnswers: {},
+              clarificationNormalization: {}
+            }
+          });
+          return true;
+        });
+        if (!created) return { created: false, reason: "conversation_reset" };
+      } catch (error) {
+        if (error && typeof error === "object" && "code" in error && error.code === "P2002") {
+          return { created: false, reason: "already_observed" };
         }
-      });
+        throw error;
+      }
 
-      return { created: true };
+      return detected.outcome === "ignore"
+        ? { created: true, reason: `${detected.reason}_explicit_refusal_fallback` }
+        : { created: true };
+    },
+
+    async observeLatestHumanReplyAfterHandoff(input: {
+      workspaceId: string;
+      conversationId: string;
+    }): Promise<{ created: boolean; reason?: string }> {
+      const replies = await prisma.message.findMany({
+        where: {
+          workspaceId: input.workspaceId,
+          conversationId: input.conversationId,
+          hiddenByReset: false,
+          direction: "outbound",
+          type: "text"
+        },
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        take: 20
+      });
+      const humanReplies = replies.filter((message) => message.body?.trim() && !isAiAgentMessage(message))
+        .slice(0, 8)
+        .sort((left, right) => Number(isExplicitCatalogRefusal(right.body ?? "")) - Number(isExplicitCatalogRefusal(left.body ?? "")));
+      if (!humanReplies.length) return { created: false, reason: "no_human_reply" };
+      let reason = "already_observed";
+      for (const reply of humanReplies) {
+        const result = await this.observeHumanReply({ ...input, messageId: reply.id });
+        if (result.created) return result;
+        if (result.reason && result.reason !== "already_observed") reason = result.reason;
+      }
+      return { created: false, reason };
     },
 
     async listImprovements(input: {
@@ -613,23 +729,64 @@ export function createAgentImprovementsService(
       }
 
       const answers = toStringRecord(improvement.clarificationAnswers);
-      const result = await options.normalizer.normalize({
-        kind: improvement.kind,
-        customerMessage: improvement.sourceCustomerMessage,
-        humanReply: improvement.sourceHumanReply,
-        proposedContent: improvement.content,
-        clarificationAnswers: answers
-      });
+      const questions = Object.fromEntries(
+        clarificationQuestions(improvement.kind).map(({ id, question }) => [id, question])
+      );
+      let draft: Awaited<ReturnType<AgentImprovementRuleWriter["write"]>> | undefined;
+      try {
+        draft = await options.writer?.write({
+          workspaceId: input.workspaceId,
+          kind: improvement.kind,
+          customerMessage: improvement.sourceCustomerMessage,
+          humanReply: improvement.sourceHumanReply,
+          proposedContent: contentForRuleWriter(improvement),
+          clarificationAnswers: answers,
+          clarificationQuestions: questions
+        });
+      } catch (cause) {
+        throw new AgentImprovementsServiceError(
+          "IMPROVEMENT_WRITER_FAILED",
+          "Não foi possível redigir a regra agora. Tente novamente em instantes.",
+          cause
+        );
+      }
+      if (options.writer && !draft) {
+        throw new AgentImprovementsServiceError(
+          "IMPROVEMENT_WRITER_UNAVAILABLE",
+          "Configure o provedor de IA em Ajustes para redigir a regra antes da aprovação."
+        );
+      }
+      let result: Awaited<ReturnType<AgentImprovementNormalizer["normalize"]>>;
+      try {
+        result = await options.normalizer.normalize({
+          kind: improvement.kind,
+          customerMessage: improvement.sourceCustomerMessage,
+          humanReply: improvement.sourceHumanReply,
+          proposedContent: draft?.content ?? improvement.content,
+          clarificationAnswers: answers,
+          clarificationQuestions: questions
+        });
+      } catch (cause) {
+        throw new AgentImprovementsServiceError(
+          "IMPROVEMENT_JEV_FAILED",
+          "O JEV não respondeu agora. Tente preparar a regra novamente em instantes.",
+          cause
+        );
+      }
       if (result.outcome === "needs_clarification") {
         throw new AgentImprovementsServiceError(
-          "IMPROVEMENT_NORMALIZATION_AMBIGUOUS",
-          "O JEV não conseguiu delimitar esta regra com segurança. Revise as respostas de escopo."
+          result.reason === "draft_inconsistent" ? "IMPROVEMENT_DRAFT_INCONSISTENT" : "IMPROVEMENT_NORMALIZATION_AMBIGUOUS",
+          result.reason === "draft_inconsistent"
+            ? "O texto proposto não respeitou o escopo confirmado. Tente preparar a regra novamente; suas respostas já estão salvas."
+            : improvement.kind === "not_sold"
+              ? "O JEV ainda não conseguiu delimitar a regra. Diga explicitamente se a recusa vale para todas as variações do item solicitado ou só para a especificação pedida; informe as exceções ou escreva ‘Nenhuma’. Salve e tente interpretar novamente."
+              : "O JEV não conseguiu delimitar esta regra com segurança. Detalhe as respostas de escopo, salve e tente interpretar novamente."
         );
       }
 
       const content = addClarificationToContent({
         kind: improvement.kind,
-        content: improvement.content,
+        content: draft?.content ?? improvement.content,
         answers,
         normalization: result.normalization
       });
@@ -641,6 +798,7 @@ export function createAgentImprovementsService(
           }
         },
         data: {
+          ...(draft ? { title: draft.title } : {}),
           content,
           clarificationNormalization: result.normalization
         }
@@ -655,6 +813,8 @@ export function createAgentImprovementsService(
       improvementId: string;
       title?: string;
       content?: string;
+      /** The same customer's agents in its other workspaces: each gets the same knowledge. */
+      alsoTo?: Array<{ workspaceId: string; agentId: string }>;
     }): Promise<AiAgentImprovementDto> {
       await ensureAgent(input);
       const improvement = await findImprovement(input);
@@ -669,7 +829,7 @@ export function createAgentImprovementsService(
       if (!normalization || normalization.confidence < 0.8) {
         throw new AgentImprovementsServiceError(
           "IMPROVEMENT_NORMALIZATION_REQUIRED",
-          "Gere a regra inteligente com o JEV antes de incluir este aprimoramento na base."
+          "Prepare a proposta e valide o escopo antes de incluir este aprimoramento na base."
         );
       }
       const title = input.title?.trim() || improvement.title;
@@ -698,6 +858,27 @@ export function createAgentImprovementsService(
             }
           }
         });
+        for (const other of input.alsoTo ?? []) {
+          if (other.workspaceId === input.workspaceId && other.agentId === input.agentId) continue;
+          await tx.aiKnowledgeSource.create({
+            data: {
+              workspaceId: other.workspaceId,
+              agentId: other.agentId,
+              type: "text",
+              title,
+              content,
+              status: "ready",
+              metadata: {
+                source: "approved_agent_improvement",
+                improvementId: input.improvementId,
+                kind: improvement.kind,
+                normalizedBy: "jev",
+                normalizationScope: normalization.scope,
+                copiedFrom: { workspaceId: input.workspaceId, agentId: input.agentId, knowledgeSourceId: source.id }
+              }
+            }
+          });
+        }
         const updated = await tx.aiAgentImprovement.update({
           where: {
             workspaceId_id: {

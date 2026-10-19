@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createAgentReplyScheduler } from "./agent-reply-scheduler.js";
+import * as monitoring from '../../observability/glitchtip.js';
 
 const ids = {
   workspace: "workspace_a",
@@ -45,6 +46,32 @@ function buildPrisma(overrides: Record<string, any> = {}) {
 }
 
 describe("createAgentReplyScheduler", () => {
+  it("leaves a supplier's message to the buyer agent instead of the sales agent", async () => {
+    const prisma = buildPrisma();
+    const claimInbound = vi.fn().mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    const scheduler = createAgentReplyScheduler({ prisma, agentRuntime: { runForMessage: vi.fn() }, purchaseInbound: { claimInbound } });
+    const scope = { workspaceId: ids.workspace, conversationId: ids.conversation, messageId: ids.firstMessage };
+    expect(await scheduler.scheduleActiveSessionForMessage(scope)).toEqual({ scheduled: false });
+    expect(claimInbound).toHaveBeenCalledWith(scope);
+    expect(prisma.conversation.findUnique).not.toHaveBeenCalled();
+    expect(prisma.aiAgentPendingReply.upsert).not.toHaveBeenCalled();
+    await scheduler.scheduleActiveSessionForMessage(scope);
+    expect(prisma.conversation.findUnique).toHaveBeenCalled();
+    scheduler.stop();
+  });
+
+  it("does not recreate the pending queue when reset happens during settings lookup", async () => {
+    const prisma = buildPrisma();
+    prisma.workspaceMirror.findUnique.mockImplementation(async () => {
+      prisma.conversation.findUnique.mockResolvedValue({ ...buildConversation(), activeAgentSession: null, activeAgentSessionId: null, historyResetAt: new Date() });
+      return null;
+    });
+    const scheduler = createAgentReplyScheduler({ prisma, agentRuntime: { runForMessage: vi.fn() } });
+    expect(await scheduler.scheduleActiveSessionForMessage({ workspaceId: ids.workspace, conversationId: ids.conversation, messageId: ids.firstMessage })).toEqual({ scheduled: false });
+    expect(prisma.aiAgentPendingReply.upsert).not.toHaveBeenCalled();
+    scheduler.stop();
+  });
+
   it('does not enqueue autonomous replies in an assisted channel', async () => {
     const prisma = buildPrisma({ conversation: { findUnique: vi.fn().mockResolvedValue({ ...buildConversation(), channel: { encryptedConfig: { assistant: { mode: 'automatic' } } } }) } });
     const scheduler = createAgentReplyScheduler({ prisma, agentRuntime: { runForMessage: vi.fn() } });
@@ -171,10 +198,12 @@ describe("createAgentReplyScheduler", () => {
     expect(agentRuntime.runForMessage).toHaveBeenCalledWith({
       workspaceId: ids.workspace,
       agentId: ids.agent,
+      sessionId: ids.session,
       conversationId: ids.conversation,
       messageId: ids.firstMessage,
       trigger: "automation",
-      instruction: null
+      instruction: null,
+      replyClaim: { id: ids.pending, token: expect.any(String) }
     });
     scheduler.stop();
     vi.useRealTimers();
@@ -266,24 +295,23 @@ describe("createAgentReplyScheduler", () => {
     expect(agentRuntime.runForMessage).toHaveBeenCalledWith({
       workspaceId: ids.workspace,
       agentId: ids.agent,
+      sessionId: ids.session,
       conversationId: ids.conversation,
       messageId: ids.secondMessage,
       trigger: "automation",
-      instruction: "Responda como secretária comercial."
+      instruction: "Responda como secretária comercial.",
+      replyClaim: { id: ids.pending, token: expect.any(String) }
     });
-    expect(prisma.aiAgentPendingReply.update).toHaveBeenCalledWith({
-      where: { workspaceId_id: { workspaceId: ids.workspace, id: ids.pending } },
-      data: expect.objectContaining({
-        status: "processing",
-        attempts: { increment: 1 }
-      })
+    expect(prisma.aiAgentPendingReply.updateMany).toHaveBeenCalledWith({
+      where: expect.objectContaining({ workspaceId: ids.workspace, id: ids.pending, status: "pending", lastMessageId: ids.secondMessage }),
+      data: expect.objectContaining({ status: "processing", claimToken: expect.any(String), attempts: { increment: 1 } })
     });
     expect(prisma.aiAgentPendingReply.updateMany).toHaveBeenLastCalledWith({
       where: {
         workspaceId: ids.workspace,
         id: ids.pending,
         status: "processing",
-        lockedAt: new Date("2026-07-05T12:01:06.000Z")
+        claimToken: expect.any(String)
       },
       data: expect.objectContaining({
         status: "completed",
@@ -292,7 +320,7 @@ describe("createAgentReplyScheduler", () => {
     });
   });
 
-  it("does not complete a pending reply that was rescheduled while processing", async () => {
+  it("does not run a pending reply when its atomic claim loses a reschedule/cancellation race", async () => {
     const updateMany = vi.fn().mockResolvedValue({ count: 0 });
     const prisma = buildPrisma({
       aiAgentPendingReply: {
@@ -323,17 +351,10 @@ describe("createAgentReplyScheduler", () => {
 
     await scheduler.processDueReplies({ now: new Date("2026-07-05T12:01:06.000Z") });
 
+    expect(agentRuntime.runForMessage).not.toHaveBeenCalled();
     expect(updateMany).toHaveBeenCalledWith({
-      where: {
-        workspaceId: ids.workspace,
-        id: ids.pending,
-        status: "processing",
-        lockedAt: new Date("2026-07-05T12:01:06.000Z")
-      },
-      data: expect.objectContaining({
-        status: "completed",
-        lastError: null
-      })
+      where: expect.objectContaining({ status: "pending", lastMessageId: ids.firstMessage }),
+      data: expect.objectContaining({ status: "processing", claimToken: expect.any(String) })
     });
   });
 
@@ -377,7 +398,7 @@ describe("createAgentReplyScheduler", () => {
         workspaceId: ids.workspace,
         id: ids.pending,
         status: "processing",
-        lockedAt: new Date("2026-07-05T12:01:06.000Z")
+        claimToken: expect.any(String)
       },
       data: expect.objectContaining({
         status: "failed",
@@ -385,5 +406,24 @@ describe("createAgentReplyScheduler", () => {
         lastError: "OpenAI-compatible provider returned an invalid response."
       })
     });
+  });
+
+  it.each(['returned', 'thrown'] as const)('reports %s failures without forwarding result messages or queue identities', async mode => {
+    const report = vi.spyOn(monitoring, 'reportFailure').mockReturnValue(true);
+    try {
+      const prisma = buildPrisma({ aiAgentPendingReply: { findMany: vi.fn().mockResolvedValue([{
+        id: ids.pending, workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation,
+        lastMessageId: ids.secondMessage, attempts: 0
+      }]) } });
+      const runForMessage = mode === 'returned' ? vi.fn().mockResolvedValue({ status: 'failed', message: 'PRIVATE_FIXTURE' })
+        : vi.fn().mockRejectedValue(new TypeError("ownKeys did not include '$on'"));
+      const scheduler = createAgentReplyScheduler({ prisma, agentRuntime: { runForMessage } });
+      expect((await scheduler.processDueReplies())[0]?.status).toBe('failed');
+      expect(report).toHaveBeenCalledOnce();
+      if (mode === 'returned') {
+        expect(report.mock.calls[0]?.[2]?.diagnostic?.code).toBe('AGENT_RUN_FAILED');
+        expect(JSON.stringify(report.mock.calls)).not.toMatch(/PRIVATE_FIXTURE|workspace_a/);
+      }
+    } finally { report.mockRestore(); }
   });
 });

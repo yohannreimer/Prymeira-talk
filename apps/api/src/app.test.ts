@@ -80,6 +80,59 @@ describe("app", () => {
     }
   });
 
+  it("opens CORS only for the public automation webhook path", async () => {
+    const app = await buildApp({}, { authEnabled: false, prismaEnabled: false });
+
+    try {
+      const webhookPreflight = await app.inject({
+        method: "OPTIONS",
+        url: `/webhooks/automations/${"t".repeat(43)}`,
+        headers: {
+          origin: "https://www.cliente.com.br",
+          "access-control-request-method": "POST",
+          "access-control-request-headers": "content-type"
+        }
+      });
+      const apiPreflight = await app.inject({
+        method: "OPTIONS",
+        url: "/automations",
+        headers: {
+          origin: "https://www.cliente.com.br",
+          "access-control-request-method": "POST"
+        }
+      });
+
+      expect(webhookPreflight.statusCode).toBe(204);
+      expect(webhookPreflight.headers["access-control-allow-origin"]).toBe("https://www.cliente.com.br");
+      expect(webhookPreflight.headers["access-control-allow-methods"]).toBe("POST, OPTIONS");
+      expect(webhookPreflight.headers["access-control-allow-headers"]).toBe("Content-Type");
+      expect(apiPreflight.headers["access-control-allow-origin"]).toBeUndefined();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("serves the automation webhook without a bearer token and hides bad tokens", async () => {
+    const requireProductAccess = vi.fn();
+    const app = await buildApp({}, { authEnabled: true, requireProductAccess });
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/webhooks/automations/short",
+        headers: { origin: "https://www.cliente.com.br" },
+        payload: { whatsapp: "47999991234" }
+      });
+
+      expect(response.statusCode).toBe(404);
+      expect(response.json()).toEqual({ ok: false, error: "not_found" });
+      expect(response.headers["access-control-allow-origin"]).toBe("https://www.cliente.com.br");
+      expect(requireProductAccess).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
   it("exposes realtime hub on the root app after registration", async () => {
     const app = await buildApp({}, { authEnabled: false, prismaEnabled: false });
 
@@ -149,7 +202,7 @@ describe("app", () => {
       });
 
       expect(response.statusCode).toBe(200);
-      expect(response.json()).toEqual({ workspaceId: "local_test_workspace", role: "owner" });
+      expect(response.json()).toEqual({ workspaceId: "local_test_workspace", role: "owner", addons: { orcamentos: false } });
       expect(requireProductAccess).not.toHaveBeenCalled();
       expect(fetchProducts).not.toHaveBeenCalled();
     } finally {
@@ -272,11 +325,28 @@ describe("app", () => {
       });
 
       expect(requireProductAccess).toHaveBeenCalledWith("talk", {
+        signal: expect.any(AbortSignal),
         accountApiUrl: "http://localhost:3001",
         clerkToken: "token_ws"
       });
 
       socket.terminate();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("exposes the Orçamentos add-on when the Hub releases it in limits.modules", async () => {
+    const app = await buildApp({}, {
+      authEnabled: true,
+      requireProductAccess: vi.fn(async () => ({
+        allowed: true, product_key: "talk", workspace_id: "workspace_1", product_role: "owner", status: "active", reason: "allowed",
+        limits: { modules: { orcamentos: true } }
+      }))
+    });
+    try {
+      const response = await app.inject({ method: "GET", url: "/me", headers: { authorization: "Bearer clerk-token" } });
+      expect(response.json()).toEqual({ workspaceId: "workspace_1", role: "owner", addons: { orcamentos: true } });
     } finally {
       await app.close();
     }
@@ -308,7 +378,7 @@ describe("app", () => {
       });
 
       expect(response.statusCode).toBe(200);
-      expect(response.json()).toEqual({ workspaceId: "workspace_1", role: "manager" });
+      expect(response.json()).toEqual({ workspaceId: "workspace_1", role: "manager", addons: { orcamentos: false } });
       expect(fetchAccess).not.toHaveBeenCalled();
     } finally {
       await app.close();
@@ -345,8 +415,9 @@ describe("app", () => {
       });
 
       expect(response.statusCode).toBe(200);
-      expect(response.json()).toEqual({ workspaceId: "workspace_1", role: "owner" });
+      expect(response.json()).toEqual({ workspaceId: "workspace_1", role: "owner", addons: { orcamentos: false } });
       expect(fetchAccess).toHaveBeenCalledWith("http://localhost:3001/access-check?product_key=talk", {
+        signal: expect.any(AbortSignal),
         headers: { Authorization: "Bearer clerk-token" }
       });
     } finally {

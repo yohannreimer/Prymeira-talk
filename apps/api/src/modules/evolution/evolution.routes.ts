@@ -1,8 +1,23 @@
+import { quotedOf, reactionOf } from "./evolution-event-normalizer.js";
+import {
+  resolveWebhookPhone, resolveGroupJid, groupFallbackName, normalizeEvolutionEvent,
+  isEditProtocolType, mapEvolutionMessageStatus, readPath, hasRecordPath, unwrapMessage,
+  extractMessageContent, attachmentPresentation, extractMessageEdit, extractPushName, extractQrCode
+} from "./evolution-normalizer.js";
+export { resolveWebhookPhone, extractMessageContent, attachmentPresentation } from "./evolution-normalizer.js";
+import { lockProspectingConversation } from "../prospecting/prospecting-lock.js";
+import { findProspectingOutboundEcho } from "../prospecting/prospecting-delivery.js";
+import { observeProspectingInbound } from "../prospecting/prospecting-lifecycle.js";
 import type { FastifyPluginAsync } from "fastify";
+import { normalizeChatAddress } from '../messaging/whatsapp-identity.js';
+import type { EvolutionRuntime } from './evolution-runtime.js';
 import { createHash, timingSafeEqual } from "node:crypto";
-import type { ChannelDto, MessageDto } from "@prymeira-talk/shared";
+import type { ChannelDto } from "@prymeira-talk/shared";
 import { z } from "zod";
 import { toChannelDto } from "../channels/channels.service.js";
+import type { Channel } from '@prisma/client';
+import { createChannelConnectionsService } from '../channels/channel-connections.js';
+import type { WahaRuntime } from '../waha/waha.client.js';
 import {
   createAutomationRunner,
   type AutomationRunnerAgentRuntime,
@@ -11,10 +26,11 @@ import {
 } from "../automations/automation-runner.js";
 import { createBoardRulesService, type BoardRulesPrismaLike } from "../boards/board-rules.service.js";
 import {
-  buildPhoneLookupCandidates,
-  normalizePhoneForStorage
+  buildPhoneLookupCandidates
 } from "../contacts/phone-normalization.js";
+import { usableContactName } from "../contacts/contact-name.js";
 import { toConversationDto, toMessageDto } from "../conversations/conversations.service.js";
+import { pauseAgentOnHumanOutbound } from "../conversations/pause-agent-on-human-outbound.js";
 import { applyInboundDepartmentRouting, supportsDepartmentRouting } from "../team/team-routing.service.js";
 import {
   evolutionConnectionUpdateSchema,
@@ -25,12 +41,29 @@ import {
 } from "./evolution.schemas.js";
 import type { ConversationFollowupsObserver } from "../followups/conversation-followups.service.js";
 import type { AgentImprovementObserver } from "../agents/agent-improvements.service.js";
+import type { InboxTriageObserver } from "../conversations/inbox-triage.service.js";
+import type { EvolutionHistorySource } from "./evolution-history.js";
+import { decryptEncryptedMessageEdit, extractEncryptedMessageEdit, isEncryptedControlEnvelope } from "./evolution-message-edit.js";
 
 export interface EvolutionRoutesOptions {
+  physicalEvolution?: EvolutionRuntime;
+  waha?: WahaRuntime;
+  /** Durable private copy of attachments, filled best-effort right after the message is saved. */
+  durableMedia?: Pick<import('../conversations/message-media.js').MessageMediaService, 'prepare'>;
+  /** Staged rollout: workspaces whose legacy-webhook attachments also get the durable copy. Absent = all. */
+  durableMediaWorkspaces?: (workspaceId: string) => boolean;
+  evolutionClient?: Pick<import('./evolution.client.js').EvolutionClient, 'fetchMedia'> | null;
+  messageHistory?: Pick<EvolutionHistorySource, "findMessage">;
+  historyBackfill?: (input: { workspaceId: string; channelId: string; conversationId: string; providerKey: string; remoteJid: string; identity: string; pushName: string | null }) => Promise<void>;
   assistantScheduler?: import('../assistant/assistant-scheduler.js').AssistantScheduler;
+  handoffBriefService?: ReturnType<typeof import('../assistant/handoff-brief-service.js').createHandoffBriefService>;
   followupService?: ConversationFollowupsObserver;
   agentImprovements?: AgentImprovementObserver;
+  inboxTriage?: InboxTriageObserver;
   webhookSecret: string;
+  /** Workspaces whose Evolution webhook now belongs to the independent ingress (ids, or '*' for all). This route refuses
+   * them with 409 instead of writing, so a webhook still pointed here fails loudly rather than being dropped or doubled. */
+  delegatedWorkspaces?: ReadonlySet<string> | '*';
   agentRuntime?: AutomationRunnerAgentRuntime & {
     prepareAudioMessage(input: {
       workspaceId: string;
@@ -58,10 +91,6 @@ const evolutionWebhookParamsSchema = z.object({
   workspaceId: z.string().min(1)
 });
 
-function extractPhone(remoteJid: string) {
-  return normalizePhoneForStorage(remoteJid.split("@")[0] ?? remoteJid);
-}
-
 function normalizeHeaderValue(header: string | string[] | undefined) {
   if (Array.isArray(header)) {
     return header.length === 1 ? header[0] : undefined;
@@ -83,256 +112,11 @@ function hasValidWebhookSecret(header: string | string[] | undefined, expectedSe
   return timingSafeEqual(actual, expected);
 }
 
-function normalizeEvolutionEvent(event: string) {
-  return event.toLowerCase().replace(/_/g, ".");
-}
-
 function mapConnectionState(state: string | undefined): ChannelDto["status"] {
   if (state === "open" || state === "connected") return "connected";
   if (state === "connecting") return "connecting";
   if (state === "close" || state === "closed" || state === "disconnected") return "disconnected";
   return "failed";
-}
-
-function mapEvolutionMessageStatus(status: string | number | undefined): MessageDto["status"] | null {
-  const normalized = String(status ?? "").toLowerCase();
-  if (["read", "played"].includes(normalized) || normalized === "4") return "read";
-  if (["delivered", "delivery_ack"].includes(normalized) || normalized === "3") return "delivered";
-  if (["sent", "server_ack", "sended"].includes(normalized) || normalized === "2") return "sent";
-  if (["pending", "queued"].includes(normalized) || normalized === "1") return "pending";
-  if (["failed", "error"].includes(normalized)) return "failed";
-  return null;
-}
-
-function readStringPath(data: unknown, path: string[]) {
-  let current = data;
-
-  for (const segment of path) {
-    if (!current || typeof current !== "object" || !(segment in current)) {
-      return null;
-    }
-
-    current = (current as Record<string, unknown>)[segment];
-  }
-
-  return typeof current === "string" && current.length > 0 ? current : null;
-}
-
-function readFirstStringPath(data: unknown, paths: string[][]) {
-  for (const path of paths) {
-    const value = readStringPath(data, path);
-
-    if (value) {
-      return value;
-    }
-  }
-
-  return null;
-}
-
-function hasRecordPath(data: unknown, path: string[]) {
-  let current = data;
-
-  for (const segment of path) {
-    if (current === null || typeof current !== "object" || Array.isArray(current)) {
-      return false;
-    }
-
-    current = (current as Record<string, unknown>)[segment];
-  }
-
-  return current !== null && typeof current === "object" && !Array.isArray(current);
-}
-
-function normalizeMediaUrl(value: string | null) {
-  if (!value) return null;
-
-  try {
-    const url = new URL(value);
-    return url.protocol === "http:" || url.protocol === "https:" || url.protocol === "data:"
-      ? value
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-function normalizeMediaMimeType(value: string | null) {
-  const mimetype = value?.split(";")[0]?.trim().toLowerCase();
-
-  return mimetype && mimetype.length > 0 ? mimetype : "application/octet-stream";
-}
-
-function normalizeBase64MediaUrl(value: string | null, mimetype: string | null) {
-  if (!value) return null;
-
-  if (value.startsWith("data:")) {
-    return normalizeMediaUrl(value);
-  }
-
-  const compactValue = value.replace(/\s/g, "");
-
-  return compactValue.length > 0
-    ? `data:${normalizeMediaMimeType(mimetype)};base64,${compactValue}`
-    : null;
-}
-
-function readMessageBase64(message: unknown, messageKey: string) {
-  return (
-    readStringPath(message, [messageKey, "base64"]) ??
-    (hasRecordPath(message, [messageKey]) ? readStringPath(message, ["base64"]) : null)
-  );
-}
-
-function attachmentPresentation(message: unknown) {
-  const fileName = readStringPath(message, ['documentMessage', 'fileName']);
-  const caption = readFirstStringPath(message, [['documentMessage', 'caption'], ['imageMessage', 'caption'], ['videoMessage', 'caption']]);
-  const raw = message && typeof message === 'object' ? (message as Record<string, unknown>).audioMessage : null;
-  const seconds = raw && typeof raw === 'object' ? (raw as Record<string, unknown>).seconds : null;
-  return {
-    ...(fileName ? { fileName } : {}), ...(caption ? { caption } : {}),
-    ...(typeof seconds === 'number' && Number.isFinite(seconds) && seconds >= 0 ? { durationSeconds: seconds } : {})
-  };
-}
-
-export function extractMessageContent(message: unknown): {
-  type: MessageDto["type"];
-  body: string | null;
-  mediaUrl: string | null;
-  preview: string | null;
-} {
-  const text = readFirstStringPath(message, [
-    ["conversation"],
-    ["extendedTextMessage", "text"]
-  ]);
-
-  if (text) {
-    return {
-      type: "text",
-      body: text,
-      mediaUrl: null,
-      preview: text
-    };
-  }
-
-  const imageMimetype = readStringPath(message, ["imageMessage", "mimetype"]);
-  const imageDataUrl = normalizeBase64MediaUrl(readMessageBase64(message, "imageMessage"), imageMimetype);
-  const imageUrl =
-    imageDataUrl ??
-    normalizeMediaUrl(
-      readFirstStringPath(message, [
-        ["imageMessage", "url"],
-        ["imageMessage", "mediaUrl"]
-      ])
-    );
-  if (imageMimetype || imageUrl) {
-    const caption = readStringPath(message, ["imageMessage", "caption"]);
-    const body = caption ?? "Imagem recebida";
-
-    return {
-      type: "image",
-      body,
-      mediaUrl: imageUrl,
-      preview: body
-    };
-  }
-
-  const stickerMimetype = readStringPath(message, ["stickerMessage", "mimetype"]);
-  const stickerDataUrl = normalizeBase64MediaUrl(readMessageBase64(message, "stickerMessage"), stickerMimetype);
-  const stickerUrl =
-    stickerDataUrl ??
-    normalizeMediaUrl(
-      readFirstStringPath(message, [
-        ["stickerMessage", "url"],
-        ["stickerMessage", "mediaUrl"]
-      ])
-    );
-  if (stickerMimetype || stickerUrl) {
-    return {
-      type: "image",
-      body: "Figurinha recebida",
-      mediaUrl: stickerUrl,
-      preview: "Figurinha recebida"
-    };
-  }
-
-  const audioMimetype = readStringPath(message, ["audioMessage", "mimetype"]);
-  const audioDataUrl = normalizeBase64MediaUrl(readMessageBase64(message, "audioMessage"), audioMimetype);
-  const audioUrl =
-    audioDataUrl ??
-    normalizeMediaUrl(
-      readFirstStringPath(message, [
-        ["audioMessage", "url"],
-        ["audioMessage", "mediaUrl"]
-      ])
-    );
-  if (audioMimetype || audioUrl) {
-    return {
-      type: "audio",
-      body: "Áudio recebido",
-      mediaUrl: audioUrl,
-      preview: "Áudio recebido"
-    };
-  }
-
-  const documentMimetype =
-    readStringPath(message, ["documentMessage", "mimetype"]) ??
-    readStringPath(message, ["videoMessage", "mimetype"]);
-  const documentDataUrl =
-    normalizeBase64MediaUrl(readMessageBase64(message, "documentMessage"), documentMimetype) ??
-    normalizeBase64MediaUrl(readMessageBase64(message, "videoMessage"), documentMimetype);
-  const documentUrl =
-    documentDataUrl ??
-    normalizeMediaUrl(
-      readFirstStringPath(message, [
-        ["documentMessage", "url"],
-        ["documentMessage", "mediaUrl"],
-        ["videoMessage", "url"],
-        ["videoMessage", "mediaUrl"]
-      ])
-    );
-  if (documentMimetype || documentUrl) {
-    const body =
-      readStringPath(message, ["documentMessage", "fileName"]) ??
-      readStringPath(message, ["documentMessage", "caption"]) ??
-      readStringPath(message, ["videoMessage", "caption"]) ??
-      "Arquivo recebido";
-
-    return {
-      type: "file",
-      body,
-      mediaUrl: documentUrl,
-      preview: body
-    };
-  }
-
-  return {
-    type: "text",
-    body: null,
-    mediaUrl: null,
-    preview: "Mensagem recebida"
-  };
-}
-
-function extractPushName(data: unknown) {
-  const candidates = [
-    readStringPath(data, ["pushName"]),
-    readStringPath(data, ["data", "pushName"]),
-    readStringPath(data, ["key", "pushName"]),
-    readStringPath(data, ["data", "key", "pushName"])
-  ];
-
-  return candidates.find((value) => value && value.trim().length > 0)?.trim() ?? null;
-}
-
-function extractQrCode(data: unknown) {
-  return (
-    readStringPath(data, ["qrcode", "code"]) ??
-    readStringPath(data, ["qrcode", "base64"]) ??
-    readStringPath(data, ["qrCode"]) ??
-    readStringPath(data, ["code"]) ??
-    readStringPath(data, ["base64"])
-  );
 }
 
 function qrExpiresAt() {
@@ -378,6 +162,11 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
   app,
   options
 ) => {
+  const channelConnections = app.prisma?.channelConnection
+    ? createChannelConnectionsService(app.prisma, { waha: options.waha, evolution: options.physicalEvolution }) : null;
+  const describeChannel = (channel: Channel) => channelConnections
+    ? channelConnections.reconcile({ workspaceId: channel.workspaceId, channelId: channel.id })
+    : Promise.resolve(toChannelDto(channel));
   const automationRunner = createAutomationRunner({
     prisma: app.prisma as unknown as AutomationRunnerPrisma,
     agentRuntime: options.agentRuntime,
@@ -401,6 +190,95 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
 
     const normalizedEvent = normalizeEvolutionEvent(envelope.data.event);
     const workspaceId = params.data.workspaceId;
+    if (options.delegatedWorkspaces === '*' || options.delegatedWorkspaces?.has(workspaceId)) {
+      request.log.warn({ event: 'evolution_webhook_delegated_to_ingress', workspaceId }, 'Legacy Evolution webhook refused: this workspace is served by the ingress.');
+      return reply.code(409).send({ ok: false, error: 'delegated_to_ingress' });
+    }
+
+    if (!['connection.update', 'qrcode.updated', 'messages.edited', 'messages.upsert', 'messages.update', 'send.message'].includes(normalizedEvent)) return { ok: true, ignored: true };
+
+    // The provider namespace is global, including legacy webhook entry points.
+    const owners = await app.prisma.channel.findMany({ where: { providerKey: envelope.data.instance }, take: 2 });
+    if (!owners.length) return reply.code(404).send({ ok: false, error: 'channel_not_found' });
+    if (owners.length !== 1 || owners[0]!.workspaceId !== workspaceId) return reply.code(409).send({ ok: false, error: 'physical_source_ambiguous' });
+    const sourceChannel = owners[0]!;
+    if (app.prisma.channelConnection) {
+      const physicalOwners = await app.prisma.channelConnection.findMany({ where: { provider: 'evolution', sessionName: envelope.data.instance } });
+      if (physicalOwners.some(owner => owner.workspaceId !== workspaceId || owner.channelId !== sourceChannel.id)) return reply.code(409).send({ ok: false, error: 'physical_source_ambiguous' });
+      const primary = physicalOwners.find(owner => owner.provider === 'evolution');
+      if (!['connection.update', 'qrcode.updated'].includes(normalizedEvent) && sourceChannel.verifiedMessagingPhoneNumber &&
+        primary?.verifiedPhoneNumber !== sourceChannel.verifiedMessagingPhoneNumber) return reply.code(409).send({ ok: false, error: 'source_identity_mismatch' });
+    }
+
+    const editData = envelope.data.data;
+    const encryptedEdit = extractEncryptedMessageEdit(editData);
+    if (!encryptedEdit && isEncryptedControlEnvelope(editData)) return { ok: true, ignored: true };
+    const editEnvelope = normalizedEvent === "messages.edited" ||
+      encryptedEdit !== null ||
+      (normalizedEvent === "messages.upsert" &&
+        (hasRecordPath(unwrapMessage(readPath(editData, ["message"])), ["editedMessage"]) ||
+          isEditProtocolType(readPath(unwrapMessage(readPath(editData, ["message"])), ["protocolMessage", "type"])))) ||
+      (normalizedEvent === "messages.update" &&
+        (hasRecordPath(readPath(editData, ["update", "message"]), ["editedMessage"]) ||
+          hasRecordPath(readPath(editData, ["message"]), ["editedMessage"])));
+    if (editEnvelope) {
+      const clearEdit = extractMessageEdit(editData, normalizedEvent);
+      const targetId = clearEdit?.targetId ?? encryptedEdit?.targetId;
+      if (!targetId) return { ok: true, ignored: true };
+
+      const original = await app.prisma.message.findUnique({
+        where: { workspaceId_providerMessageId: { workspaceId, providerMessageId: targetId } },
+        include: { conversation: { include: { channel: true } } }
+      });
+      if (!original || original.conversation.channel.providerKey !== envelope.data.instance) {
+        return { ok: true, ignored: true };
+      }
+      let edit = clearEdit;
+      if (!edit && encryptedEdit && options.messageHistory) {
+        const providerOriginal = await options.messageHistory.findMessage({
+          instanceName: envelope.data.instance, id: targetId
+        });
+        const body = providerOriginal && decryptEncryptedMessageEdit(encryptedEdit, providerOriginal);
+        if (body) edit = { targetId, body };
+      }
+      if (!edit) return { ok: true, ignored: true };
+      if (original.body === edit.body &&
+        typeof original.metadata === "object" && original.metadata !== null &&
+        "editedAt" in original.metadata) {
+        return { ok: true };
+      }
+
+      const metadata = original.metadata && typeof original.metadata === "object" && !Array.isArray(original.metadata)
+        ? original.metadata as Record<string, unknown> : {};
+      const updated = await app.prisma.message.update({
+        where: { workspaceId_providerMessageId: { workspaceId, providerMessageId: edit.targetId } },
+        data: { type: "text", body: edit.body, metadata: { ...metadata, editedAt: new Date().toISOString() } }
+      });
+      const latest = await app.prisma.message.findFirst({
+        where: { workspaceId, conversationId: original.conversationId },
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        select: { id: true }
+      });
+      if (latest?.id === original.id) {
+        await app.prisma.conversation.updateMany({
+          where: { workspaceId, id: original.conversationId },
+          data: { lastMessagePreview: edit.body }
+        });
+        const conversation = await app.prisma.conversation.findUnique({
+          where: { workspaceId_id: { workspaceId, id: original.conversationId } },
+          include: {
+            prospectingOrigin: { select: { campaign: { select: { id: true, name: true } } } },
+        assignedUser: { select: { displayName: true } },
+            channel: { select: { displayName: true, phoneNumber: true } },
+            contact: { select: { name: true, phone: true, isGroup: true } },
+            department: { select: { name: true } }
+          }
+        });
+        if (conversation) app.realtime.publish({ type: "conversation.updated", workspaceId, payload: toConversationDto(conversation) });
+      }
+      app.realtime.publish({ type: "message.updated", workspaceId, payload: toMessageDto(updated) });
+      return { ok: true };
+    }
 
     if (normalizedEvent === "connection.update") {
       const body = evolutionConnectionUpdateSchema.safeParse(request.body);
@@ -409,6 +287,7 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
       }
 
       const state = body.data.data?.state ?? body.data.data?.status;
+      const status = mapConnectionState(state);
       const channel = await app.prisma.channel.update({
         where: {
           workspaceId_provider_providerKey: {
@@ -417,7 +296,7 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
             providerKey: body.data.instance
           }
         },
-        data: { status: mapConnectionState(state) }
+        data: channelConnections ? {} : { status }
       }).catch((error: unknown) => {
         if (isPrismaKnownRequestErrorCode(error, "P2025")) {
           return null;
@@ -430,10 +309,19 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
         return reply.code(404).send({ ok: false, error: "channel_not_found" });
       }
 
+      if (app.prisma.channelConnection) {
+        const physical = await app.prisma.channelConnection.upsert({
+        where: { workspaceId_channelId_provider: { workspaceId, channelId: channel.id, provider: 'evolution' } },
+        create: { workspaceId, channelId: channel.id, provider: 'evolution', sessionName: channel.providerKey, status, eligible: status === 'connected' && !channel.verifiedMessagingPhoneNumber && !options.physicalEvolution },
+        update: { status, eligible: status === 'connected' && !channel.verifiedMessagingPhoneNumber && !options.physicalEvolution, ...(status === 'connected' ? { connectedAt: new Date() } : { health: 'unknown' as const }) }
+      });
+        if (status === 'connected' && channelConnections && options.physicalEvolution) await channelConnections.refresh({ workspaceId, channelId: channel.id, connectionId: physical.id });
+      }
+
       app.realtime.publish({
         type: "channel.updated",
         workspaceId,
-        payload: toChannelDto(channel)
+        payload: await describeChannel(channel)
       });
 
       return { ok: true };
@@ -458,7 +346,7 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
             providerKey: body.data.instance
           }
         },
-        data: { status: "connecting" }
+        data: channelConnections ? {} : { status: "connecting" }
       }).catch((error: unknown) => {
         if (isPrismaKnownRequestErrorCode(error, "P2025")) {
           return null;
@@ -471,10 +359,16 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
         return reply.code(404).send({ ok: false, error: "channel_not_found" });
       }
 
+      const connection = app.prisma.channelConnection ? await app.prisma.channelConnection.upsert({
+        where: { workspaceId_channelId_provider: { workspaceId, channelId: channel.id, provider: 'evolution' } },
+        create: { workspaceId, channelId: channel.id, provider: 'evolution', sessionName: channel.providerKey, status: 'connecting' },
+        update: { status: 'connecting', eligible: false, health: 'unknown' }
+      }) : null;
+
       app.realtime.publish({
         type: "channel.updated",
         workspaceId,
-        payload: toChannelDto(channel)
+        payload: await describeChannel(channel)
       });
       app.realtime.publish({
         type: "channel.qr_updated",
@@ -482,7 +376,8 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
         payload: {
           channelId: channel.id,
           qrCode,
-          expiresAt: qrExpiresAt()
+          expiresAt: qrExpiresAt(),
+          ...(connection ? { connectionId: connection.id, provider: 'evolution' as const, issuedAt: new Date().toISOString() } : {})
         }
       });
 
@@ -545,9 +440,41 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
     }
 
     const payload = body.data;
-    const phone = extractPhone(payload.data.key.remoteJid);
+    const groupJid = resolveGroupJid(payload.data.key.remoteJid);
+    const isGroup = Boolean(groupJid);
+    const phone = groupJid ?? resolveWebhookPhone(payload.data.key.remoteJid, payload.data.key.remoteJidAlt);
+    if (!phone) {
+      request.log.warn({ event: 'evolution_unresolved_identity', workspaceId,
+        providerMessageId: payload.data.key.id, remoteJidType: payload.data.key.remoteJid.split('@')[1] ?? 'unknown' },
+      'Evolution message has no phone identity yet.');
+      return { ok: true, ignored: true, reason: 'unresolved_identity' };
+    }
     const pushName = payload.data.key.fromMe ? null : extractPushName(request.body);
-    const messageContent = extractMessageContent(payload.data.message);
+    const existingGroup = groupJid ? await app.prisma.contact.findFirst({
+      where: { workspaceId, phone: groupJid, isGroup: true }, select: { name: true }
+    }) : null;
+    const savedGroupName = existingGroup?.name?.trim();
+    const groupName = groupJid ? (savedGroupName && savedGroupName !== groupFallbackName(groupJid)
+      ? savedGroupName
+      : await options.evolution?.client?.getGroupInfo?.({ instanceName: payload.instance, groupJid })
+        .then(result => result.subject).catch((error: unknown) => {
+          request.log.warn({ err: error, groupJid }, 'Evolution group name lookup failed.');
+          return null;
+        }) ?? savedGroupName ?? groupFallbackName(groupJid)) : null;
+    const participant = payload.data.key.participant ?? payload.data.participant;
+    const senderJid = isGroup && !payload.data.key.fromMe && typeof participant === 'string'
+      ? participant.slice(0, 100) : null;
+    const messageContent = extractMessageContent(payload.data.message, payload.data.messageType);
+    if (messageContent.body === "Template recebido sem texto" || messageContent.body === "Mensagem não reconhecida") {
+      const message = unwrapMessage(payload.data.message);
+      request.log.warn({
+        event: "evolution_message_without_readable_content",
+        workspaceId,
+        providerMessageId: payload.data.key.id,
+        providerMessageType: payload.data.messageType,
+        messageKeys: message && typeof message === "object" && !Array.isArray(message) ? Object.keys(message) : []
+      }, "Evolution message has no readable content.");
+    }
     const receivedAt =
       typeof payload.data.messageTimestamp === "number"
         ? new Date(payload.data.messageTimestamp * 1000)
@@ -580,14 +507,49 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
         if (!channel) {
           return { kind: "channel_not_found" as const };
         }
+        if (isGroup && channel.provider !== 'evolution') {
+          return { kind: "unsupported_group_provider" as const };
+        }
 
-        const contact = await tx.contact.findFirst({
+        const candidates = isGroup || phone.endsWith('@lid') ? [phone] : buildPhoneLookupCandidates(phone);
+        const existingLidContact = payload.data.key.remoteJid.endsWith('@lid')
+          ? await tx.contact.findFirst({ where: { workspaceId, phone: payload.data.key.remoteJid } })
+          : null;
+        const contact = isGroup ? null : await tx.contact.findFirst({
           where: {
             workspaceId,
-            phone: { in: buildPhoneLookupCandidates(phone) }
+            phone: { in: candidates }
           },
           orderBy: { updatedAt: "desc" }
-        }) ?? await tx.contact.create({
+        });
+        const lid = !isGroup && /^\d+@lid$/.test(payload.data.key.remoteJid) ? payload.data.key.remoteJid : null;
+        const phoneContact = contact && !contact.phone.endsWith('@lid') ? contact : null;
+        const linkedContact = lid && !phoneContact && (phone.endsWith('@lid') || !existingLidContact) ? await tx.contact.findFirst({
+          where: { workspaceId, customFields: { path: ['evolutionLid'], equals: lid } }
+        }) : null;
+        const lidContact = linkedContact ?? existingLidContact;
+        const mappedContact = lid && !phone.endsWith('@lid') && lidContact?.phone.endsWith('@lid') && !phoneContact
+          ? await tx.contact.update({
+              where: { workspaceId_id: { workspaceId, id: lidContact.id } },
+              data: { phone, customFields: {
+                ...(lidContact.customFields && typeof lidContact.customFields === 'object' && !Array.isArray(lidContact.customFields)
+                  ? lidContact.customFields as Record<string, unknown> : {}), evolutionLid: lid
+              } }
+            })
+          : null;
+        if (lid && phoneContact) {
+          const fields = phoneContact.customFields && typeof phoneContact.customFields === 'object' && !Array.isArray(phoneContact.customFields)
+            ? phoneContact.customFields as Record<string, unknown> : {};
+          if (fields.evolutionLid !== lid) await tx.contact.update({
+            where: { workspaceId_id: { workspaceId, id: phoneContact.id } },
+            data: { customFields: { ...fields, evolutionLid: lid } }
+          });
+        }
+        const selectedContact = isGroup ? await tx.contact.upsert({
+          where: { workspaceId_phone: { workspaceId, phone } },
+          create: { workspaceId, phone, isGroup: true, name: groupName },
+          update: { name: groupName }
+        }) : phoneContact ?? mappedContact ?? lidContact ?? contact ?? await tx.contact.create({
           data: {
             workspaceId,
             phone,
@@ -595,30 +557,50 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
           }
         });
 
-        if (pushName) {
+        if (!isGroup && pushName) {
           await tx.contact.updateMany({
             where: {
               workspaceId,
-              phone: { in: buildPhoneLookupCandidates(phone) },
+              ...(existingLidContact || phone.endsWith('@lid') ? { id: selectedContact.id } : { phone: { in: candidates } }),
               name: null
             },
             data: { name: pushName }
           });
         }
 
+        const hiddenCampaignMessage = !isGroup && payload.data.key.fromMe && channel.provider === 'evolution' &&
+          typeof tx.campaignRecipient?.findFirst === 'function'
+          ? await tx.campaignRecipient.findFirst({
+              where: { workspaceId, channelId: channel.id,
+                campaign: { is: { hideFromInboxUntilReply: true } },
+                OR: [{ providerMessageId: payload.data.key.id },
+                  { status: 'in_flight',
+                    contactSnapshot: { path: ['message'], equals: messageContent.body ?? '' },
+                    OR: [{ contactId: selectedContact.id },
+                    { phoneSnapshot: { in: candidates } }] },
+                  { status: 'sent', providerMessageId: null,
+                    sentAt: { gte: new Date(receivedAt.getTime() - 10 * 60 * 1000) },
+                    contactSnapshot: { path: ['message'], equals: messageContent.body ?? '' },
+                    OR: [{ contactId: selectedContact.id }, { phoneSnapshot: { in: candidates } }] }] },
+              select: { id: true }
+            })
+          : null;
+
         const conversation = await tx.conversation.upsert({
           where: {
             workspaceId_channelId_contactId: {
               workspaceId,
               channelId: channel.id,
-              contactId: contact.id
+              contactId: selectedContact.id
             }
           },
           create: {
             workspaceId,
             channelId: channel.id,
-            contactId: contact.id,
+            contactId: selectedContact.id,
             status: "open",
+            hiddenUntilReply: Boolean(hiddenCampaignMessage),
+            ...(isGroup || phone.endsWith('@lid') ? { aiControlStatus: 'human_controlled' as const } : {}),
             ...(channel.provider === "meta_cloud" && !payload.data.key.fromMe
               ? { customerServiceWindowExpiresAt: new Date(receivedAt.getTime() + 24 * 60 * 60 * 1000) }
               : {}),
@@ -627,7 +609,15 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
           update: {}
         });
 
-        const message = await tx.message.create({
+        await lockProspectingConversation(tx, workspaceId, conversation.id);
+        // Reply/reaction presentation, as the canonical writer stores it (metadata.quoted / metadata.reaction).
+        const unwrapped = unwrapMessage(payload.data.message) as Record<string, unknown> | undefined;
+        const legacyQuoted = unwrapped && typeof unwrapped === 'object' ? quotedOf(unwrapped, payload.data as unknown as Record<string, unknown>) : null;
+        const legacyReaction = unwrapped && typeof unwrapped === 'object' ? reactionOf(unwrapped) : null;
+        const prospectingEcho = await findProspectingOutboundEcho(tx, { workspaceId, conversationId: conversation.id,
+          direction: payload.data.key.fromMe ? 'outbound' : 'inbound', body: messageContent.body, mediaUrl: messageContent.mediaUrl });
+        const message = prospectingEcho ? await tx.message.update({ where: { id: prospectingEcho.id }, data: {
+          providerMessageId: payload.data.key.id, providerEventId: `${payload.event}:${payload.instance}:${payload.data.key.id}`, status: 'sent' } }) : await tx.message.create({
           data: {
             workspaceId,
             conversationId: conversation.id,
@@ -637,13 +627,38 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
             type: messageContent.type,
             body: messageContent.body,
             mediaUrl: messageContent.mediaUrl,
-            ...(['audio', 'image', 'file'].includes(messageContent.type) ? { metadata: { attachment: attachmentPresentation(payload.data.message) } } : {}),
+            ...(isGroup || messageContent.location || messageContent.contactCards?.length || ['audio', 'image', 'file'].includes(messageContent.type) || legacyQuoted || legacyReaction
+              ? { metadata: {
+                  ...(legacyQuoted ? { quoted: legacyQuoted } : {}),
+                  ...(legacyReaction ? { reaction: legacyReaction } : {}),
+                  ...(isGroup && !payload.data.key.fromMe ? { groupSender: { jid: senderJid, name: pushName } } : {}),
+                  ...(messageContent.contactCards?.length ? { contactCards: messageContent.contactCards } : {}),
+                  ...(messageContent.location ? { location: messageContent.location } : {}),
+                  ...(['audio', 'image', 'file'].includes(messageContent.type) ? { attachment: attachmentPresentation(payload.data.message) } : {})
+                } } : {}),
             status: payload.data.key.fromMe ? "sent" : "delivered",
             createdAt: receivedAt
           }
         });
 
-        if (!payload.data.key.fromMe) {
+        const campaignDispatchMessage = payload.data.key.fromMe && !isGroup && typeof tx.campaignRecipient?.findFirst === 'function'
+          ? await tx.campaignRecipient.findFirst({ where: { workspaceId, channelId: channel.id,
+            OR: [{ providerMessageId: payload.data.key.id }, { status: 'in_flight', verifiedAt: { not: null },
+              contactSnapshot: { path: ['message'], equals: messageContent.body ?? '' },
+              OR: [{ contactId: selectedContact.id }, { phoneSnapshot: { in: candidates } }] }] }, select: { id: true } }) : null;
+        const humanTookControl = payload.data.key.fromMe && !isGroup && !campaignDispatchMessage && !prospectingEcho
+          ? await pauseAgentOnHumanOutbound(tx, {
+              workspaceId,
+              conversationId: conversation.id
+            })
+          : false;
+
+        // We answered from the phone: whatever was waiting in this conversation has been seen.
+        if (payload.data.key.fromMe && !campaignDispatchMessage && !prospectingEcho) {
+          await tx.conversation.updateMany({ where: { workspaceId, id: conversation.id, unreadCount: { gt: 0 } }, data: { unreadCount: 0 } });
+        }
+
+        if (!payload.data.key.fromMe && !legacyReaction) {
           if (channel.provider === "meta_cloud") {
             const customerServiceWindowExpiresAt = new Date(receivedAt.getTime() + 24 * 60 * 60 * 1000);
             await tx.conversation.updateMany({
@@ -667,24 +682,34 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
               }
             },
             data: {
-              unreadCount: { increment: 1 }
+              unreadCount: { increment: 1 },
+              hiddenUntilReply: false
             }
           });
         }
 
-        await tx.conversation.updateMany({
-          where: {
-            id: conversation.id,
-            workspaceId,
-            OR: [{ lastMessageAt: null }, { lastMessageAt: { lte: receivedAt } }]
-          },
-          data: {
-            lastMessageAt: receivedAt,
-            lastMessagePreview: messageContent.preview
-          }
-        });
+        if (hiddenCampaignMessage) {
+          await tx.conversation.updateMany({
+            where: { id: conversation.id, workspaceId,
+              OR: [{ lastMessagePreviewAt: null }, { lastMessagePreviewAt: { lte: receivedAt } }] },
+            data: { lastMessagePreview: messageContent.preview, lastMessagePreviewAt: receivedAt }
+          });
+        } else {
+          await tx.conversation.updateMany({
+            where: {
+              id: conversation.id,
+              workspaceId,
+              OR: [{ lastMessageAt: null }, { lastMessageAt: { lte: receivedAt } }]
+            },
+            data: {
+              lastMessageAt: receivedAt,
+              lastMessagePreview: messageContent.preview,
+              lastMessagePreviewAt: receivedAt
+            }
+          });
+        }
 
-        if (!payload.data.key.fromMe && supportsDepartmentRouting(tx)) {
+        if (!isGroup && !payload.data.key.fromMe && supportsDepartmentRouting(tx)) {
           await applyInboundDepartmentRouting(tx, {
             workspaceId,
             conversationId: conversation.id,
@@ -700,9 +725,10 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
             }
           },
           include: {
-            assignedUser: { select: { displayName: true } },
+            prospectingOrigin: { select: { campaign: { select: { id: true, name: true } } } },
+        assignedUser: { select: { displayName: true } },
             channel: { select: { displayName: true, phoneNumber: true } },
-            contact: { select: { name: true, phone: true } },
+            contact: { select: { name: true, phone: true, isGroup: true } },
             department: { select: { name: true } }
           }
         });
@@ -711,16 +737,31 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
           throw new Error("Conversation disappeared during Evolution webhook ingestion.");
         }
 
-        await options.assistantScheduler?.persistInbound(tx, { workspaceId, conversationId: message.conversationId, messageId: message.id, direction: message.direction });
-        return { kind: "created" as const, message, conversation: updatedConversation };
+        if (!isGroup && messageContent.type !== "system") {
+          await options.assistantScheduler?.persistInbound(tx, { workspaceId, conversationId: message.conversationId, messageId: message.id, direction: message.direction });
+        }
+        return { kind: "created" as const, message, conversation: updatedConversation, humanTookControl };
       });
 
       if (transactionResult.kind === "channel_not_found") {
         return reply.code(404).send({ ok: false, error: "channel_not_found" });
       }
+      if (transactionResult.kind === 'unsupported_group_provider') {
+        return { ok: true, ignored: true, reason: 'unsupported_group_provider' };
+      }
 
-      const { message, conversation } = transactionResult;
-      await options.assistantScheduler?.message({ workspaceId, conversationId: message.conversationId, messageId: message.id, direction: message.direction });
+      const { message, conversation, humanTookControl } = transactionResult;
+      if (!isGroup && humanTookControl) {
+        request.log.info({ event: "human_outbound_paused_agent", workspaceId, conversationId: message.conversationId, messageId: message.id }, "Human outbound message paused the agent.");
+        await options.assistantScheduler?.control(workspaceId, message.conversationId, true).catch((error: unknown) => {
+          request.log.error({ error, workspaceId, conversationId: message.conversationId }, "Failed to pause assistant suggestions after human outbound message.");
+        });
+      }
+      const prospectingInbound = await observeProspectingInbound(app.prisma, { workspaceId, conversationId: message.conversationId, messageId: message.id, direction: message.direction, type: messageContent.type, body: message.body, createdAt: new Date(message.createdAt), ingestedAt: message.ingestedAt, isGroup, historical: payload.data.type === "append" || payload.data.type === "history" || payload.data.isHistory === true });
+      if (!isGroup && !humanTookControl && messageContent.type !== "system") {
+        await options.assistantScheduler?.message({ workspaceId, conversationId: message.conversationId, messageId: message.id, direction: message.direction });
+      }
+      if (!isGroup) options.handoffBriefService?.schedule({ workspaceId, conversationId: message.conversationId });
       app.realtime.publish({
         type: "message.created",
         workspaceId,
@@ -732,7 +773,35 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
         payload: toConversationDto(conversation)
       });
 
-      if (message.direction === "inbound") {
+      if (options.durableMedia && (options.durableMediaWorkspaces?.(workspaceId) ?? true) && ['audio', 'image', 'file'].includes(messageContent.type)) {
+        // Best effort and after realtime: every reader still falls back to the legacy path if this fails.
+        const client = options.evolutionClient;
+        const providerId = payload.data.key.id;
+        await options.durableMedia.prepare({ workspaceId, messageId: message.id,
+          fetchers: client?.fetchMedia ? [{ name: 'evolution', fetch: async () => ({ mediaUrl: await client.fetchMedia!({ workspaceId, channelId: sourceChannel.id, instanceName: payload.instance, id: providerId, key: { identityFormat: 'whatsapp_stanza', nativeId: providerId, nativeChatAddress: payload.data.key.remoteJid, nativeSenderParticipant: payload.data.key.participant ?? '', rawId: providerId, chatAddress: normalizeChatAddress(payload.data.key.remoteJid), direction: payload.data.key.fromMe ? 'outbound' : 'inbound', senderParticipant: isGroup ? normalizeChatAddress(payload.data.key.participant) : '' } }) }) }] : [] })
+          .catch((error: unknown) => { request.log.warn({ err: error, messageId: message.id }, 'Durable media preparation failed.'); });
+      }
+
+      // Historical sync may need several provider requests. Never hold the live
+      // webhook or the realtime notification while those older messages load.
+      if (!isGroup && message.direction === 'inbound' && messageContent.type !== 'system') {
+        void options.historyBackfill?.({ workspaceId, channelId: conversation.channelId,
+          conversationId: conversation.id, providerKey: payload.instance,
+          remoteJid: payload.data.key.remoteJid, identity: phone, pushName }).catch((error: unknown) => {
+          request.log.error({ err: error, conversationId: conversation.id }, 'Recent Evolution context backfill failed.');
+        });
+      }
+
+      if (!isGroup && messageContent.type !== "system") {
+        await options.inboxTriage?.observeMessage({
+          workspaceId, conversationId: message.conversationId, messageId: message.id,
+          direction: message.direction, observedAt: new Date()
+        }).catch((error: unknown) => {
+          request.log.error({ err: error, conversationId: message.conversationId }, "Inbox triage observation failed");
+        });
+      }
+
+      if (!isGroup && message.direction === "inbound" && messageContent.type !== "system") {
         await options.followupService?.observeConversationActivity({
           workspaceId,
           conversationId: message.conversationId,
@@ -742,7 +811,7 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
         }).catch((error: unknown) => {
           request.log.error({ error }, "Failed to observe inbound customer follow-up.");
         });
-        if (message.type === "audio" && !await options.assistantScheduler?.isAssisted(workspaceId, message.conversationId)) {
+        if ((!prospectingInbound.reserved || prospectingInbound.liveEligible) && message.type === "audio" && (prospectingInbound.reserved || !await options.assistantScheduler?.isAssisted(workspaceId, message.conversationId))) {
           await options.agentRuntime?.prepareAudioMessage({
             workspaceId,
             messageId: message.id
@@ -751,7 +820,7 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
           });
         }
 
-        await automationRunner.runForInboundMessage({
+        if (!phone.endsWith('@lid')) await automationRunner.runForInboundMessage({
           workspaceId,
           messageId: message.id,
           eventKey: `message.received:${message.providerMessageId ?? message.id}`
@@ -759,20 +828,39 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
           request.log.error({ error }, "Failed to run message automations.");
         });
 
-        await options.agentReplyScheduler?.scheduleActiveSessionForMessage({
+        if (!phone.endsWith('@lid') && (!prospectingInbound.reserved || prospectingInbound.liveEligible)) await options.agentReplyScheduler?.scheduleActiveSessionForMessage({
           workspaceId,
           conversationId: message.conversationId,
           messageId: message.id
         }).catch((error: unknown) => {
           request.log.error({ error }, "Failed to schedule agent reply.");
         });
-      } else if (options.agentImprovements) {
-        void options.agentImprovements.observeHumanReply({
+      } else if (!isGroup && humanTookControl && message.direction === "outbound" && messageContent.type !== "system") {
+        await options.followupService?.observeConversationActivity({
+          workspaceId,
+          conversationId: message.conversationId,
+          messageId: message.id,
+          direction: "outbound",
+          source: "human"
+        }).catch((error: unknown) => {
+          request.log.error({ error }, "Failed to observe external human outbound follow-up.");
+        });
+        if (options.agentImprovements) void options.agentImprovements.observeHumanReply({
           workspaceId,
           conversationId: message.conversationId,
           messageId: message.id
+        }).then((analysis) => {
+          request.log.info({
+            event: "agent_improvement_observation",
+            source: "evolution_outbound",
+            workspaceId,
+            conversationId: message.conversationId,
+            messageId: message.id,
+            outcome: analysis.created ? "created" : "skipped",
+            reason: analysis.reason ?? null
+          }, "Agent improvement observation completed.");
         }).catch((error: unknown) => {
-          request.log.error({ error }, "Failed to prepare agent improvement suggestion.");
+          request.log.error({ error, event: "agent_improvement_observation_failed", source: "evolution_outbound", workspaceId, conversationId: message.conversationId, messageId: message.id }, "Failed to prepare agent improvement suggestion.");
         });
       }
 

@@ -84,6 +84,17 @@ describe("conversation display helpers", () => {
   });
 
   describe("getChannelFilterOptions", () => {
+    it("keeps channels available when the current conversation page has none from them", () => {
+      expect(getChannelFilterOptions(
+        [conversationFixture({ channelId: "channel-alpha-1234", channelName: "Loja" })],
+        [{ id: "channel-beta-5678", displayName: "Geral Villefer" }]
+      )).toEqual([
+        { id: "all", label: "Todos" },
+        { id: "channel-beta-5678", label: "Geral Villefer" },
+        { id: "channel-alpha-1234", label: "Loja" }
+      ]);
+    });
+
     it("returns all plus unique channels in first-seen order", () => {
       const conversations = [
         conversationFixture({ id: "conversation-1", channelId: "channel-alpha-1234", channelName: "WhatsApp Loja" }),

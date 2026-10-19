@@ -6,6 +6,20 @@ import {
 } from "./conversation-followup-events.js";
 
 describe("conversation follow-up realtime events", () => {
+  it("publishes an evaluating candidate without presenting it as scheduled", () => {
+    const dto = toConversationFollowupDto({
+      id: "followup_1",
+      workspaceId: "workspace_1",
+      conversationId: "conversation_1",
+      agentId: "agent_1",
+      kind: "human_commercial",
+      status: "evaluating",
+      stepIndex: 1,
+      scheduledAt: new Date("2026-09-25T15:00:00Z")
+    });
+    expect(dto.status).toBe("evaluating");
+  });
+
   it("derives the workspace from the persisted record and strips private decision/provider data", async () => {
     const publish = vi.fn();
     const publisher = createConversationFollowupRealtimePublisher({ publish });

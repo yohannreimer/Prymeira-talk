@@ -8,6 +8,7 @@ export type AgentMediaPolicy = {
 };
 
 export type AgentMediaErrorCode =
+  | "NOT_AN_ATTACHMENT"
   | "MEDIA_UNAVAILABLE"
   | "INVALID_MEDIA_URL"
   | "INVALID_BASE64"
@@ -26,7 +27,7 @@ export class AgentMediaError extends Error {
 export type ResolvedAgentMedia = {
   bytes: Buffer;
   mimeType: string;
-  source: "data_url" | "remote";
+  source: "data_url" | "remote" | "durable";
 };
 
 type ResolveHost = (hostname: string) => Promise<string[]>;

@@ -46,6 +46,13 @@ describe('voice recording validation and transport', () => {
     const result = decodeVoiceRecording('data:audio/webm;codecs=opus;base64,GkXfow==', 'audio/webm;codecs=opus');
     expect(result.demuxer).toBe('matroska'); expect(result.bytes).toEqual(Buffer.from([26, 69, 223, 163]));
   });
+  it('accepts the way Safari describes its recordings (spaces and quoted codecs)', async () => {
+    const webm = execFileSync('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=0.4', '-c:a', 'libopus', '-f', 'webm', 'pipe:1'], { timeout: 10000 });
+    const safari = await prepareVoiceRecording(`data:audio/webm; codecs=opus;base64,${webm.toString('base64')}`, 'audio/webm; codecs=opus');
+    expect(safari).toMatchObject({ mimetype: 'audio/ogg' });
+    expect(decodeVoiceRecording('data:audio/mp4; codecs="mp4a.40.2";base64,GkXfow==', 'audio/mp4; codecs="mp4a.40.2"').demuxer).toBe('mov');
+    expect(() => decodeVoiceRecording('data:audio/webm; codecs=opus;base64,GkXfow==', 'audio/ogg')).toThrow();
+  });
   it('rejects invalid bytes without claiming a voice message was created', async () => {
     await expect(prepareVoiceRecording('data:audio/ogg;base64,YQ==', 'audio/ogg')).rejects.toThrow();
   });

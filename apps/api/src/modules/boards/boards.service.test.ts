@@ -334,7 +334,6 @@ describe("boards service", () => {
             createMany: {
               data: [
                 {
-                  workspaceId: "workspace_a",
                   channelId: "00000000-0000-4000-8000-000000000060"
                 }
               ],
@@ -558,7 +557,7 @@ describe("boards service", () => {
       include: boardRuleIncludeExpectation
     });
     expect(prisma.contactBoardMembership.findMany).toHaveBeenCalledWith({
-      where: { workspaceId: "workspace_a", boardId },
+      where: { workspaceId: "workspace_a", boardId, contact: { is: { isGroup: false } } },
       include: { contact: true },
       orderBy: [{ updatedAt: "desc" }]
     });
@@ -588,7 +587,7 @@ describe("boards service", () => {
           id: contactId
         }
       },
-      select: { id: true }
+      select: { id: true, isGroup: true }
     });
     expect(prisma.contactBoardMembership.updateMany).toHaveBeenCalledWith({
       where: { workspaceId: "workspace_a", contactId, isPrimary: true },

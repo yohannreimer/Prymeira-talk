@@ -1,5 +1,19 @@
+import { abortable, assertReadAccess, withReadDeadline } from './read-request';
 import {
+  leadRegionSchema,
+  ownBaseImportResultSchema,
+  ownBaseLeadPageSchema,
+  ownBaseOverviewSchema,
+  type LeadRegionDto,
+  type OwnBaseFilter,
+  type OwnBaseImportResult,
+  type OwnBaseLeadPage,
+  type OwnBaseOverview,
+  type OwnBaseRow,
   agentPackageSchema,
+  channelFollowupConfigSchema,
+  automationWebhookSchema,
+  type AutomationWebhookDto,
   aiAgentSchema,
   aiAgentImprovementSchema,
   aiKnowledgeSourceSchema,
@@ -8,6 +22,8 @@ import {
   contactBoardStageSchema,
   channelOperationResultSchema,
   channelQrResultSchema,
+  channelHealthSchema,
+  channelWatchdogStatusSchema,
   channelSchema,
   channelTestInboundResultSchema,
   contactSchema,
@@ -17,6 +33,7 @@ import {
   tagSchema,
   leadListSchema,
   leadPaginatedResultSchema,
+  leadSelectionSchema,
   leadJobSchema,
   leadGoogleSearchResponseSchema,
   leadCsvImportResponseSchema,
@@ -31,6 +48,7 @@ import {
   type LeadSearchFilters,
   type LeadListDto,
   type LeadPaginatedResultDto,
+  type LeadSelectionDto,
   type LeadJobDto,
   type LeadGoogleSearchResponse,
   type LeadCsvImportResponseDto,
@@ -39,6 +57,7 @@ import {
   type LeadContactImportResult,
   type LeadCampaignDraftResult,
   type LeadComposerDraft,
+  type AgentFollowupConfig,
   type AgentAllowedTagDto,
   type AgentPackage,
   type AiAgentAllowedAction,
@@ -46,6 +65,7 @@ import {
   type AiAgentImprovementDto,
   type AiKnowledgeSourceDto,
   type ChannelDto,
+  type ChannelFollowupConfig,
   type ChannelOperationResultDto,
   type ChannelQrResultDto,
   type ChannelTestInboundResultDto,
@@ -56,10 +76,17 @@ import {
   type ConversationFollowupDto,
   type ConversationDto,
   type MessageDto,
+  type MeetingRemindersConfig,
   type TagDto
 } from "@prymeira-talk/shared";
 import { readConfigValue } from "./runtime-config";
+import { defaultWatchdogStatus, type ChannelHealthSnapshot } from "./channel-health-snapshot";
 import type { AssistantConversationDto, AssistantChannelSettings, AssistantSendInput } from '@prymeira-talk/shared';
+import { handoffBriefDtoSchema } from '../../../../packages/shared/src/assistant';
+
+export function apiGetHandoffBrief(id: string, getToken: () => Promise<string | null>, signal?: AbortSignal) {
+  return fetchJson(getToken, `/assistant/conversations/${id}/handoff-brief`, { signal }, data => handoffBriefDtoSchema.parse(data), 'Não foi possível carregar o próximo passo.');
+}
 
 export function apiGetAssistantConversation(id: string, getToken: () => Promise<string | null>, signal?: AbortSignal) {
   return fetchJson(getToken, `/assistant/conversations/${id}`, { signal }, data => data as AssistantConversationDto, 'Não foi possível carregar a IA de apoio.');
@@ -191,12 +218,16 @@ export type ConversationActionBody =
   | { action: "create_crm_note" }
   | { action: "assume_ai_control" }
   | { action: "release_ai_control" }
+  | { action: "complete_handoff_action" }
+  | { action: "reopen_handoff_action" }
+  | { action: "reanalyze_handoff_reply" }
   | { action: "close_conversation" };
 
 export interface ConversationActionResultDto {
   conversation: ConversationDto;
   context: ContactContextDto;
   aiSuggestion?: string;
+  improvementAnalysis?: { created: boolean; reason?: string } | null;
   crmAction?: {
     id: string;
     status: string;
@@ -206,6 +237,8 @@ export interface ConversationActionResultDto {
 export interface CurrentTalkUserDto {
   workspaceId: string;
   role: "owner" | "manager" | "agent";
+  /** Paid add-ons the Hub released for this workspace. Missing on older APIs, which means none. */
+  addons?: { orcamentos: boolean };
 }
 
 export interface AgentTestChatMessageDto {
@@ -262,10 +295,26 @@ export interface AutomationAssetUploadResultDto {
   url: string;
 }
 
-export type CampaignStatus = "draft" | "scheduled" | "sending" | "completed" | "failed";
+export type CampaignStatus = "draft" | "scheduled" | "sending" | "paused" | "completed" | "failed" | "canceled" | "needs_attention";
+
+export interface BroadcastListDto {
+  id: string;
+  name: string;
+  memberCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BroadcastListDetailDto extends BroadcastListDto {
+  contacts: Array<{ id: string; name: string | null; phone: string; avatarUrl: string | null }>;
+}
 
 export interface CampaignAudienceDto {
-  type: "board" | "imported";
+  type: "board" | "imported" | 'list';
+  origin?: "leads";
+  listId?: string;
+  selectedCount?: number;
+  exclusions?: { notImported?: number; duplicateOrInvalidPhone?: number };
   boardId?: string;
   stageId?: string;
   rows?: Array<{
@@ -283,9 +332,16 @@ export interface CampaignCadenceDto {
   pauseMaxSeconds: number;
   windowStart?: string;
   windowEnd?: string;
+  /** Spread over days: between dailyMin and dailyMax messages per day (e.g. 38–42). */
+  dailyMin?: number;
+  dailyMax?: number;
+  /** Days allowed to send, 0 = Sunday. Absent = every day. */
+  weekdays?: number[];
 }
 
 export interface CampaignDto {
+  prospectingAgentId?: string | null;
+  prospectingContext?: string | null;
   id: string;
   workspaceId: string;
   name: string;
@@ -296,6 +352,8 @@ export interface CampaignDto {
   fallbackName: string;
   cadence: CampaignCadenceDto;
   scheduledAt: string | null;
+  timeZone?: string;
+  hideFromInboxUntilReply?: boolean;
   mode: "simulated" | "real";
   createdAt: string;
   updatedAt: string;
@@ -310,6 +368,7 @@ export interface CampaignAudienceContactDto {
 }
 
 export interface CampaignRecipientDto {
+  skipReason?: string | null;
   id: string;
   workspaceId: string;
   campaignId: string;
@@ -328,6 +387,36 @@ export interface CampaignRecipientDto {
   contactName: string | null;
   contactPhone: string | null;
 }
+
+export interface CampaignAudiencePreviewDto {
+  selectedCount: number | null;
+  eligible: Array<CampaignAudienceContactDto & { normalizedPhone: string; message: string }>;
+  excluded: Array<CampaignAudienceContactDto & { reason: "missing_phone" | "no_whatsapp" |
+    "unverified" | "verification_error" | "duplicate" }>;
+  checkedAt: string;
+  audienceHash: string;
+  revision: string;
+  unresolvedVariables: string[];
+  effectiveStartAt?: string;
+  nameCheck?: "ok" | "unavailable";
+}
+
+export interface CampaignProgressDto {
+  status: CampaignStatus;
+  total: number;
+  sent: number;
+  pending: number;
+  skipped: number;
+  failed: number;
+  uncertain: number;
+  nextScheduledAt: string | null;
+  /** Day by day (campaign time zone): sent, still planned and replies. */
+  days?: CampaignProgressDayDto[];
+  /** By the company's city (Base própria / Leads), "Sem cidade" otherwise. */
+  cities?: CampaignProgressCityDto[];
+}
+export interface CampaignProgressDayDto { day: string; sent: number; planned: number; replied: number }
+export interface CampaignProgressCityDto { city: string; total: number; sent: number; replied: number }
 
 export interface CampaignSendResultDto {
   mode: "simulated" | "real";
@@ -544,6 +633,7 @@ export interface IntegrationConfigDto {
 }
 
 export interface SettingsDto {
+  modules?: { campaignProspecting: boolean };
   workspace: WorkspaceSettingsDto;
   integrations: IntegrationConfigDto[];
   behavior: {
@@ -568,12 +658,21 @@ export interface QuickReplyDto {
   title: string;
   body: string;
   category: string | null;
+  /** What follows "/" in the composer. */
+  shortcut: string | null;
+  /** The team's: visible to everyone (the others are personal). */
+  shared: boolean;
   createdAt: string;
   updatedAt: string;
 }
+export type QuickReplyInput = { title: string; body: string; category?: string | null; shortcut?: string | null };
+/** How to address a contact in a quick reply, and how long it took (to measure the AI's cost in time). */
+export type ContactNameInsightDto = { firstName: string | null; fullName: string | null; company: string | null; salutation: string | null;
+  source: "manual" | "ai" | "rule" | "none"; ms?: number };
 
-async function getRequiredToken(getToken: () => Promise<string | null>) {
-  const token = await getToken();
+async function getRequiredToken(getToken: () => Promise<string | null>, signal?: AbortSignal) {
+  const token = signal ? await abortable(getToken(), signal) : await getToken();
+  signal?.throwIfAborted();
 
   if (!token && localAuthBypass) {
     return "local-dev-bypass";
@@ -718,6 +817,8 @@ function parseQuickReply(payload: unknown): QuickReplyDto {
     title: String(record.title ?? ""),
     body: String(record.body ?? ""),
     category: typeof record.category === "string" ? record.category : null,
+    shortcut: typeof record.shortcut === "string" ? record.shortcut : null,
+    shared: record.shared === true,
     createdAt: String(record.createdAt ?? ""),
     updatedAt: String(record.updatedAt ?? "")
   };
@@ -729,14 +830,17 @@ function parseConversationActionResult(data: unknown): ConversationActionResultD
     context?: unknown;
     aiSuggestion?: unknown;
     crmAction?: unknown;
+    improvementAnalysis?: unknown;
   };
   const crmAction = payload.crmAction as ConversationActionResultDto["crmAction"] | undefined;
+  const improvementAnalysis = payload.improvementAnalysis as ConversationActionResultDto["improvementAnalysis"];
 
   return {
     conversation: conversationSchema.parse(payload.conversation),
     context: parseContactContext(payload.context),
     ...(typeof payload.aiSuggestion === "string" ? { aiSuggestion: payload.aiSuggestion } : {}),
-    ...(crmAction ? { crmAction } : {})
+    ...(crmAction ? { crmAction } : {}),
+    ...(improvementAnalysis ? { improvementAnalysis } : {})
   };
 }
 
@@ -806,11 +910,21 @@ function parseCampaignAudience(data: unknown): CampaignAudienceDto {
     boardId?: unknown;
     stageId?: unknown;
     rows?: unknown;
+    origin?: unknown;
+    listId?: unknown;
+    selectedCount?: unknown;
+    exclusions?: unknown;
   };
 
   if (payload.type === "imported") {
     return {
       type: "imported",
+      ...(payload.origin === "leads" ? { origin: "leads" as const } : {}),
+      ...(typeof payload.listId === "string" ? { listId: payload.listId } : {}),
+      ...(typeof payload.selectedCount === "number" ? { selectedCount: payload.selectedCount } : {}),
+      ...(payload.exclusions && typeof payload.exclusions === "object" ? {
+        exclusions: payload.exclusions as CampaignAudienceDto["exclusions"]
+      } : {}),
       rows: Array.isArray(payload.rows)
         ? payload.rows.map((row) => {
             const importedRow = row as { name?: unknown; phone?: unknown; fields?: unknown };
@@ -832,6 +946,8 @@ function parseCampaignAudience(data: unknown): CampaignAudienceDto {
     };
   }
 
+  if (payload.type === 'list') return { type: 'list', listId: typeof payload.listId === 'string' ? payload.listId : '' };
+
   return {
     type: "board",
     boardId: typeof payload.boardId === "string" ? payload.boardId : "",
@@ -849,7 +965,9 @@ function parseCampaignCadence(data: unknown): CampaignCadenceDto {
     pauseMinSeconds: Number(payload?.pauseMinSeconds ?? 300),
     pauseMaxSeconds: Number(payload?.pauseMaxSeconds ?? 900),
     ...(typeof payload?.windowStart === "string" ? { windowStart: payload.windowStart } : {}),
-    ...(typeof payload?.windowEnd === "string" ? { windowEnd: payload.windowEnd } : {})
+    ...(typeof payload?.windowEnd === "string" ? { windowEnd: payload.windowEnd } : {}),
+    ...(typeof payload?.dailyMax === "number" ? { dailyMin: Number(payload.dailyMin ?? payload.dailyMax), dailyMax: payload.dailyMax } : {}),
+    ...(Array.isArray(payload?.weekdays) && payload.weekdays.length ? { weekdays: payload.weekdays.map(Number) } : {})
   };
 }
 
@@ -867,6 +985,10 @@ function parseCampaign(data: unknown): CampaignDto {
     fallbackName: typeof payload.fallbackName === "string" ? payload.fallbackName : "cliente",
     cadence: parseCampaignCadence(payload.cadence),
     scheduledAt: payload.scheduledAt,
+    timeZone: payload.timeZone ?? "America/Sao_Paulo",
+    hideFromInboxUntilReply: Boolean(payload.hideFromInboxUntilReply),
+    prospectingAgentId: payload.prospectingAgentId ?? null,
+    prospectingContext: payload.prospectingContext ?? null,
     mode: payload.mode === "real" ? "real" : "simulated",
     createdAt: payload.createdAt,
     updatedAt: payload.updatedAt
@@ -896,6 +1018,7 @@ function parseCampaignRecipient(data: unknown): CampaignRecipientDto {
     audienceKey: payload.audienceKey ?? null,
     providerMessageId: payload.providerMessageId ?? null,
     status: payload.status,
+    skipReason: payload.skipReason ?? (payload.status.startsWith("skipped") ? payload.errorMessage ?? null : null),
     result: payload.result ?? {},
     contactSnapshot: payload.contactSnapshot ?? {},
     scheduledAt: payload.scheduledAt ?? null,
@@ -1129,7 +1252,8 @@ function parseAssistantAction(data: unknown): AssistantActionDto {
 }
 
 function parseAgent(data: unknown): AiAgentDto {
-  return aiAgentSchema.parse(data);
+  const agent = aiAgentSchema.parse(data);
+  return { ...agent, type: agent.type ?? "attendance" };
 }
 
 export function parseTag(data: unknown): TagDto {
@@ -1205,6 +1329,7 @@ function parseSettings(data: unknown): SettingsDto {
   const agentReplyWaitSeconds = payload.behavior?.agentReplyWaitSeconds;
 
   return {
+    modules: { campaignProspecting: payload.modules?.campaignProspecting === true },
     workspace: {
       workspaceId: String(workspace.workspaceId ?? ""),
       name: typeof workspace.name === "string" ? workspace.name : null,
@@ -1301,47 +1426,128 @@ export function apiGetPdfPreview(conversationId: string, messageId: string, page
 }
 
 export async function apiGetInboxMedia(conversationId: string, messageId: string, getToken: () => Promise<string | null>, signal?: AbortSignal) {
-  const token = await getRequiredToken(getToken);
-  const response = await fetch(`${apiUrl}/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}/media`, {
-    headers: { Authorization: `Bearer ${token}` }, signal
+  return withReadDeadline(signal, async (deadline) => {
+    const token = await getRequiredToken(getToken, deadline);
+    const response = await fetch(`${apiUrl}/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}/media`, {
+      headers: { Authorization: `Bearer ${token}` }, signal: deadline
   });
+  await assertApiReadAccess(response, token, deadline);
   if (!response.ok) throw new Error('Não foi possível carregar o anexo. Tente novamente.');
   return response.blob();
+
+  });
+}
+
+/** The video's first frame (null when the server could not draw one: the bubble keeps its plain play tile). */
+export async function apiGetVideoPoster(conversationId: string, messageId: string, getToken: () => Promise<string | null>, signal?: AbortSignal) {
+  return withReadDeadline(signal, async (deadline) => {
+    const token = await getRequiredToken(getToken, deadline);
+    const response = await fetch(`${apiUrl}/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}/poster`, {
+      headers: { Authorization: `Bearer ${token}` }, signal: deadline
+    });
+    if (response.status === 204) return null;
+    await assertApiReadAccess(response, token, deadline);
+    if (!response.ok) return null;
+    return response.blob();
+  });
+}
+
+export function apiGetAudioTranscription(conversationId: string, messageId: string, getToken: () => Promise<string | null>, signal?: AbortSignal) {
+  return fetchJson(getToken, `/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}/transcription`,
+    { method: 'POST', signal }, data => data as { text: string }, 'Não foi possível transcrever este áudio.');
 }
 
 export async function apiGetContactPhoto(conversationId: string, getToken: () => Promise<string | null>, signal?: AbortSignal) {
-  const token = await getRequiredToken(getToken);
-  const response = await fetch(`${apiUrl}/conversations/${encodeURIComponent(conversationId)}/contact-photo`, {
-    headers: { Authorization: `Bearer ${token}` }, signal
+  return withReadDeadline(signal, async (deadline) => {
+    const token = await getRequiredToken(getToken, deadline);
+    const response = await fetch(`${apiUrl}/conversations/${encodeURIComponent(conversationId)}/contact-photo`, {
+      headers: { Authorization: `Bearer ${token}` }, signal: deadline
   });
-  if (!response.ok || response.status === 204) return null;
+  if (response.status === 204) return null;
+  await assertApiReadAccess(response, token, deadline);
+  if (!response.ok) throw new Error('Não foi possível carregar a foto do contato.');
   return response.blob();
+
+  });
 }
 
-async function fetchJson<T>(
+export async function apiGetChannelPhoto(channelId: string, getToken: () => Promise<string | null>, signal?: AbortSignal) {
+  return withReadDeadline(signal, async (deadline) => {
+    const token = await getRequiredToken(getToken, deadline);
+    const response = await fetch(`${apiUrl}/channels/${encodeURIComponent(channelId)}/photo`, {
+      headers: { Authorization: `Bearer ${token}` }, signal: deadline
+    });
+    if (response.status === 204) return null;
+    await assertApiReadAccess(response, token, deadline);
+    if (!response.ok) throw new Error('Não foi possível carregar a foto do canal.');
+    return response.blob();
+  });
+}
+
+export async function apiGetCardPhoto(conversationId: string, phone: string, getToken: () => Promise<string | null>, signal?: AbortSignal) {
+  return withReadDeadline(signal, async (deadline) => {
+    const token = await getRequiredToken(getToken, deadline);
+    const response = await fetch(`${apiUrl}/conversations/${encodeURIComponent(conversationId)}/card-photo/${encodeURIComponent(phone)}`, {
+      headers: { Authorization: `Bearer ${token}` }, signal: deadline
+    });
+    if (response.status === 204) return null;
+    await assertApiReadAccess(response, token, deadline);
+    if (!response.ok) return null;
+    return response.blob();
+  });
+}
+
+export async function apiGetSavedContactPhoto(contactId: string, getToken: () => Promise<string | null>, signal?: AbortSignal) {
+  return withReadDeadline(signal, async (deadline) => {
+    const token = await getRequiredToken(getToken, deadline);
+    const response = await fetch(`${apiUrl}/contacts/${encodeURIComponent(contactId)}/photo`, {
+      headers: { Authorization: `Bearer ${token}` }, signal: deadline
+  });
+  if (response.status === 204) return null;
+  await assertApiReadAccess(response, token, deadline);
+  if (!response.ok) throw new Error('Não foi possível carregar a foto do contato.');
+  return response.blob();
+
+  });
+}
+
+async function assertApiReadAccess(response: Response, token: string, signal?: AbortSignal, identityRead = false) {
+  await assertReadAccess(response, { signal, identityRead, validateAccess: () => fetch(`${apiUrl}/me`, {
+    signal, headers: { Authorization: `Bearer ${token}` }
+  }) });
+}
+
+export async function fetchJson<T>(
   getToken: () => Promise<string | null>,
   path: string,
   options: RequestInit,
   parse: (data: unknown) => T,
   errorLabel: string
 ): Promise<T> {
-  const token = await getRequiredToken(getToken);
+  const execute = async (signal?: AbortSignal) => {
+    const token = await getRequiredToken(getToken, signal);
 
-  const response = await fetch(`${apiUrl}${path}`, {
-    ...options,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      ...(options.body ? { "Content-Type": "application/json" } : {}),
-      ...options.headers
-    }
+    const response = await fetch(`${apiUrl}${path}`, {
+      ...options,
+      signal,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        ...(options.body ? { "Content-Type": "application/json" } : {}),
+        ...options.headers
+      }
   });
 
+  if (!options.method || options.method === 'GET') await assertApiReadAccess(response, token, signal);
   if (!response.ok) {
     const payload = await readApiErrorPayload(response, errorLabel);
-    throw new ApiRequestError(payload.message, payload.debug);
+    throw new ApiRequestError(payload.message, payload.debug, payload.code);
   }
 
   return parse(await response.json());
+  };
+  return !options.method || options.method === 'GET'
+    ? withReadDeadline(options.signal ?? undefined, execute)
+    : execute(options.signal ?? undefined);
 }
 
 export async function readApiErrorMessage(response: Response, fallbackLabel: string) {
@@ -1351,7 +1557,8 @@ export async function readApiErrorMessage(response: Response, fallbackLabel: str
 export class ApiRequestError extends Error {
   constructor(
     message: string,
-    public readonly debug?: Record<string, unknown>
+    public readonly debug?: Record<string, unknown>,
+    public readonly code?: string
   ) {
     super(message);
     this.name = "ApiRequestError";
@@ -1373,11 +1580,13 @@ async function readApiErrorPayload(response: Response, fallbackLabel: string) {
       const record = data as Record<string, unknown>;
       const error = record.error;
       const debug = isRecord(record.debug) ? record.debug : undefined;
+      const code = typeof record.code === "string" ? record.code : undefined;
 
       if (typeof error === "string" && error.trim().length > 0) {
         return {
           message: error,
-          debug
+          debug,
+          code
         };
       }
     }
@@ -1387,7 +1596,8 @@ async function readApiErrorPayload(response: Response, fallbackLabel: string) {
 
   return {
     message: `${fallbackLabel}: ${response.status}`,
-    debug: undefined
+    debug: undefined,
+    code: undefined
   };
 }
 
@@ -1395,34 +1605,126 @@ export async function apiGetConversations(
   getToken: () => Promise<string | null>,
   filters: Partial<{
     status: "active" | "closed" | "all";
+    view: import("@prymeira-talk/shared").InboxView;
     assignee: "me";
-  }> = {}
+    channelId: string;
+    search: string;
+    cursor: string;
+  }> = {},
+  signal?: AbortSignal
 ): Promise<ConversationDto[]> {
-  const token = await getRequiredToken(getToken);
-  const url = new URL(`${apiUrl}/conversations`);
+  return withReadDeadline(signal, async (deadline) => {
+    const token = await getRequiredToken(getToken, deadline);
+    const url = new URL(`${apiUrl}/conversations`);
 
-  if (filters.status) {
-    url.searchParams.set("status", filters.status);
-  }
-  if (filters.assignee) {
-    url.searchParams.set("assignee", filters.assignee);
-  }
-
-  const response = await fetch(url, {
-    headers: {
-      Authorization: `Bearer ${token}`
+    if (filters.status) {
+      url.searchParams.set("status", filters.status);
     }
+    if (filters.view) {
+      url.searchParams.set("view", filters.view);
+    }
+    if (filters.assignee) {
+      url.searchParams.set("assignee", filters.assignee);
+    }
+    if (filters.channelId) {
+      url.searchParams.set("channelId", filters.channelId);
+    }
+    if (filters.search) {
+      url.searchParams.set("search", filters.search);
+    }
+    if (filters.cursor) {
+      url.searchParams.set("cursor", filters.cursor);
+    }
+
+    const response = await fetch(url, {
+      signal: deadline,
+      headers: {
+        Authorization: `Bearer ${token}`
+      }
   });
 
+  await assertApiReadAccess(response, token, deadline);
   if (!response.ok) {
     throw new Error(`Failed to load conversations: ${response.status}`);
   }
 
   const data = await response.json();
   return conversationSchema.array().parse(data);
+
+  });
 }
 
-export type FollowupListStatus = "review" | "scheduled" | "sent" | "cancelled";
+export async function apiGetAttentionCount(
+  getToken: () => Promise<string | null>, channelId?: string,
+  signal?: AbortSignal
+): Promise<number> {
+  return withReadDeadline(signal, async (deadline) => {
+    const token = await getRequiredToken(getToken, deadline);
+    const url = new URL(`${apiUrl}/conversations/attention-count`);
+    if (channelId) url.searchParams.set("channelId", channelId);
+    const response = await fetch(url, { signal: deadline, headers: { Authorization: `Bearer ${token}` } });
+    await assertApiReadAccess(response, token, deadline);
+    if (!response.ok) throw new Error(await readApiErrorMessage(response, "Failed to load attention count"));
+    const data: unknown = await response.json();
+    if (!data || typeof data !== "object" || !("count" in data) ||
+        typeof data.count !== "number" || !Number.isInteger(data.count) || data.count < 0) {
+      throw new Error("Invalid attention count response");
+    }
+    return data.count;
+
+  });
+}
+
+async function apiPostInboxTriageAction(
+  getToken: () => Promise<string | null>, conversationId: string,
+  action: "manual-mark" | "reply-dismiss" | "reply-undo",
+  body: { marked: boolean } | { anchorMessageId: string }
+): Promise<ConversationDto> {
+  const token = await getRequiredToken(getToken);
+  const response = await fetch(`${apiUrl}/conversations/${conversationId}/${action}`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify(body)
+  });
+  if (!response.ok) throw new Error(await readApiErrorMessage(response, "Failed to update inbox triage"));
+  return conversationSchema.parse(await response.json());
+}
+
+export function apiSetManualMark(getToken: () => Promise<string | null>, conversationId: string, marked: boolean) {
+  return apiPostInboxTriageAction(getToken, conversationId, "manual-mark", { marked });
+}
+
+export function apiDismissReply(getToken: () => Promise<string | null>, conversationId: string, anchorMessageId: string) {
+  return apiPostInboxTriageAction(getToken, conversationId, "reply-dismiss", { anchorMessageId });
+}
+
+export function apiUndoReply(getToken: () => Promise<string | null>, conversationId: string, anchorMessageId: string) {
+  return apiPostInboxTriageAction(getToken, conversationId, "reply-undo", { anchorMessageId });
+}
+
+/** "reminders" lists the seller reminders (status review, kind seller_reminder); "review" no longer includes them. */
+export type FollowupListStatus = "review" | "reminders" | "scheduled" | "sent" | "cancelled";
+
+export async function apiGetChannelFollowupConfig(
+  getToken: () => Promise<string | null>, channelId: string
+): Promise<{ config: ChannelFollowupConfig; customized: boolean }> {
+  return fetchJson(getToken, `/followups/config/${encodeURIComponent(channelId)}`, {}, (data) => {
+    const response = data as { config: unknown; customized: unknown };
+    return { config: channelFollowupConfigSchema.parse(response.config), customized: response.customized === true };
+  }, "Não foi possível carregar a configuração de follow-up.");
+}
+
+export async function apiSetChannelFollowupConfig(
+  getToken: () => Promise<string | null>, channelId: string, config: ChannelFollowupConfig
+): Promise<{ config: ChannelFollowupConfig; customized: boolean }> {
+  return fetchJson(getToken, `/followups/config/${encodeURIComponent(channelId)}`, {
+    method: "PUT",
+    body: JSON.stringify(channelFollowupConfigSchema.parse(config))
+  }, (data) => {
+    const response = data as { config: unknown; customized: unknown };
+    return { config: channelFollowupConfigSchema.parse(response.config), customized: response.customized === true };
+  }, "Não foi possível salvar a configuração de follow-up.");
+}
 
 export type FollowupCancelReason =
   | "manual_cancelled"
@@ -1498,10 +1800,62 @@ export function apiMarkFollowupNoFollowup(
   );
 }
 
+/** Closes a seller reminder: the seller already did what was pending. */
+export function apiMarkFollowupDone(
+  getToken: () => Promise<string | null>,
+  id: string,
+  expectedUpdatedAt: string
+) {
+  return mutateFollowup(
+    getToken,
+    id,
+    "done",
+    { expectedUpdatedAt },
+    "Não foi possível concluir o lembrete"
+  );
+}
+
+/** The conversation's active follow-up (evaluating, scheduled, processing or review), or null. */
+export function apiGetConversationFollowup(
+  getToken: () => Promise<string | null>,
+  conversationId: string
+): Promise<ConversationFollowupDto | null> {
+  return fetchJson(getToken, `/conversations/${encodeURIComponent(conversationId)}/followup`, {}, (data) => {
+    const response = data as { followup?: unknown };
+    return response.followup ? conversationFollowupSchema.parse(response.followup) : null;
+  }, "Não foi possível carregar o follow-up da conversa.");
+}
+
+export type ContactFollowupAudience = ContactDto["followupAudience"];
+
+function parseContactFollowupAudience(data: unknown): ContactFollowupAudience {
+  const response = data as { followupAudience?: unknown };
+  return contactSchema.shape.followupAudience.parse(response.followupAudience ?? null);
+}
+
+export function apiGetContactFollowupAudience(
+  getToken: () => Promise<string | null>,
+  contactId: string
+): Promise<ContactFollowupAudience> {
+  return fetchJson(getToken, `/contacts/${encodeURIComponent(contactId)}/followup-audience`, {},
+    parseContactFollowupAudience, "Não foi possível carregar o contato.");
+}
+
+export function apiSetContactFollowupAudience(
+  getToken: () => Promise<string | null>,
+  contactId: string,
+  kind: "customer" | "internal_personal"
+): Promise<ContactFollowupAudience> {
+  return fetchJson(getToken, `/contacts/${encodeURIComponent(contactId)}/followup-audience`, {
+    method: "PUT",
+    body: JSON.stringify({ kind })
+  }, parseContactFollowupAudience, "Não foi possível atualizar o contato.");
+}
+
 async function mutateFollowup(
   getToken: () => Promise<string | null>,
   id: string,
-  action: "send" | "postpone" | "cancel" | "no-followup",
+  action: "send" | "postpone" | "cancel" | "no-followup" | "done",
   body: Record<string, unknown>,
   errorLabel: string
 ): Promise<ConversationFollowupDto> {
@@ -1565,6 +1919,54 @@ export async function apiGetContacts(
 
   const data = await response.json();
   return contactSchema.array().parse(data);
+}
+
+export async function apiGetContactsPage(
+  getToken: () => Promise<string | null>,
+  options: { search?: string; cursor?: string; limit?: number } = {}
+): Promise<{ items: ContactDto[]; nextCursor: string | null; total: number }> {
+  const token = await getRequiredToken(getToken);
+  const url = new URL(`${apiUrl}/contacts/page`);
+  if (options.search?.trim()) url.searchParams.set('search', options.search.trim());
+  if (options.cursor) url.searchParams.set('cursor', options.cursor);
+  if (options.limit) url.searchParams.set('limit', String(options.limit));
+  const response = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  if (!response.ok) throw new Error(`Failed to load contacts page: ${response.status}`);
+  const data = await response.json() as { items: unknown[]; nextCursor: unknown; total: unknown };
+  return {
+    items: contactSchema.array().parse(data.items),
+    nextCursor: typeof data.nextCursor === 'string' ? data.nextCursor : null,
+    total: typeof data.total === 'number' ? data.total : 0
+  };
+}
+
+export function apiStartInboxQuickSend(getToken: () => Promise<string | null>, body: {
+  confirmation: true;
+  idempotencyKey: string; channelId: string; body: string;
+  recipients: Array<{ contactId?: string; phone: string; name?: string }>;
+}): Promise<{ campaignId: string; recipientsQueued: number }> {
+  return fetchJson(getToken, '/inbox/quick-sends', { method: 'POST', body: JSON.stringify(body) },
+    (data) => data as { campaignId: string; recipientsQueued: number }, 'Não foi possível iniciar o envio.');
+}
+
+export function apiGetInboxQuickSend(getToken: () => Promise<string | null>, campaignId: string): Promise<CampaignProgressDto> {
+  return fetchJson(getToken, `/inbox/quick-sends/${encodeURIComponent(campaignId)}`, { method: 'GET' },
+    (data) => data as CampaignProgressDto, 'Não foi possível acompanhar o envio.');
+}
+
+export function apiGetLatestInboxQuickSend(getToken: () => Promise<string | null>): Promise<{ campaignId: string | null }> {
+  return fetchJson(getToken, '/inbox/quick-sends/latest', { method: 'GET' },
+    (data) => data as { campaignId: string | null }, 'Não foi possível carregar a fila de envios.');
+}
+
+export function apiCancelInboxQuickSend(getToken: () => Promise<string | null>, campaignId: string): Promise<CampaignProgressDto> {
+  return fetchJson(getToken, `/inbox/quick-sends/${encodeURIComponent(campaignId)}/cancel`, { method: 'POST' },
+    (data) => data as CampaignProgressDto, 'Não foi possível cancelar as mensagens pendentes.');
+}
+
+export function apiResumeInboxQuickSend(getToken: () => Promise<string | null>, campaignId: string): Promise<CampaignProgressDto> {
+  return fetchJson(getToken, `/inbox/quick-sends/${encodeURIComponent(campaignId)}/resume`, { method: 'POST' },
+    (data) => data as CampaignProgressDto, 'Não foi possível retomar a fila.');
 }
 
 export async function apiCreateContact(
@@ -1900,22 +2302,56 @@ export async function apiMoveBoardMembership(
 }
 
 export async function apiGetChannels(
-  getToken: () => Promise<string | null>
+  getToken: () => Promise<string | null>,
+  signal?: AbortSignal,
+  options: { includeArchived?: boolean } = {}
 ): Promise<ChannelDto[]> {
-  const token = await getRequiredToken(getToken);
+  return withReadDeadline(signal, async (deadline) => {
+    const token = await getRequiredToken(getToken, deadline);
 
-  const response = await fetch(`${apiUrl}/channels`, {
-    headers: {
-      Authorization: `Bearer ${token}`
-    }
+    const response = await fetch(`${apiUrl}/channels${options.includeArchived ? "?includeArchived=true" : ""}`, {
+      signal: deadline,
+      headers: {
+        Authorization: `Bearer ${token}`
+      }
   });
 
+  await assertApiReadAccess(response, token, deadline);
   if (!response.ok) {
     throw new Error(`Failed to load channels: ${response.status}`);
   }
 
   const data = await response.json();
   return channelSchema.array().parse(data);
+
+  });
+}
+
+export async function apiGetChannelHealth(
+  getToken: () => Promise<string | null>,
+  signal?: AbortSignal
+): Promise<ChannelHealthSnapshot> {
+  return withReadDeadline(signal, async (deadline) => {
+    const token = await getRequiredToken(getToken, deadline);
+
+    const response = await fetch(`${apiUrl}/channels/health`, {
+      signal: deadline,
+      headers: {
+        Authorization: `Bearer ${token}`
+      }
+    });
+
+    await assertApiReadAccess(response, token, deadline);
+    if (!response.ok) {
+      throw new Error(`Failed to load channel health: ${response.status}`);
+    }
+
+    const data = await response.json() as { health?: unknown; watchdog?: unknown };
+    return {
+      health: channelHealthSchema.array().parse(data.health ?? []),
+      watchdog: data.watchdog === undefined ? defaultWatchdogStatus : channelWatchdogStatusSchema.parse(data.watchdog)
+    };
+  });
 }
 
 export async function apiCreateChannel(
@@ -1951,17 +2387,62 @@ export interface DeleteChannelResultDto {
   channelId: string;
 }
 
-export async function apiDeleteChannel(
+export type ChannelDeletionImpact = {
+  channelId: string;
+  confirmationName: string;
+  conversations: number;
+  messages: number;
+};
+
+export async function apiGetChannelDeletionImpact(
   getToken: () => Promise<string | null>,
   channelId: string
+): Promise<ChannelDeletionImpact> {
+  const token = await getRequiredToken(getToken);
+  const response = await fetch(`${apiUrl}/channels/${channelId}/deletion-impact`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  if (!response.ok) {
+    throw new Error(await readApiErrorMessage(response, "Failed to load channel deletion impact"));
+  }
+  const data = await response.json() as Partial<ChannelDeletionImpact>;
+  if (typeof data.confirmationName !== "string" || typeof data.conversations !== "number" || typeof data.messages !== "number") {
+    throw new Error("Invalid channel deletion impact response.");
+  }
+  return { channelId, confirmationName: data.confirmationName, conversations: data.conversations, messages: data.messages };
+}
+
+export async function apiSetChannelArchived(
+  getToken: () => Promise<string | null>,
+  channelId: string,
+  archived: boolean
+): Promise<ChannelDto> {
+  const token = await getRequiredToken(getToken);
+  const response = await fetch(`${apiUrl}/channels/${channelId}/${archived ? "archive" : "unarchive"}`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  if (!response.ok) {
+    throw new Error(await readApiErrorMessage(response, archived ? "Failed to archive channel" : "Failed to restore channel"));
+  }
+  const data = await response.json() as { channel?: unknown };
+  return channelSchema.parse(data.channel);
+}
+
+export async function apiDeleteChannel(
+  getToken: () => Promise<string | null>,
+  channelId: string,
+  confirmationName: string
 ): Promise<DeleteChannelResultDto> {
   const token = await getRequiredToken(getToken);
 
   const response = await fetch(`${apiUrl}/channels/${channelId}`, {
     method: "DELETE",
     headers: {
-      Authorization: `Bearer ${token}`
-    }
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ confirmationName })
   });
 
   if (!response.ok) {
@@ -2025,6 +2506,59 @@ export async function apiReconnectChannel(
   return channelOperationResultSchema.parse(data);
 }
 
+async function connectionRequest(
+  getToken: () => Promise<string | null>,
+  channelId: string,
+  suffix: string,
+  method: 'GET' | 'POST' | 'PATCH',
+  body?: { enabled: boolean }
+) {
+  const token = await getRequiredToken(getToken);
+  const response = await fetch(`${apiUrl}/channels/${encodeURIComponent(channelId)}/${suffix}`, {
+    method,
+    headers: { Authorization: `Bearer ${token}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },
+    ...(body ? { body: JSON.stringify(body) } : {})
+  });
+  if (!response.ok) throw new Error(await readApiErrorMessage(response, 'Não foi possível atualizar a conexão'));
+  return response.json();
+}
+
+export interface OutboundReviewItem { id: string; channelId: string; kind: string; destination: string; preview: string | null; errorCode: string | null; createdAt: string }
+
+/** Sends whose outcome was uncertain. Only owners and managers may see them: a 403 means "nothing to show". */
+export async function apiListOutboundReview(getToken: () => Promise<string | null>): Promise<OutboundReviewItem[]> {
+  const token = await getRequiredToken(getToken);
+  const response = await fetch(`${apiUrl}/channels/outbound-review`, { headers: { Authorization: `Bearer ${token}` } });
+  if (response.status === 403) return [];
+  if (!response.ok) throw new Error(await readApiErrorMessage(response, 'Não foi possível carregar os envios em revisão'));
+  const data = await response.json() as { items?: OutboundReviewItem[] };
+  return Array.isArray(data.items) ? data.items : [];
+}
+
+export async function apiResolveOutboundReview(getToken: () => Promise<string | null>, id: string, delivered: boolean): Promise<void> {
+  const token = await getRequiredToken(getToken);
+  const response = await fetch(`${apiUrl}/channels/outbound-review/${encodeURIComponent(id)}/resolve`, {
+    method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ delivered })
+  });
+  if (!response.ok) throw new Error(await readApiErrorMessage(response, 'Não foi possível registrar a revisão'));
+}
+
+export async function apiSetChannelRedundancy(getToken: () => Promise<string | null>, channelId: string, enabled: boolean): Promise<ChannelOperationResultDto> {
+  return channelOperationResultSchema.parse(await connectionRequest(getToken, channelId, 'redundancy', 'PATCH', { enabled }));
+}
+
+export async function apiStartConnectionQr(getToken: () => Promise<string | null>, channelId: string, connectionId: string): Promise<ChannelQrResultDto> {
+  return channelQrResultSchema.parse(await connectionRequest(getToken, channelId, `connections/${encodeURIComponent(connectionId)}/qr`, 'POST'));
+}
+
+export async function apiGetConnectionState(getToken: () => Promise<string | null>, channelId: string, connectionId: string): Promise<ChannelOperationResultDto> {
+  return channelOperationResultSchema.parse(await connectionRequest(getToken, channelId, `connections/${encodeURIComponent(connectionId)}/state`, 'GET'));
+}
+
+export async function apiDisconnectConnection(getToken: () => Promise<string | null>, channelId: string, connectionId: string): Promise<ChannelOperationResultDto> {
+  return channelOperationResultSchema.parse(await connectionRequest(getToken, channelId, `connections/${encodeURIComponent(connectionId)}/disconnect`, 'POST'));
+}
+
 export async function apiDisconnectChannel(
   getToken: () => Promise<string | null>,
   channelId: string
@@ -2071,45 +2605,108 @@ export async function apiCreateTestInbound(
 
 export async function apiGetConversationMessages(
   conversationId: string,
-  getToken: () => Promise<string | null>
+  getToken: () => Promise<string | null>,
+  signal?: AbortSignal
 ): Promise<MessageDto[]> {
-  const token = await getRequiredToken(getToken);
+  return withReadDeadline(signal, async (deadline) => {
+    const token = await getRequiredToken(getToken, deadline);
 
-  const response = await fetch(`${apiUrl}/conversations/${conversationId}/messages`, {
-    headers: {
-      Authorization: `Bearer ${token}`
-    }
+    const response = await fetch(`${apiUrl}/conversations/${conversationId}/messages?compactMedia=1`, {
+      signal: deadline,
+      headers: {
+        Authorization: `Bearer ${token}`
+      }
   });
 
+  await assertApiReadAccess(response, token, deadline);
   if (!response.ok) {
     throw new Error(`Failed to load messages: ${response.status}`);
   }
 
   const data = await response.json();
   return messageSchema.array().parse(data);
+
+  });
+}
+
+export async function apiRecognizeContactMessage(
+  conversationId: string,
+  messageId: string,
+  getToken: () => Promise<string | null>
+): Promise<MessageDto | { removedMessageId: string }> {
+  return fetchJson(getToken, `/conversations/${conversationId}/messages/${messageId}/recognize-contact`,
+    { method: 'POST' }, (data) => data && typeof data === 'object' &&
+      'removedMessageId' in data && typeof data.removedMessageId === 'string'
+      ? { removedMessageId: data.removedMessageId } : messageSchema.parse(data),
+    'Não foi possível recuperar a mensagem.');
+}
+
+export async function apiDeleteMessageForEveryone(
+  conversationId: string,
+  messageId: string,
+  getToken: () => Promise<string | null>
+): Promise<MessageDto> {
+  return fetchJson(getToken, `/conversations/${conversationId}/messages/${messageId}/delete-for-everyone`,
+    { method: 'POST' }, (data) => messageSchema.parse(data), 'Não foi possível apagar a mensagem para todos.');
+}
+
+export async function apiEditMessage(
+  conversationId: string,
+  messageId: string,
+  body: string,
+  getToken: () => Promise<string | null>
+): Promise<MessageDto> {
+  return fetchJson(getToken, `/conversations/${conversationId}/messages/${messageId}/edit`,
+    { method: 'POST', body: JSON.stringify({ body }) }, (data) => messageSchema.parse(data), 'Não foi possível editar a mensagem.');
+}
+
+export type ForwardResult = { results: Array<{ conversationId: string; ok: boolean; sent: number; error?: string }>; total: number };
+export async function apiForwardMessages(
+  conversationId: string,
+  messageIds: string[],
+  targetConversationIds: string[],
+  getToken: () => Promise<string | null>
+): Promise<ForwardResult> {
+  return fetchJson(getToken, `/conversations/${conversationId}/forward`,
+    { method: 'POST', body: JSON.stringify({ messageIds, targetConversationIds }) }, (data) => data as ForwardResult, 'Não foi possível encaminhar.');
+}
+
+/** The quick reply rewritten (once, by the AI, then saved) for a contact without these fields. body null: no rewrite. */
+export async function apiQuickReplyVariant(getToken: () => Promise<string | null>, quickReplyId: string, missing: string[]): Promise<{ body: string | null; source: string }> {
+  return fetchJson(getToken, `/quick-replies/${quickReplyId}/variant`, { method: 'POST', body: JSON.stringify({ missing }) },
+    (data) => data as { body: string | null; source: string }, 'Não foi possível ajustar a mensagem.');
 }
 
 export async function apiGetCurrentTalkUser(
-  getToken: () => Promise<string | null>
+  getToken: () => Promise<string | null>,
+  signal?: AbortSignal
 ): Promise<CurrentTalkUserDto> {
-  const token = await getRequiredToken(getToken);
-  const response = await fetch(`${apiUrl}/me`, {
-    headers: { Authorization: `Bearer ${token}` }
+  return withReadDeadline(signal, async (deadline) => {
+    const token = await getRequiredToken(getToken, deadline);
+    const response = await fetch(`${apiUrl}/me`, {
+      signal: deadline,
+      headers: { Authorization: `Bearer ${token}` }
   });
 
+  await assertApiReadAccess(response, token, deadline, true);
   if (!response.ok) {
     throw new Error(`Failed to load current user: ${response.status}`);
   }
 
   const payload = asRecord(await response.json());
+  const addons = asRecord(payload.addons);
   return {
     workspaceId: String(payload.workspaceId ?? ""),
-    role: payload.role === "owner" || payload.role === "manager" ? payload.role : "agent"
+    role: payload.role === "owner" || payload.role === "manager" ? payload.role : "agent",
+    addons: { orcamentos: addons.orcamentos === true }
   };
+
+  });
 }
 
 export interface CreateConversationMessageInput {
   body?: string;
+  contactCard?: { sourceConversationId: string };
   attachment?: {
     fileName: string;
     mediaUrl: string;
@@ -2134,7 +2731,8 @@ export async function apiCreateConversationMessage(
   });
 
   if (!response.ok) {
-    throw new Error(await readApiErrorMessage(response, "Failed to send message"));
+    const error = await readApiErrorPayload(response, "Failed to send message");
+    throw new ApiRequestError(error.message, error.debug, error.code);
   }
 
   const data = await response.json();
@@ -2143,22 +2741,28 @@ export async function apiCreateConversationMessage(
 
 export async function apiGetConversationContext(
   conversationId: string,
-  getToken: () => Promise<string | null>
+  getToken: () => Promise<string | null>,
+  signal?: AbortSignal
 ): Promise<ContactContextDto> {
-  const token = await getRequiredToken(getToken);
+  return withReadDeadline(signal, async (deadline) => {
+    const token = await getRequiredToken(getToken, deadline);
 
-  const response = await fetch(`${apiUrl}/conversations/${conversationId}/context`, {
-    headers: {
-      Authorization: `Bearer ${token}`
-    }
+    const response = await fetch(`${apiUrl}/conversations/${conversationId}/context`, {
+      signal: deadline,
+      headers: {
+        Authorization: `Bearer ${token}`
+      }
   });
 
+  await assertApiReadAccess(response, token, deadline);
   if (!response.ok) {
     throw new Error(`Failed to load contact context: ${response.status}`);
   }
 
   const data = await response.json();
   return parseContactContext(data);
+
+  });
 }
 
 export async function apiRunConversationAction(
@@ -2202,21 +2806,28 @@ export async function apiResetConversation(
   return parseConversationActionResult(await response.json());
 }
 
-export async function apiGetQuickReplies(getToken: () => Promise<string | null>): Promise<QuickReplyDto[]> {
-  const token = await getRequiredToken(getToken);
-  const response = await fetch(`${apiUrl}/quick-replies`, {
-    headers: { Authorization: `Bearer ${token}` }
+export async function apiGetQuickReplies(getToken: () => Promise<string | null>,
+  signal?: AbortSignal
+): Promise<QuickReplyDto[]> {
+  return withReadDeadline(signal, async (deadline) => {
+    const token = await getRequiredToken(getToken, deadline);
+    const response = await fetch(`${apiUrl}/quick-replies`, {
+      signal: deadline,
+      headers: { Authorization: `Bearer ${token}` }
   });
+  await assertApiReadAccess(response, token, deadline);
   if (!response.ok) {
     throw new Error(`Failed to load quick replies: ${response.status}`);
   }
   const data = await response.json();
   return Array.isArray(data) ? data.map(parseQuickReply) : [];
+
+  });
 }
 
 export async function apiCreateQuickReply(
   getToken: () => Promise<string | null>,
-  body: { title: string; body: string; category?: string | null }
+  body: QuickReplyInput
 ): Promise<QuickReplyDto> {
   const token = await getRequiredToken(getToken);
   const response = await fetch(`${apiUrl}/quick-replies`, {
@@ -2233,7 +2844,7 @@ export async function apiCreateQuickReply(
 export async function apiUpdateQuickReply(
   getToken: () => Promise<string | null>,
   quickReplyId: string,
-  body: Partial<{ title: string; body: string; category: string | null }>
+  body: Partial<QuickReplyInput>
 ): Promise<QuickReplyDto> {
   const token = await getRequiredToken(getToken);
   const response = await fetch(`${apiUrl}/quick-replies/${quickReplyId}`, {
@@ -2259,6 +2870,28 @@ export async function apiDeleteQuickReply(
   if (!response.ok) {
     throw new Error(`Failed to delete quick reply: ${response.status}`);
   }
+}
+
+export async function apiImportQuickReplies(getToken: () => Promise<string | null>, replies: QuickReplyInput[]): Promise<{ created: number; skipped: number }> {
+  const token = await getRequiredToken(getToken);
+  const response = await fetch(`${apiUrl}/quick-replies/import`, { method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ version: 1, replies }) });
+  if (!response.ok) throw new Error(response.status === 400 ? "Este arquivo não é um pacote de mensagens do Talk." : "Não foi possível importar o pacote.");
+  return response.json() as Promise<{ created: number; skipped: number }>;
+}
+
+export async function apiGetContactNameInsight(getToken: () => Promise<string | null>, contactId: string): Promise<ContactNameInsightDto> {
+  const token = await getRequiredToken(getToken);
+  const response = await fetch(`${apiUrl}/contacts/${encodeURIComponent(contactId)}/name-insight`, { method: "POST", headers: { Authorization: `Bearer ${token}` } });
+  if (!response.ok) throw new Error("Não foi possível ler o nome do contato.");
+  return response.json() as Promise<ContactNameInsightDto>;
+}
+
+/** Typed by the seller ("como chamar o cliente"): a manual answer, reused by every quick reply from now on. */
+export async function apiSaveContactNameInsight(getToken: () => Promise<string | null>, contactId: string,
+  insight: { firstName: string | null; fullName?: string | null; company: string | null; salutation?: string | null }): Promise<ContactNameInsightDto> {
+  return fetchJson(getToken, `/contacts/${encodeURIComponent(contactId)}/name-insight`, { method: 'PUT', body: JSON.stringify(insight) },
+    (data) => data as ContactNameInsightDto, 'Não foi possível salvar o nome do contato.');
 }
 
 export async function apiUploadAutomationAsset(
@@ -2327,7 +2960,7 @@ export async function apiCreateAutomation(
   });
 
   if (!response.ok) {
-    throw new Error(`Failed to create automation: ${response.status}`);
+    throw new Error(await readApiErrorMessage(response, "Failed to create automation"));
   }
 
   const data = await response.json();
@@ -2357,7 +2990,7 @@ export async function apiUpdateAutomation(
   });
 
   if (!response.ok) {
-    throw new Error(`Failed to update automation: ${response.status}`);
+    throw new Error(await readApiErrorMessage(response, "Failed to update automation"));
   }
 
   const data = await response.json();
@@ -2412,6 +3045,40 @@ export async function apiTestAutomation(
   return parseAutomationRun(data);
 }
 
+export function automationWebhookUrl(path: string) {
+  return `${apiUrl.replace(/\/+$/, "")}${path}`;
+}
+
+async function requestAutomationWebhook(
+  getToken: () => Promise<string | null>,
+  automationId: string,
+  suffix: "" | "/regenerate",
+  fallbackLabel: string
+): Promise<AutomationWebhookDto> {
+  const token = await getRequiredToken(getToken);
+
+  const response = await fetch(`${apiUrl}/automations/${automationId}/webhook${suffix}`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`
+    }
+  });
+
+  if (!response.ok) {
+    throw new Error(await readApiErrorMessage(response, fallbackLabel));
+  }
+
+  return automationWebhookSchema.parse(await response.json());
+}
+
+export function apiGetAutomationWebhook(getToken: () => Promise<string | null>, automationId: string) {
+  return requestAutomationWebhook(getToken, automationId, "", "Failed to load automation webhook");
+}
+
+export function apiRegenerateAutomationWebhook(getToken: () => Promise<string | null>, automationId: string) {
+  return requestAutomationWebhook(getToken, automationId, "/regenerate", "Failed to regenerate automation webhook");
+}
+
 export async function apiGetAutomationRuns(
   getToken: () => Promise<string | null>,
   automationId: string
@@ -2451,6 +3118,57 @@ export async function apiGetCampaigns(
   return Array.isArray(data) ? data.map(parseCampaign) : [];
 }
 
+export function apiGetBroadcastLists(getToken: () => Promise<string | null>): Promise<BroadcastListDto[]> {
+  return fetchJson(getToken, '/broadcast-lists', { method: 'GET' },
+    (data) => data as BroadcastListDto[], 'Não foi possível carregar as listas.');
+}
+
+export function apiGetBroadcastList(getToken: () => Promise<string | null>, listId: string): Promise<BroadcastListDetailDto> {
+  return fetchJson(getToken, `/broadcast-lists/${encodeURIComponent(listId)}`, { method: 'GET' },
+    (data) => data as BroadcastListDetailDto, 'Não foi possível carregar os contatos da lista.');
+}
+
+export function apiCreateBroadcastList(getToken: () => Promise<string | null>, name: string): Promise<BroadcastListDto> {
+  return fetchJson(getToken, '/broadcast-lists', { method: 'POST', body: JSON.stringify({ name }) },
+    (data) => data as BroadcastListDto, 'Não foi possível criar a lista.');
+}
+
+export function apiRenameBroadcastList(getToken: () => Promise<string | null>, listId: string, name: string): Promise<BroadcastListDto> {
+  return fetchJson(getToken, `/broadcast-lists/${encodeURIComponent(listId)}`, { method: 'PATCH', body: JSON.stringify({ name }) },
+    (data) => data as BroadcastListDto, 'Não foi possível renomear a lista.');
+}
+
+async function changeBroadcastListMembers(getToken: () => Promise<string | null>, path: string, method: 'POST' | 'DELETE', body?: unknown) {
+  const token = await getRequiredToken(getToken);
+  const response = await fetch(`${apiUrl}${path}`, { method, headers: { Authorization: `Bearer ${token}`,
+    ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
+  if (!response.ok) throw new Error(await readApiErrorMessage(response, 'Não foi possível alterar a lista.'));
+}
+
+export function apiAddBroadcastListMembers(getToken: () => Promise<string | null>, listId: string, contactIds: string[]) {
+  return changeBroadcastListMembers(getToken, `/broadcast-lists/${encodeURIComponent(listId)}/members`, 'POST', { contactIds });
+}
+
+export function apiRemoveBroadcastListMember(getToken: () => Promise<string | null>, listId: string, contactId: string) {
+  return changeBroadcastListMembers(getToken, `/broadcast-lists/${encodeURIComponent(listId)}/members/${encodeURIComponent(contactId)}`, 'DELETE');
+}
+
+export async function apiDeleteCampaignDraft(
+  getToken: () => Promise<string | null>,
+  campaignId: string
+): Promise<void> {
+  const token = await getRequiredToken(getToken);
+  const response = await fetch(`${apiUrl}/campaigns/${campaignId}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  if (!response.ok) {
+    throw new Error(response.status === 409
+      ? "Este disparo não é mais um rascunho e não pode ser excluído."
+      : "Não foi possível excluir o rascunho. Tente novamente.");
+  }
+}
+
 export async function apiCreateCampaign(
   getToken: () => Promise<string | null>,
   body: {
@@ -2461,6 +3179,10 @@ export async function apiCreateCampaign(
     fallbackName?: string;
     cadence?: CampaignCadenceDto;
     scheduledAt?: string | null;
+    timeZone?: string;
+    hideFromInboxUntilReply?: boolean;
+    prospectingAgentId?: string | null;
+    prospectingContext?: string | null;
   }
 ): Promise<CampaignDto> {
   const token = await getRequiredToken(getToken);
@@ -2494,6 +3216,10 @@ export async function apiUpdateCampaign(
     fallbackName: string;
     cadence: CampaignCadenceDto;
     scheduledAt: string | null;
+    timeZone: string;
+    hideFromInboxUntilReply: boolean;
+    prospectingAgentId: string | null;
+    prospectingContext: string | null;
   }>
 ): Promise<CampaignDto> {
   const token = await getRequiredToken(getToken);
@@ -2534,6 +3260,71 @@ export async function apiResolveCampaignAudience(
 
   const data = await response.json();
   return Array.isArray(data) ? data.map(parseCampaignAudienceContact) : [];
+}
+
+async function campaignAction<T>(getToken: TokenProvider, campaignId: string,
+  action: string, body?: unknown): Promise<T> {
+  const token = await getRequiredToken(getToken);
+  const response = await fetch(`${apiUrl}/campaigns/${campaignId}/${action}`, {
+    method: action === "progress" ? "GET" : "POST",
+    headers: { Authorization: `Bearer ${token}`,
+      ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) })
+  });
+  if (!response.ok) throw new Error(await readApiErrorMessage(response,
+    "Não foi possível atualizar a campanha."));
+  return response.json() as Promise<T>;
+}
+
+export function apiPreviewCampaignAudience(getToken: TokenProvider, campaignId: string,
+  channelId: string, schedule?: { startMode: "now" | "scheduled"; scheduledAt: string | null;
+    timeZone: string }): Promise<CampaignAudiencePreviewDto> {
+  return campaignAction(getToken, campaignId, "preview-audience", { channelId, ...schedule });
+}
+
+export async function apiGenerateMessageVariations(
+  getToken: () => Promise<string | null>,
+  message: string
+): Promise<string[]> {
+  const token = await getRequiredToken(getToken);
+  const response = await fetch(`${apiUrl}/campaigns/message-variations`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ message })
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null) as { error?: string } | null;
+    throw new Error(payload?.error ?? `Failed to generate variations: ${response.status}`);
+  }
+  const data = await response.json() as { variations?: unknown };
+  return Array.isArray(data.variations)
+    ? data.variations.filter((item): item is string => typeof item === "string")
+    : [];
+}
+
+export function apiActivateCampaign(getToken: TokenProvider, campaignId: string, body: {
+  idempotencyKey: string; channelId: string; startMode: "now" | "scheduled";
+  scheduledAt: string | null; timeZone: string; confirmation: true;
+  expectedAudienceHash: string;
+}): Promise<{ campaignId: string; status: CampaignStatus; recipientsQueued: number;
+  scheduledAt: string | null }> {
+  return campaignAction(getToken, campaignId, "activate", body);
+}
+
+export function apiGetCampaignProgress(getToken: TokenProvider, campaignId: string): Promise<CampaignProgressDto> {
+  return campaignAction(getToken, campaignId, "progress");
+}
+
+export function apiControlCampaign(getToken: TokenProvider, campaignId: string,
+  action: "pause" | "resume" | "cancel-remaining"): Promise<CampaignProgressDto> {
+  return campaignAction(getToken, campaignId, action);
+}
+
+export function apiResolveUncertainCampaignRecipient(getToken: TokenProvider,
+  campaignId: string, recipientId: string,
+  outcome: "sent" | "not_sent"): Promise<CampaignProgressDto> {
+  return campaignAction(getToken, campaignId,
+    `recipients/${recipientId}/resolve-uncertain`, { outcome, confirmation: true });
 }
 
 export async function apiSendCampaignSimulated(
@@ -2886,12 +3677,13 @@ export async function apiCreateAssistantAction(
 }
 
 export async function apiGetTags(
-  getToken: () => Promise<string | null>
+  getToken: () => Promise<string | null>,
+  signal?: AbortSignal
 ): Promise<TagDto[]> {
   return fetchJson(
     getToken,
     "/tags",
-    {},
+    { signal },
     (data) => tagSchema.array().parse(data),
     "Failed to load tags"
   );
@@ -3038,6 +3830,12 @@ export async function apiCreateAgent(
     allowedTagIds?: string[];
     reasoningEffort?: "none" | "low";
     onlyNewConversations?: boolean;
+    replyInBubbles?: boolean;
+    meetingReminders?: MeetingRemindersConfig;
+    meetingBookedTagId?: string | null;
+    type?: "attendance" | "prospecting";
+    prospectingGoal?: string;
+    followupConfig?: AgentFollowupConfig;
   }
 ): Promise<AiAgentDto> {
   return fetchJson(
@@ -3064,6 +3862,12 @@ export async function apiUpdateAgent(
     status: AiAgentDto["status"];
     reasoningEffort: "none" | "low";
     onlyNewConversations: boolean;
+    replyInBubbles: boolean;
+    meetingReminders: MeetingRemindersConfig;
+    meetingBookedTagId: string | null;
+    type: "attendance" | "prospecting";
+    prospectingGoal: string;
+    followupConfig: AgentFollowupConfig;
   }>
 ): Promise<AiAgentDto> {
   return fetchJson(
@@ -3461,12 +4265,27 @@ export function buildRealtimeUrl() {
 type TokenProvider = () => Promise<string | null>;
 const leadPath = (id: string) => encodeURIComponent(id);
 
-export function apiGetLeadLists(getToken: TokenProvider, source?: LeadSource): Promise<LeadListDto[]> {
-  return fetchJson(getToken, `/leads/lists${source ? `?source=${source}` : ""}`, {}, value => leadListSchema.array().parse(value), "Não foi possível carregar listas.");
+export function apiGetLeadLists(getToken: TokenProvider, page = 1, pageSize = 50): Promise<LeadListDto[]> {
+  return fetchJson(getToken, `/leads/lists?page=${page}&pageSize=${pageSize}`, {}, value => leadListSchema.array().parse(value), "Não foi possível carregar listas.");
+}
+
+export async function apiDeleteLeadList(getToken: TokenProvider, listId: string): Promise<void> {
+  const token = await getRequiredToken(getToken);
+  const response = await fetch(`${apiUrl}/leads/lists/${leadPath(listId)}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  if (!response.ok) {
+    throw new ApiRequestError(await readApiErrorMessage(response, "Não foi possível excluir a lista."));
+  }
 }
 
 export function apiGetLeadResults(getToken: TokenProvider, listId: string, page = 1): Promise<LeadPaginatedResultDto> {
   return fetchJson(getToken, `/leads/lists/${leadPath(listId)}/results?page=${page}`, {}, value => leadPaginatedResultSchema.parse(value), "Não foi possível carregar resultados.");
+}
+
+export function apiGetLeadSelection(getToken: TokenProvider, listId: string): Promise<LeadSelectionDto> {
+  return fetchJson(getToken, `/leads/lists/${leadPath(listId)}/selection`, {}, value => leadSelectionSchema.parse(value), "Não foi possível selecionar toda a lista.");
 }
 
 export function apiGetLeadJob(getToken: TokenProvider, jobId: string): Promise<LeadJobDto> {
@@ -3517,10 +4336,74 @@ export function apiImportLeadContacts(getToken: TokenProvider, listId: string, s
   return fetchJson(getToken, `/leads/lists/${leadPath(listId)}/contacts/import`, { method: "POST", body: JSON.stringify({ selectedLeadIds }) }, value => leadContactImportResultSchema.parse(value), "Não foi possível cadastrar contatos.");
 }
 
-export function apiCreateLeadCampaignDraft(getToken: TokenProvider, listId: string, selectedLeadIds: string[], messageBody: string): Promise<LeadCampaignDraftResult> {
-  return fetchJson(getToken, `/leads/lists/${leadPath(listId)}/campaign-drafts`, { method: "POST", body: JSON.stringify({ selectedLeadIds, messageBody }) }, value => leadCampaignDraftResultSchema.parse(value), "Não foi possível criar o rascunho.");
+export function apiCreateLeadCampaignDraft(getToken: TokenProvider, listId: string, selectedLeadIds: string[], messageBody: string | undefined, originalSelectedLeadIds?: string[], name?: string): Promise<LeadCampaignDraftResult> {
+  return fetchJson(getToken, `/leads/lists/${leadPath(listId)}/campaign-drafts`, { method: "POST", body: JSON.stringify({ selectedLeadIds, ...(messageBody?.trim() ? { messageBody: messageBody.trim() } : {}), originalSelectedLeadIds, ...(name?.trim() ? { name: name.trim() } : {}) }) }, value => leadCampaignDraftResultSchema.parse(value), "Não foi possível criar o rascunho.");
 }
 
 export function apiGetLeadComposerDraft(getToken: TokenProvider, conversationId: string): Promise<LeadComposerDraft | null> {
   return fetchJson(getToken, `/leads/conversations/${leadPath(conversationId)}/composer-draft`, {}, value => leadComposerDraftSchema.nullable().parse(value), "Não foi possível carregar o rascunho do lead.");
+}
+
+export async function apiUpdateModules(getToken: () => Promise<string | null>, modules: { campaignProspecting: boolean }): Promise<SettingsDto> {
+  return fetchJson(getToken, "/settings/modules", { method: "PATCH", body: JSON.stringify(modules) }, parseSettings, "Não foi possível salvar os módulos.");
+}
+
+export interface AuthorityReviewConversation { id: string; contactName: string | null; contactPhone: string; status: string; assignedTo: string | null; aiControlStatus: string; unreadCount: number; messageCount: number; lastMessageAt: string | null; lastMessagePreview: string | null }
+export interface AuthorityReviewItem { chatId: string; channelId: string; address: string; conversations: AuthorityReviewConversation[] }
+
+/** Chats claimed by more than one conversation. Only owners and managers see them: a 403 means "nothing to show". */
+export async function apiListConversationAuthority(getToken: () => Promise<string | null>): Promise<AuthorityReviewItem[]> {
+  const token = await getRequiredToken(getToken);
+  const response = await fetch(`${apiUrl}/channels/conversation-authority`, { headers: { Authorization: `Bearer ${token}` } });
+  if (response.status === 403) return [];
+  if (!response.ok) throw new Error(await readApiErrorMessage(response, 'Não foi possível carregar as conversas duplicadas'));
+  const data = await response.json() as { items?: AuthorityReviewItem[] };
+  return Array.isArray(data.items) ? data.items : [];
+}
+
+export async function apiResolveConversationAuthority(getToken: () => Promise<string | null>, chatId: string, conversationId: string): Promise<void> {
+  const token = await getRequiredToken(getToken);
+  const response = await fetch(`${apiUrl}/channels/conversation-authority/${encodeURIComponent(chatId)}/resolve`, {
+    method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ conversationId })
+  });
+  if (!response.ok) throw new Error(await readApiErrorMessage(response, 'Não foi possível escolher a conversa'));
+}
+
+export interface HistoryComparisonRow { chatAddress: string; evolution: number; waha: number; onlyEvolution: number; onlyWaha: number; both: number }
+export interface HistoryComparison { chats: HistoryComparisonRow[]; skippedLidChats: number; totals: Omit<HistoryComparisonRow, 'chatAddress'> }
+
+/** Read-only: what Evolution and WAHA each return for the same recent chats. */
+export async function apiCompareChannelHistory(getToken: () => Promise<string | null>, channelId: string): Promise<HistoryComparison> {
+  const token = await getRequiredToken(getToken);
+  const response = await fetch(`${apiUrl}/channels/${encodeURIComponent(channelId)}/history-comparison`, { headers: { Authorization: `Bearer ${token}` } });
+  if (!response.ok) throw new Error(await readApiErrorMessage(response, 'Não foi possível comparar o histórico'));
+  return await response.json() as HistoryComparison;
+}
+
+// ---- Leads · Base própria ----
+export type OwnBaseView = { region?: string | null; filter: OwnBaseFilter; q?: string };
+function ownBaseQuery(view: OwnBaseView, extra: Record<string, string> = {}) {
+  const params = new URLSearchParams(extra);
+  if (view.region !== undefined) params.set("region", view.region === null ? "__none__" : view.region);
+  params.set("filter", view.filter);
+  if (view.q?.trim()) params.set("q", view.q.trim());
+  return params.toString();
+}
+export function apiOwnBaseOverview(getToken: TokenProvider, listId?: string): Promise<OwnBaseOverview> {
+  return fetchJson(getToken, `/leads/own-base${listId ? `?listId=${encodeURIComponent(listId)}` : ""}`, {}, value => ownBaseOverviewSchema.parse(value), "Não foi possível carregar a base própria.");
+}
+export function apiOwnBaseLeads(getToken: TokenProvider, listId: string, view: OwnBaseView, page: number): Promise<OwnBaseLeadPage> {
+  return fetchJson(getToken, `/leads/own-base/${leadPath(listId)}/leads?${ownBaseQuery(view, { page: String(page), pageSize: "50" })}`, {}, value => ownBaseLeadPageSchema.parse(value), "Não foi possível carregar as empresas.");
+}
+export function apiOwnBaseSelection(getToken: TokenProvider, listId: string, view: OwnBaseView): Promise<{ ids: string[]; verifiableIds: string[] }> {
+  return fetchJson(getToken, `/leads/own-base/${leadPath(listId)}/selection?${ownBaseQuery(view)}`, {}, value => leadSelectionSchema.parse(value), "Não foi possível selecionar as empresas.");
+}
+export function apiOwnBaseImport(getToken: TokenProvider, input: { listId?: string; name: string; fileName: string; rows: OwnBaseRow[]; done: boolean }): Promise<OwnBaseImportResult> {
+  return fetchJson(getToken, "/leads/own-base/import", { method: "POST", body: JSON.stringify(input) }, value => ownBaseImportResultSchema.parse(value), "Não foi possível subir esta parte da planilha.");
+}
+export function apiGetLeadRegions(getToken: TokenProvider): Promise<LeadRegionDto[]> {
+  return fetchJson(getToken, "/leads/regions", {}, value => (value as { regions: unknown[] }).regions.map(region => leadRegionSchema.parse(region)), "Não foi possível carregar as regiões.");
+}
+export function apiSaveLeadRegions(getToken: TokenProvider, regions: LeadRegionDto[]): Promise<LeadRegionDto[]> {
+  return fetchJson(getToken, "/leads/regions", { method: "PUT", body: JSON.stringify({ regions }) }, value => (value as { regions: unknown[] }).regions.map(region => leadRegionSchema.parse(region)), "Não foi possível salvar as regiões.");
 }

@@ -1,4 +1,5 @@
 import {
+  conversationFollowupAnalysisSchema,
   conversationFollowupPurposeSchema,
   conversationFollowupReasonCodeSchema,
   conversationFollowupSchema,
@@ -14,10 +15,13 @@ export type ConversationFollowupPublicRecord = {
   workspaceId: string;
   conversationId: string;
   agentId: string;
-  kind: "qualification" | "human_commercial";
+  kind: "qualification" | "human_commercial" | "seller_reminder";
   status: string;
   activeKey?: string | null;
   stepIndex: number;
+  anchorMessageId?: string;
+  anchorMessageAt?: DateLike;
+  anchorIngestedAt?: DateLike;
   scheduledAt: DateLike;
   lockedAt?: DateLike | null;
   draftBody?: string | null;
@@ -94,6 +98,9 @@ export const conversationFollowupPublicSelect = {
   status: true,
   activeKey: true,
   stepIndex: true,
+  anchorMessageId: true,
+  anchorMessageAt: true,
+  anchorIngestedAt: true,
   scheduledAt: true,
   lockedAt: true,
   draftBody: true,
@@ -146,11 +153,14 @@ export function toConversationFollowupDto(
     },
     purpose: safePurpose(record.decision),
     reasonCode: isActiveStatus(record.status) ? safeActiveReason(record.reason) : null,
+    analysis: safeAnalysis(record.decision),
     createdAt: toIso(createdAt),
     updatedAt: toIso(updatedAt)
   };
 
   switch (record.status) {
+    case "evaluating":
+      return conversationFollowupSchema.parse({ ...base, status: "evaluating" });
     case "sent":
       return conversationFollowupSchema.parse({
         ...base,
@@ -187,6 +197,16 @@ function safePurpose(decision: unknown) {
   const parsed = conversationFollowupPurposeSchema.safeParse(
     (decision as Record<string, unknown>).purpose
   );
+  return parsed.success ? parsed.data : null;
+}
+
+/** Only the fields meant for the card; the rest of the AI's answer stays in the decision log. */
+function safeAnalysis(decision: unknown) {
+  if (!decision || typeof decision !== "object" || Array.isArray(decision)) return null;
+  const brain = (decision as Record<string, unknown>).brain;
+  if (!brain || typeof brain !== "object") return null;
+  const { situation, pendingItem, nextStep, timingNote, rationale, confidence } = brain as Record<string, unknown>;
+  const parsed = conversationFollowupAnalysisSchema.safeParse({ situation, pendingItem, nextStep, timingNote, rationale, confidence });
   return parsed.success ? parsed.data : null;
 }
 
@@ -227,9 +247,20 @@ function safeReason(
     "outbound_replaced",
     "conversation_missing",
     "conversation_closed",
+    "channel_paused",
     "human_controlled",
     "session_context_changed",
-    "delivery_completion_failed"
+    "delivery_completion_failed",
+    "retry_exhausted",
+    "eligibility_customer_answer_pending",
+    "eligibility_proposal_response_pending",
+    "eligibility_seller_action_pending",
+    "eligibility_resolved_or_unclear",
+    "eligibility_unavailable",
+    "brain_closed",
+    "brain_no_pending",
+    "brain_internal_contact",
+    "seller_done"
   ]);
   if (reason && allowed.has(reason)) return reason;
   return status === "failed" ? "delivery_failed" : "system_cancelled";

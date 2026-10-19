@@ -1,4 +1,5 @@
-import type { Prisma, PrismaClient } from "@prisma/client";
+import { randomUUID } from "node:crypto";
+import { Prisma, type PrismaClient } from "@prisma/client";
 
 type DateLike = Date | string;
 
@@ -29,10 +30,13 @@ interface ContactRecord {
   company: string | null;
   atomicCrmContactId: string | null;
   atomicCrmLeadId: string | null;
+  isGroup?: boolean;
   updatedAt?: DateLike;
 }
 
 export interface PrismaLike {
+  crmLeadSync?: Pick<PrismaClient['crmLeadSync'], 'upsert' | 'findUnique' | 'updateMany'>;
+  $transaction?<T>(run: (tx: PrismaLike) => Promise<T>): Promise<T>;
   contact: {
     findUnique(args: ContactFindUniqueArgs): Promise<ContactRecord | null>;
     update(args: ContactUpdateArgs): Promise<ContactRecord>;
@@ -44,8 +48,9 @@ export interface PrismaLike {
 }
 
 export class CrmServiceError extends Error {
+  providerStatusCode?: number;
   constructor(
-    public code: "CRM_CONTACT_NOT_FOUND" | "VINCULA_SYNC_FAILED",
+    public code: "CRM_CONTACT_NOT_FOUND" | "VINCULA_SYNC_FAILED" | "CRM_SYNC_UNAVAILABLE" | "CRM_SYNC_IN_PROGRESS" | "CRM_LEAD_DELIVERY_UNCERTAIN" | "CRM_NOTE_DELIVERY_UNCERTAIN",
     message: string,
     public statusCode = 404
   ) {
@@ -96,6 +101,7 @@ interface VinculaLeadRecord {
 interface VinculaServiceOptions {
   vinculaApiUrl?: string;
   fetch?: FetchLike;
+  now?: () => Date;
 }
 
 function toIsoString(value: DateLike) {
@@ -268,6 +274,7 @@ async function readVinculaError(response: Response) {
 export function createCrmService(prisma: PrismaLike, options: VinculaServiceOptions = {}) {
   const vinculaApiUrl = options.vinculaApiUrl ? normalizeBaseUrl(options.vinculaApiUrl) : null;
   const fetchCrm = options.fetch ?? fetch;
+  const now = options.now ?? (() => new Date());
 
   async function vinculaRequest<T>(
     token: string,
@@ -280,6 +287,7 @@ export function createCrmService(prisma: PrismaLike, options: VinculaServiceOpti
 
     const response = await fetchCrm(`${vinculaApiUrl}${path}`, {
       ...init,
+      signal: init.signal ?? AbortSignal.timeout(15_000),
       headers: {
         authorization: `Bearer ${token}`,
         "content-type": "application/json",
@@ -289,7 +297,9 @@ export function createCrmService(prisma: PrismaLike, options: VinculaServiceOpti
 
     if (!response.ok) {
       const statusCode = response.status === 401 || response.status === 403 ? response.status : 502;
-      throw new CrmServiceError("VINCULA_SYNC_FAILED", await readVinculaError(response), statusCode);
+      const error = new CrmServiceError("VINCULA_SYNC_FAILED", await readVinculaError(response), statusCode);
+      error.providerStatusCode = response.status;
+      throw error;
     }
 
     return response.json() as Promise<T>;
@@ -452,11 +462,12 @@ export function createCrmService(prisma: PrismaLike, options: VinculaServiceOpti
         email: true,
         company: true,
         atomicCrmContactId: true,
-        atomicCrmLeadId: true
+        atomicCrmLeadId: true,
+        isGroup: true
       }
     });
 
-    if (!contact) {
+    if (!contact || contact.isGroup) {
       throw new CrmServiceError("CRM_CONTACT_NOT_FOUND", "CRM contact not found.");
     }
 
@@ -549,65 +560,98 @@ export function createCrmService(prisma: PrismaLike, options: VinculaServiceOpti
       const title = input.title.trim();
 
       if (vinculaApiUrl && input.vinculaToken) {
-        const vinculaCompany = await upsertVinculaCompany(input.vinculaToken, contact);
-        const vinculaCompanyId = vinculaCompany?.id ? String(vinculaCompany.id) : null;
-        const vinculaContact = await upsertVinculaContact(input.vinculaToken, contact, vinculaCompanyId);
-        const vinculaContactId = String(vinculaContact.id);
-        const { lead: vinculaLead, created: leadCreated } = await upsertVinculaLead(
-          input.vinculaToken,
-          contact,
-          title
-        );
-        const vinculaLeadId = String(vinculaLead.id);
-
-        if (leadCreated) {
-          await createVinculaContactNote(input.vinculaToken, {
-            vinculaContactId,
-            contact,
-            title,
-            leadId: vinculaLeadId
-          });
+        const sync = prisma.crmLeadSync;
+        if (!sync || !prisma.$transaction) throw new CrmServiceError('CRM_SYNC_UNAVAILABLE', 'O registro durável do CRM está indisponível. Nenhum lead foi enviado.', 503);
+        const remoteId = (value: string | null) => value && /^\d+$/.test(value) ? value : null;
+        const operation = await sync.upsert({ where: { workspaceId_contactId: { workspaceId: input.workspaceId, contactId: input.contactId } },
+          create: { workspaceId: input.workspaceId, contactId: input.contactId, title, state: remoteId(contact.atomicCrmLeadId) ? 'completed' : 'pending',
+            remoteContactId: remoteId(contact.atomicCrmContactId), remoteLeadId: remoteId(contact.atomicCrmLeadId) }, update: {} }).catch((error: unknown) => {
+          // Prisma can read before inserting an empty-update upsert. A concurrent
+          // winner of this scoped anchor is the same conflict as an occupied lease.
+          const target = error instanceof Prisma.PrismaClientKnownRequestError ? error.meta?.target : undefined;
+          if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002' && error.meta?.modelName === 'CrmLeadSync'
+            && Array.isArray(target) && target.length === 2 && target[0] === 'workspace_id' && target[1] === 'contact_id') {
+            throw new CrmServiceError('CRM_SYNC_IN_PROGRESS', 'Este contato já está sendo sincronizado com o CRM. Aguarde a conclusão.', 409);
+          }
+          throw error;
+        });
+        const leaseToken = randomUUID();
+        const claimed = await sync.updateMany({ where: { workspaceId: input.workspaceId, id: operation.id,
+          OR: [{ leaseToken: null }, { leaseUntil: { lt: now() } }] }, data: { leaseToken, leaseUntil: new Date(now().getTime() + 5 * 60_000) } });
+        if (claimed.count !== 1) throw new CrmServiceError('CRM_SYNC_IN_PROGRESS', 'Este contato já está sendo sincronizado com o CRM. Aguarde a conclusão.', 409);
+        const state = await sync.findUnique({ where: { workspaceId_contactId: { workspaceId: input.workspaceId, contactId: input.contactId } } });
+        if (!state) throw new CrmServiceError('CRM_SYNC_UNAVAILABLE', 'Registro de sincronização não encontrado.', 503);
+        const setState = async (next: string, data: Prisma.CrmLeadSyncUpdateManyMutationInput = {}) => {
+          const result = await sync.updateMany({ where: { workspaceId: input.workspaceId, id: state.id, leaseToken }, data: { ...data, state: next } });
+          if (result.count !== 1) throw new CrmServiceError('CRM_SYNC_IN_PROGRESS', 'A sincronização perdeu sua autorização de execução. Revise o resultado no CRM.', 409);
+          state.state = next;
+        };
+        const review = (kind: 'lead' | 'note') => new CrmServiceError(kind === 'lead' ? 'CRM_LEAD_DELIVERY_UNCERTAIN' : 'CRM_NOTE_DELIVERY_UNCERTAIN',
+          kind === 'lead' ? 'A criação do lead no CRM não foi confirmada. Verifique o registro remoto antes de tentar novamente.'
+            : `O lead ${state.remoteLeadId ?? contact.atomicCrmLeadId ?? ''} já está salvo. A entrega da nota não foi confirmada e exige revisão no CRM; ela não será reenviada automaticamente.`, 409);
+        const action = async (status: string, result: Record<string, Prisma.JsonValue>) => prisma.crmSyncAction.create({ data: {
+          workspaceId: input.workspaceId, contactId: input.contactId, actionType: 'create_lead', mode: 'real', status,
+          payload: { contactId: input.contactId, title, vinculaContactId: state.remoteContactId, vinculaCompanyId: state.remoteCompanyId, provider: 'vincula' },
+          result: { mode: 'real', vinculaLeadId: state.remoteLeadId, vinculaContactId: state.remoteContactId, vinculaCompanyId: state.remoteCompanyId, ...result }
+        } });
+        const safeRejection = (error: unknown) => error instanceof CrmServiceError && [400, 401, 403, 404, 422, 429].includes(error.providerStatusCode ?? 0);
+        let created = false, updated = false;
+        try {
+          if (['creating_lead', 'lead_uncertain'].includes(state.state)) {
+            await setState('lead_uncertain'); throw review('lead');
+          }
+          if (['note_sending', 'note_uncertain'].includes(state.state)) {
+            await setState('note_uncertain'); throw review('note');
+          }
+          if (state.state === 'pending' || state.state === 'completed') {
+            const current = await ensureContactInWorkspace(input);
+            const company = await upsertVinculaCompany(input.vinculaToken, current);
+            const companyId = company?.id ? String(company.id) : null;
+            const remoteContact = await upsertVinculaContact(input.vinculaToken, current, companyId);
+            const contactId = String(remoteContact.id);
+            if (!/^\d+$/.test(contactId)) throw new CrmServiceError("CRM_SYNC_UNAVAILABLE", "O CRM não confirmou uma identidade válida para o contato.", 502);
+            // Persist a confirmed contact before attempting lead creation too.
+            await prisma.contact.update({ where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.contactId } }, data: { atomicCrmContactId: contactId } });
+            state.remoteContactId = contactId; state.remoteCompanyId = companyId;
+            const existingLead = state.remoteLeadId ?? remoteId(current.atomicCrmLeadId);
+            if (existingLead && !/^\d+$/.test(existingLead)) throw new CrmServiceError("CRM_SYNC_UNAVAILABLE", "A identidade do lead exige revisão no CRM.", 409);
+            if (!existingLead) await setState('creating_lead', { remoteContactId: contactId, remoteCompanyId: companyId });
+            const lead = await upsertVinculaLead(input.vinculaToken, { ...current, atomicCrmLeadId: existingLead }, title);
+            const leadId = String(lead.lead.id);
+            if (!/^\d+$/.test(leadId)) throw new CrmServiceError("CRM_SYNC_UNAVAILABLE", "O CRM não confirmou uma identidade válida para o lead.", 502);
+            // This transaction ends before the optional note POST. A note failure cannot lose the confirmed ID.
+            await prisma.$transaction(async tx => {
+              await tx.contact.update({ where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.contactId } },
+                data: { atomicCrmContactId: contactId, atomicCrmLeadId: leadId } });
+              const saved = await tx.crmLeadSync!.updateMany({ where: { workspaceId: input.workspaceId, id: state.id, leaseToken },
+                data: { remoteContactId: contactId, remoteCompanyId: companyId, remoteLeadId: leadId, state: lead.created ? 'note_pending' : 'completed', lastError: null } });
+              if (saved.count !== 1) throw new CrmServiceError('CRM_SYNC_IN_PROGRESS', 'A sincronização perdeu sua autorização de execução.', 409);
+            });
+            state.remoteLeadId = leadId; state.state = lead.created ? 'note_pending' : 'completed';
+            created = lead.created; updated = !lead.created;
+          }
+          if (state.state === 'note_pending') {
+            if (!state.remoteLeadId || !state.remoteContactId) throw new CrmServiceError('CRM_SYNC_UNAVAILABLE', 'A sincronização parcial do CRM exige revisão.', 503);
+            await setState('note_sending');
+            await createVinculaContactNote(input.vinculaToken, { vinculaContactId: state.remoteContactId, contact,
+              title: state.title, leadId: state.remoteLeadId });
+            await setState('completed', { lastError: null });
+          }
+          return toActionDto(await action('completed', { leadCreated: created, leadUpdated: updated, noteStatus: 'completed' }));
+        } catch (error) {
+          const rejected = safeRejection(error);
+          if (state.state === 'creating_lead') {
+            await setState(rejected ? 'pending' : 'lead_uncertain', { lastError: 'LEAD_DISPATCH_FAILED' });
+            if (!rejected) throw review('lead');
+          } else if (state.state === 'note_sending') {
+            await setState(rejected ? 'note_pending' : 'note_uncertain', { lastError: 'NOTE_DISPATCH_FAILED' });
+            await action(rejected ? 'partial' : 'review_required', { leadCreated: created, noteStatus: state.state });
+            if (!rejected) throw review('note');
+          }
+          throw error;
+        } finally {
+          await sync.updateMany({ where: { workspaceId: input.workspaceId, id: state.id, leaseToken }, data: { leaseToken: null, leaseUntil: null } });
         }
-
-        await prisma.contact.update({
-          where: {
-            workspaceId_id: {
-              workspaceId: input.workspaceId,
-              id: input.contactId
-            }
-          },
-          data: {
-            atomicCrmContactId: vinculaContactId,
-            atomicCrmLeadId: vinculaLeadId
-          }
-        });
-
-        const action = await prisma.crmSyncAction.create({
-          data: {
-            workspaceId: input.workspaceId,
-            contactId: input.contactId,
-            actionType: "create_lead",
-            mode: "real",
-            status: "completed",
-            payload: {
-              contactId: input.contactId,
-              title,
-              vinculaContactId,
-              vinculaCompanyId,
-              provider: "vincula"
-            },
-            result: {
-              mode: "real",
-              leadCreated,
-              leadUpdated: !leadCreated,
-              vinculaContactId,
-              vinculaCompanyId,
-              vinculaLeadId
-            }
-          }
-        });
-
-        return toActionDto(action);
       }
 
       return createSimulatedAction({

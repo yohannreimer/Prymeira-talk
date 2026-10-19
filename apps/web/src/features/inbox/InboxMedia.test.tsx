@@ -5,6 +5,30 @@ import { InboxMedia, mediaCaption, mediaFileName, audioTime } from './InboxMedia
 import { contactInitials } from './ContactAvatar';
 const base = { id: 'm', conversationId: 'c', workspaceId: 'w', direction: 'inbound', status: 'delivered', createdAt: '2026-09-14T12:00:00Z', providerMessageId: null, sentByUserId: null } as const;
 describe('WhatsApp-style attachments', () => {
+  it.each(['video/mp4', 'application/pdf'])('preserves raw %s presentation when compact metadata has a generic MIME', mimeType => {
+    const original: MessageDto = { ...base, type: 'file', body: mimeType.startsWith('video/') ? 'Vídeo recebido' : 'Segue a proposta',
+      mediaUrl: `data:${mimeType};base64,YQ==`, attachment: { mimeType: 'application/octet-stream' } };
+    const compact = { ...original, mediaUrl: `https://talk.example.test/api/conversations/c/messages/m/media?v=source&previewMime=${encodeURIComponent(mimeType)}` };
+    const rawHtml = renderToStaticMarkup(<InboxMedia message={original} getToken={async () => null} />);
+    const compactHtml = renderToStaticMarkup(<InboxMedia message={compact} getToken={async () => null} />);
+    if (mimeType.startsWith('video/')) {
+      expect(rawHtml).toContain('talk-video-preview'); expect(compactHtml).toContain('Reproduzir vídeo');
+      expect(compactHtml).not.toContain('Abrir documento');
+    } else {
+      expect(mediaFileName(original)).toBe('Documento.pdf'); expect(mediaFileName(compact)).toBe('Documento.pdf');
+      expect(rawHtml).toContain('PDF'); expect(compactHtml).toContain('PDF');
+    }
+    expect(compact.attachment?.mimeType).toBe('application/octet-stream');
+  });
+  it('identifies compact PDFs by MIME while preserving filenames and captions without a URL extension', () => {
+    const message: MessageDto = { ...base, type: 'file', body: 'Segue a proposta',
+      mediaUrl: 'https://talk.example.test/api/conversations/c/messages/m/media?v=source', attachment: { mimeType: 'application/pdf' } };
+    expect(mediaFileName(message)).toBe('Documento.pdf'); expect(mediaCaption(message)).toBe('Segue a proposta');
+    const named = { ...message, attachment: { ...message.attachment, fileName: 'Proposta', caption: 'Legenda preservada' } };
+    expect(mediaFileName(named)).toBe('Proposta'); expect(mediaCaption(named)).toBe('Legenda preservada');
+    const html = renderToStaticMarkup(<InboxMedia message={named} getToken={async () => null} />);
+    expect(html).toContain('PDF'); expect(html).toContain('Abrir documento'); expect(html).not.toContain('data:');
+  });
   it('preserves a PDF caption separately from its filename', () => {
     const message = { type: 'file' as const, body: 'Cotação.pdf', attachment: { fileName: 'Cotação.pdf', caption: 'Conforme solicitado.' } };
     expect(mediaFileName(message)).toBe('Cotação.pdf'); expect(mediaCaption(message)).toBe('Conforme solicitado.');
@@ -15,8 +39,16 @@ describe('WhatsApp-style attachments', () => {
   it('renders OGG with an in-app play action without claiming transcription is running', () => {
     const html = renderToStaticMarkup(<InboxMedia message={{ ...base, type: 'audio', body: 'Áudio recebido', mediaUrl: 'data:audio/ogg;base64,YQ==' }} getToken={async () => null} />);
     expect(html).toContain('Reproduzir áudio');
+    expect(html).toContain('Ver transcrição');
     expect(html).not.toContain('Processando áudio');
     expect(html).not.toContain('Abrir áudio original');
+  });
+  it('shows the sender on a received voice note, like WhatsApp, and the plain mic otherwise', () => {
+    const audio: MessageDto = { ...base, type: 'audio', body: 'Áudio recebido', mediaUrl: 'data:audio/ogg;base64,YQ==' };
+    const received = renderToStaticMarkup(<InboxMedia message={audio} getToken={async () => null} avatarConversationId="c" avatarName="Ana Silva" />);
+    expect(received).toContain('talk-voice-avatar'); expect(received).toContain('AS'); expect(received).not.toContain('talk-voice-icon');
+    const plain = renderToStaticMarkup(<InboxMedia message={audio} getToken={async () => null} />);
+    expect(plain).toContain('talk-voice-icon'); expect(plain).not.toContain('talk-voice-avatar');
   });
   it('renders a PDF filename only once and offers opening and downloading', () => {
     const message: MessageDto = { ...base, type: 'file', body: 'Cotação.pdf', mediaUrl: 'data:application/pdf;base64,YQ==' };
@@ -25,13 +57,39 @@ describe('WhatsApp-style attachments', () => {
     expect(html).toContain('Abrir documento'); expect(html).toContain('Baixar documento');
     expect(mediaCaption(message)).toBeNull();
   });
+  it('recognizes a video from the attachment MIME type without relying on its URL', () => {
+    const message: MessageDto = { ...base, type: 'file', body: 'Vídeo recebido',
+      mediaUrl: 'https://example.test/media/encrypted', attachment: { mimeType: 'video/mp4' } };
+    const html = renderToStaticMarkup(<InboxMedia message={message} getToken={async () => null} />);
+    expect(html).toContain('Reproduzir vídeo');
+    expect(html).not.toContain('Abrir documento');
+    expect(mediaCaption(message)).toBeNull();
+  });
   it('hides image placeholders but preserves a real caption and never invents a filename from prose', () => {
     expect(mediaCaption({ type: 'image', body: 'Imagem recebida' })).toBeNull();
     expect(mediaCaption({ type: 'image', body: 'Favor cotar estas medidas' })).toBe('Favor cotar estas medidas');
     expect(mediaFileName({ type: 'file', body: 'Segue a proposta', mediaUrl: 'data:application/pdf;base64,YQ==' })).toBe('Documento.pdf');
     expect(mediaCaption({ type: 'file', body: 'Segue a proposta' })).toBe('Segue a proposta');
   });
+  it('plays a WhatsApp GIF muted once, without video controls or a loop, and a plain video on its first tap', () => {
+    const gif: MessageDto = { ...base, type: 'file', body: 'Vídeo recebido', mediaUrl: 'data:video/mp4;base64,YQ==',
+      attachment: { mimeType: 'video/mp4', isGif: true, width: 199, height: 244 } };
+    const html = renderToStaticMarkup(<InboxMedia message={gif} getToken={async () => null} />);
+    expect(html).toContain('talk-gif-preview'); expect(html).toContain('GIF'); expect(html).not.toContain('loop');
+    expect(html).toContain('aspect-ratio:199 / 244'); expect(html).toContain('width:min(261px, 58vw)'); expect(html).not.toContain('controls');
+    const video = renderToStaticMarkup(<InboxMedia message={{ ...gif, attachment: { mimeType: 'video/mp4' } }} getToken={async () => null} />);
+    expect(video).toContain('talk-video-preview'); expect(video).not.toContain('talk-gif-preview');
+  });
   it('formats real durations safely', () => {
     expect(audioTime(73)).toBe('1:13'); expect(audioTime(NaN)).toBe('0:00'); expect(audioTime(Infinity)).toBe('0:00');
+  });
+  it('offers playback without a transcription write in read-only supervision transport', () => {
+    const html = renderToStaticMarkup(<InboxMedia
+      message={{ ...base, type: 'audio', body: 'Áudio recebido', mediaUrl: null }}
+      getToken={async () => null}
+      transport={{ media: async () => new Blob(), preview: async () => ({ imageUrl: '', pages: 1 }) }} />);
+    expect(html).toContain('Reproduzir áudio');
+    expect(html).not.toContain('Ver transcrição');
+    expect(html).not.toContain('Transcrevendo');
   });
 });

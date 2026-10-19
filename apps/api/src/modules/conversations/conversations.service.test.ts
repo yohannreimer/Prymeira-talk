@@ -1,4 +1,5 @@
 import Fastify from "fastify";
+import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { conversationSchema, messageSchema, realtimeEventSchema } from "@prymeira-talk/shared";
 import { EvolutionClientError } from "../evolution/evolution.client.js";
@@ -8,24 +9,34 @@ import {
   ConversationNotFoundError,
   OutboundDeliveryUncertainError,
   OutboundMessageValidationError,
-  createConversationsService
+  createConversationsService,
+  toConversationDto,
+  toMessageDto,
+  toCompactMessageDto
 } from "./conversations.service.js";
 import type { PrismaLike } from "./conversations.service.js";
 import { conversationsRoutes, createMessageParamsSchema } from "./conversations.routes.js";
 
 type MockPrisma = {
+  channel: {
+    findFirst: ReturnType<typeof vi.fn>;
+    updateMany: ReturnType<typeof vi.fn>;
+  };
   integrationConfig: {
     findUnique: ReturnType<typeof vi.fn>;
   };
   conversation: {
+    count: ReturnType<typeof vi.fn>;
     findMany: ReturnType<typeof vi.fn<PrismaLike["conversation"]["findMany"]>>;
     findUnique: ReturnType<typeof vi.fn<PrismaLike["conversation"]["findUnique"]>>;
     update: ReturnType<typeof vi.fn<PrismaLike["conversation"]["update"]>>;
+    updateMany: ReturnType<typeof vi.fn>;
   };
   message: {
     update: ReturnType<typeof vi.fn<NonNullable<PrismaLike["message"]["update"]>>>;
     create: ReturnType<typeof vi.fn<PrismaLike["message"]["create"]>>;
     findMany: ReturnType<typeof vi.fn<PrismaLike["message"]["findMany"]>>;
+    updateMany: ReturnType<typeof vi.fn<PrismaLike["message"]["updateMany"]>>;
     deleteMany: ReturnType<typeof vi.fn<PrismaLike["message"]["deleteMany"]>>;
   };
   conversationFollowup: {
@@ -65,9 +76,11 @@ type MockPrisma = {
   };
   aiAgentSession: {
     update: ReturnType<typeof vi.fn<PrismaLike["aiAgentSession"]["update"]>>;
+    updateMany: ReturnType<typeof vi.fn>;
     deleteMany: ReturnType<typeof vi.fn<PrismaLike["aiAgentSession"]["deleteMany"]>>;
   };
   aiAgentPendingReply: {
+    updateMany: ReturnType<typeof vi.fn>;
     deleteMany: ReturnType<typeof vi.fn<PrismaLike["aiAgentPendingReply"]["deleteMany"]>>;
   };
   aiAgentRun: {
@@ -96,10 +109,15 @@ function createMockPrisma(overrides: {
 } = {}): MockPrisma {
   let result: MockPrisma;
   result = {
+    channel: {
+      findFirst: vi.fn().mockResolvedValue(null),
+      updateMany: vi.fn().mockResolvedValue({ count: 1 })
+    },
     integrationConfig: {
       findUnique: vi.fn().mockResolvedValue(null)
     },
     conversation: {
+      count: vi.fn().mockResolvedValue(71),
       findMany: overrides.findMany ?? vi.fn<PrismaLike["conversation"]["findMany"]>().mockResolvedValue([]),
       findUnique:
         overrides.findUnique ??
@@ -136,7 +154,8 @@ function createMockPrisma(overrides: {
           department: null,
           assignedUser: null,
           tags: []
-        })
+        }),
+      updateMany: vi.fn().mockResolvedValue({ count: 1 })
     },
     message: {
       update: vi.fn<NonNullable<PrismaLike["message"]["update"]>>().mockResolvedValue({
@@ -180,6 +199,7 @@ function createMockPrisma(overrides: {
             createdAt: new Date("2026-05-20T12:00:00.000Z")
           }
         ]),
+      updateMany: vi.fn<PrismaLike["message"]["updateMany"]>().mockResolvedValue({ count: 1 }),
       deleteMany: vi.fn<PrismaLike["message"]["deleteMany"]>().mockResolvedValue({ count: 1 })
     },
     conversationFollowup: {
@@ -312,9 +332,11 @@ function createMockPrisma(overrides: {
     },
     aiAgentSession: {
       update: vi.fn<PrismaLike["aiAgentSession"]["update"]>().mockResolvedValue({}),
+      updateMany: vi.fn().mockResolvedValue({ count: 1 }),
       deleteMany: vi.fn<PrismaLike["aiAgentSession"]["deleteMany"]>().mockResolvedValue({ count: 1 })
     },
     aiAgentPendingReply: {
+      updateMany: vi.fn().mockResolvedValue({ count: 1 }),
       deleteMany: vi.fn<PrismaLike["aiAgentPendingReply"]["deleteMany"]>().mockResolvedValue({ count: 1 })
     },
     aiAgentRun: {
@@ -345,6 +367,25 @@ function createMockPrisma(overrides: {
 }
 
 describe("conversations service", () => {
+  it("includes shared inbox triage state in conversation DTOs", () => {
+    const base = {
+      id: "conv_1", workspaceId: "workspace_a", channelId: "channel_1", contactId: "contact_1",
+      status: "open" as const, assignedUserId: null, departmentId: null,
+      lastMessageAt: null, lastMessagePreview: null, unreadCount: 0, priority: "normal" as const
+    };
+    expect(toConversationDto({ ...base, inboxTriage: {
+      manualMarkedAt: new Date("2026-09-25T12:00:00.000Z"), decision: "needs_reply",
+      reason: "Cliente pediu um orçamento", anchorMessageId: "msg_1", dismissedMessageId: null
+    } })).toMatchObject({
+      manualMarked: true, replyTriageDecision: "needs_reply",
+      replyTriageReason: "Cliente pediu um orçamento", replyTriageAnchorMessageId: "msg_1",
+      replyDismissed: false
+    });
+    expect(toConversationDto({ ...base, inboxTriage: null })).toMatchObject({
+      manualMarked: false, replyTriageDecision: null,
+      replyTriageReason: null, replyTriageAnchorMessageId: null, replyDismissed: false
+    });
+  });
   it("filters conversations by workspace id", async () => {
     const prisma = createMockPrisma();
     const service = createConversationsService(prisma);
@@ -371,7 +412,9 @@ describe("conversations service", () => {
       expect.objectContaining({
         where: {
           workspaceId: "workspace_a",
-          status: "closed"
+          status: "closed",
+          hiddenUntilReply: false,
+          retiredIntoConversationId: null
         }
       })
     );
@@ -386,10 +429,46 @@ describe("conversations service", () => {
     expect(prisma.conversation.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: {
-          workspaceId: "workspace_a"
+          workspaceId: "workspace_a",
+          hiddenUntilReply: false,
+          retiredIntoConversationId: null
         }
       })
     );
+  });
+
+  it("keeps hidden broadcast conversations searchable by contact", async () => {
+    const prisma = createMockPrisma();
+    await createConversationsService(prisma).listConversations({ workspaceId: "workspace_a", status: "all", search: "Maria" });
+    expect(prisma.conversation.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.not.objectContaining({ hiddenUntilReply: false })
+    }));
+  });
+
+  it("filters unread human work in the database before pagination", async () => {
+    const prisma = createMockPrisma();
+    await createConversationsService(prisma).listConversations({ workspaceId: "workspace_a", status: "all", channelId: "channel_a", view: "unread", cursor: "older_id" });
+    expect(prisma.conversation.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ workspaceId: "workspace_a", channelId: "channel_a", unreadCount: { gt: 0 }, OR: expect.any(Array) }),
+      cursor: { id: "older_id" }, skip: 1, take: 50
+    }));
+  });
+
+  it("unites semantic requests and handoffs in the database", async () => {
+    const prisma = createMockPrisma();
+    const service = createConversationsService(prisma);
+    await service.listConversations({ workspaceId: "workspace_a", status: "all", view: "reply" });
+    expect(prisma.conversation.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ workspaceId: "workspace_a", OR: expect.arrayContaining([
+        expect.objectContaining({ inboxTriage: expect.any(Object) }),
+        expect.objectContaining({ status: { not: "closed" } }),
+        expect.objectContaining({ assistantState: { is: { status: { in: ["ready", "failed"] } } } })
+      ]) })
+    }));
+    await service.listConversations({ workspaceId: "workspace_a", status: "all", view: "marked" });
+    expect(prisma.conversation.findMany).toHaveBeenLastCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ inboxTriage: { is: { manualMarkedAt: { not: null } } } })
+    }));
   });
 
   it("can list conversations assigned to the current user", async () => {
@@ -403,10 +482,42 @@ describe("conversations service", () => {
         where: {
           workspaceId: "workspace_a",
           status: { in: ["open", "pending"] },
-          assignedUserId: "user_1"
+          assignedUserId: "user_1",
+          hiddenUntilReply: false,
+          retiredIntoConversationId: null
         }
       })
     );
+  });
+
+  it("pages older conversations within the selected channel", async () => {
+    const prisma = createMockPrisma();
+    const service = createConversationsService(prisma);
+
+    await service.listConversations({
+      workspaceId: "workspace_a",
+      status: "active",
+      channelId: "channel_a",
+      cursor: "older_conversation"
+    });
+
+    expect(prisma.conversation.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: {
+        workspaceId: "workspace_a",
+        status: { in: ["open", "pending"] },
+        channelId: "channel_a",
+        hiddenUntilReply: false,
+        retiredIntoConversationId: null
+      },
+      cursor: { id: "older_conversation" },
+      skip: 1,
+      take: 50,
+      orderBy: [
+        { lastMessageAt: { sort: "desc", nulls: "last" } },
+        { createdAt: "desc" },
+        { id: "desc" }
+      ]
+    }));
   });
 
   it("creates outbound pending messages inside the caller workspace", async () => {
@@ -452,7 +563,7 @@ describe("conversations service", () => {
           lastMessagePreview: "Oi"
         },
         include: expect.objectContaining({
-          contact: { select: { name: true, phone: true } },
+          contact: { select: { name: true, phone: true, isGroup: true } },
           channel: { select: { displayName: true, phoneNumber: true, provider: true } }
         })
       })
@@ -690,6 +801,46 @@ describe("conversations service", () => {
     expect(conversation.aiControlStatus).toBe("agent_allowed");
   });
 
+  it("completes and reopens a handoff without releasing control to the agent", async () => {
+    let completedAt: Date | null = null;
+    let aiControlStatus: "agent_allowed" | "human_controlled" = "agent_allowed";
+    const handoffConversation = () => ({
+      id: "conv_1", workspaceId: "workspace_a", channelId: "channel_1", contactId: "contact_1",
+      status: "open" as const, assignedUserId: null, departmentId: null,
+      lastMessageAt: new Date("2026-05-20T12:00:00.000Z"), lastMessagePreview: "Construção civil não trabalhamos",
+      unreadCount: 0, priority: "normal" as const, aiControlStatus,
+      activeAgentSessionId: "session_1",
+      activeAgentSession: { status: "handoff_requested" as const, handoffReason: "Confirmar catálogo", handoffActionCompletedAt: completedAt, agent: { name: "JEV" } },
+      channel: { displayName: "WhatsApp", phoneNumber: null, provider: "evolution" },
+      contact: { name: "João", phone: "5547999990000" }, department: null, assignedUser: null, tags: []
+    });
+    const prisma = createMockPrisma({
+      findUnique: vi.fn<PrismaLike["conversation"]["findUnique"]>().mockImplementation(async () => handoffConversation())
+    });
+    prisma.aiAgentSession.update.mockImplementation(async (args) => {
+      completedAt = args.data.handoffActionCompletedAt as Date | null;
+      return {} as never;
+    });
+    prisma.conversation.update.mockImplementation(async () => {
+      aiControlStatus = "human_controlled";
+      return handoffConversation() as never;
+    });
+    const service = createConversationsService(prisma);
+
+    const completed = await service.updateHandoffAction({ workspaceId: "workspace_a", conversationId: "conv_1", completed: true });
+    expect(completed.handoffActionCompletedAt).toBeTruthy();
+    expect(completed.aiControlStatus).toBe("human_controlled");
+    expect(completed.activeAgentSessionStatus).toBe("handoff_requested");
+
+    const reopened = await service.updateHandoffAction({ workspaceId: "workspace_a", conversationId: "conv_1", completed: false });
+    expect(reopened.handoffActionCompletedAt).toBeNull();
+    expect(reopened.aiControlStatus).toBe("human_controlled");
+    expect(prisma.conversation.update).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ aiControlStatus: "human_controlled" })
+    }));
+    expect(prisma.conversation.update).toHaveBeenCalledTimes(1);
+  });
+
   it("preflights outbound messages with the workspace conversation composite key", async () => {
     const prisma = createMockPrisma();
     const service = createConversationsService(prisma);
@@ -707,9 +858,29 @@ describe("conversations service", () => {
         customerServiceWindowExpiresAt: true,
         id: true,
         channel: { select: { provider: true, providerKey: true } },
-        contact: { select: { phone: true } }
+        contact: { select: { phone: true, isGroup: true } }
       }
     });
+  });
+
+  it("sends a manual group reply to the exact group JID and rejects contact cards", async () => {
+    const groupJid = "120363024158769234@g.us";
+    const sendText = vi.fn().mockResolvedValue({ providerMessageId: "group_sent", raw: {} });
+    const sendContact = vi.fn().mockResolvedValue({ providerMessageId: "contact_sent", raw: {} });
+    const prisma = createMockPrisma({ findUnique: vi.fn<PrismaLike["conversation"]["findUnique"]>()
+      .mockResolvedValue({ id: "group_conversation", workspaceId: "workspace_a", channelId: "channel_1",
+        contactId: "group_identity", status: "open", assignedUserId: null, departmentId: null,
+        lastMessageAt: null, lastMessagePreview: null, unreadCount: 0, priority: "normal",
+        channel: { provider: "evolution", providerKey: "instance_1" },
+        contact: { phone: groupJid, isGroup: true }, tags: [] }) });
+    const service = createConversationsService(prisma, { evolution: { mode: "real", client: { sendText, sendContact } } as never });
+    await service.createPendingOutboundMessage({ workspaceId: "workspace_a", conversationId: "group_conversation",
+      body: "Oi, pessoal", sentByUserId: "user_1" });
+    expect(sendText).toHaveBeenCalledWith({ instanceName: "instance_1", number: groupJid, text: "Oi, pessoal" });
+    await expect(service.createPendingOutboundMessage({ workspaceId: "workspace_a", conversationId: "group_conversation",
+      contactCard: { fullName: "Ana", phoneNumber: "5511999999999" }, sentByUserId: "user_1" }))
+      .rejects.toMatchObject({ code: "CONTACT_CARD_NOT_SUPPORTED" });
+    expect(sendContact).not.toHaveBeenCalled();
   });
 
   it("marks a reserved delivery uncertain when the provider accepts but message persistence fails", async () => {
@@ -1141,6 +1312,45 @@ describe("conversations service", () => {
     expect(result.message.providerMessageId).toBe("provider_msg_1");
   });
 
+  it("sends a native contact card instead of a text substitute", async () => {
+    const sendContact = vi.fn().mockResolvedValue({ providerMessageId: "contact_msg_1", raw: {} });
+    const sendText = vi.fn();
+    const prisma = createMockPrisma({
+      findUnique: vi.fn<PrismaLike["conversation"]["findUnique"]>()
+        .mockResolvedValueOnce({
+          id: "conv_1", workspaceId: "workspace_a", channelId: "channel_1", contactId: "contact_1",
+          channel: { provider: "evolution", providerKey: "talk-workspace_a-abc" },
+          contact: { phone: "5547999990000" }
+        })
+        .mockResolvedValue({
+          id: "conv_1", workspaceId: "workspace_a", channelId: "channel_1", contactId: "contact_1",
+          status: "open", assignedUserId: null, departmentId: null,
+          lastMessageAt: new Date("2026-05-20T12:00:00.000Z"), lastMessagePreview: "Contato compartilhado: Ana (5547888880000)",
+          unreadCount: 0, priority: "normal", tags: []
+        })
+    });
+    const service = createConversationsService(prisma, { evolution: {
+      mode: "real", webhookSecret: "secret", publicWebhookUrl: vi.fn(), localWebhookUrl: vi.fn(),
+      client: { createInstance: vi.fn(), connectInstance: vi.fn(), setWebhook: vi.fn(), sendText, sendMedia: vi.fn(), sendContact }
+    } });
+    await service.createPendingOutboundMessage({
+      workspaceId: "workspace_a", conversationId: "conv_1", sentByUserId: "user_1",
+      contactCard: { fullName: "Ana", phoneNumber: "5547888880000" }
+    });
+    expect(sendContact).toHaveBeenCalledWith({
+      instanceName: "talk-workspace_a-abc", number: "5547999990000",
+      contact: [{ fullName: "Ana", wuid: "5547888880000", phoneNumber: "5547888880000" }]
+    });
+    expect(sendText).not.toHaveBeenCalled();
+    expect(prisma.message.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        body: "Contato compartilhado: Ana (5547888880000)",
+        providerMessageId: "contact_msg_1",
+        metadata: expect.objectContaining({ contactCard: { fullName: "Ana", phoneNumber: "5547888880000" } })
+      })
+    }));
+  });
+
   it("sends outbound media through Evolution in real mode", async () => {
     const sendMedia = vi.fn().mockResolvedValue({
       providerMessageId: "provider_media_1",
@@ -1334,9 +1544,10 @@ describe("conversations service", () => {
       where: {
         workspaceId: "workspace_a",
         conversationId: "conv_1",
+        hiddenByReset: false,
         NOT: { status: "pending", metadata: { path: ["source"], equals: "followup_review" } }
       },
-      orderBy: [{ ingestedAt: { sort: 'desc', nulls: 'last' } }, { createdAt: 'desc' }, { id: 'desc' }],
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       take: 100
     });
     expect(messageSchema.array().parse(messages)).toEqual(messages);
@@ -1828,94 +2039,169 @@ describe("conversations service", () => {
     expect(crmResult.crmAction?.status).toBe("queued");
   });
 
-  it("resets all selected conversation context while preserving its identity", async () => {
-    const prisma = createMockPrisma({
-      findNotes: vi.fn<PrismaLike["contactNote"]["findMany"]>().mockResolvedValue([])
-    });
-    const service = createConversationsService(prisma);
-
-    const result = await service.resetConversation({
-      workspaceId: "workspace_a",
-      conversationId: "conv_1",
-      actorUserId: "user_1"
-    });
-
-    const scope = { workspaceId: "workspace_a", conversationId: "conv_1" };
-    expect(prisma.$transaction).toHaveBeenCalledOnce();
-    expect(prisma.aiAgentPendingReply.deleteMany).toHaveBeenCalledWith({ where: scope });
-    expect(prisma.aiAgentRun.deleteMany).toHaveBeenCalledWith({ where: scope });
-    expect(prisma.aiActionLog.deleteMany).toHaveBeenCalledWith({ where: scope });
-    expect(prisma.conversationFollowup.deleteMany).toHaveBeenCalledWith({ where: scope });
-    expect(prisma.message.deleteMany).toHaveBeenCalledWith({ where: scope });
-    expect(prisma.conversationTag.deleteMany).toHaveBeenCalledWith({ where: scope });
-    expect(prisma.contactNote.deleteMany).toHaveBeenCalledWith({
-      where: { workspaceId: "workspace_a", contactId: "contact_1" }
-    });
-    expect(prisma.aiAgentSession.deleteMany).toHaveBeenCalledWith({ where: scope });
-    expect(prisma.conversation.update).toHaveBeenCalledWith(expect.objectContaining({
-      data: expect.objectContaining({
-        status: "open",
-        assignedUserId: null,
-        departmentId: null,
-        lastMessageAt: null,
-        lastMessagePreview: null,
-        unreadCount: 0,
-        priority: "normal",
-        aiControlStatus: "agent_allowed",
-        activeAgentSessionId: null
+  it("resets the selected scope without deleting ledger-bound messages", async () => {
+    const prisma = createMockPrisma({ findNotes: vi.fn<PrismaLike["contactNote"]["findMany"]>().mockResolvedValue([]) });
+    const result = await createConversationsService(prisma).resetConversation({ workspaceId: "workspace_a", conversationId: "conv_1", actorUserId: "user_1" });
+    const scope = { workspaceId: "workspace_a", conversationId: { in: ["conv_1"] } };
+    expect(prisma.$transaction).toHaveBeenCalledWith(expect.any(Function), { isolationLevel: "ReadCommitted" });
+    expect(prisma.message.deleteMany).not.toHaveBeenCalled();
+    expect(prisma.message.updateMany).toHaveBeenCalledWith({ where: scope, data: { hiddenByReset: true } });
+    for (const store of [prisma.aiAgentPendingReply, prisma.aiAgentRun, prisma.aiActionLog, prisma.conversationFollowup, prisma.conversationTag, prisma.aiAgentSession]) {
+      expect(store.deleteMany).toHaveBeenCalledWith({ where: scope });
+    }
+    expect(prisma.contactNote.deleteMany).toHaveBeenCalledWith({ where: { workspaceId: "workspace_a", contactId: { in: ["contact_1"] } } });
+    expect(prisma.conversation.update).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({
+      historyResetAt: expect.any(Date), status: "open", aiControlStatus: "agent_allowed", hiddenUntilReply: false,
+      activeAgentSessionId: null, lastMessageAt: null, lastMessagePreviewAt: null, lastMessagePreview: null,
+      waitingDismissedAt: null, unreadCount: 0
+    }) }));
+    expect(prisma.auditLog.create).toHaveBeenCalledWith({ data: expect.objectContaining({
+      action: "conversation.demo_reset", targetId: "conv_1", metadata: expect.objectContaining({
+        conversationIds: ["conv_1"], contactIds: ["contact_1"], hiddenMessageCount: 1
       })
-    }));
-    expect(prisma.auditLog.create).toHaveBeenCalledWith({
-      data: {
-        workspaceId: "workspace_a",
-        actorUserId: "user_1",
-        action: "conversation.demo_reset",
-        targetType: "conversation",
-        targetId: "conv_1",
-        metadata: {}
-      }
-    });
-    expect(result.conversation.id).toBe("conv_1");
+    }) });
+    expect(result.conversation).toMatchObject({ id: "conv_1", lastMessage: null });
     expect(result.context.notes).toEqual([]);
   });
 
-  it("deletes FK-bound followups before their anchor messages and sessions during reset", async () => {
+  it("clears followups before sessions while retaining the anchor UUID", async () => {
     const order: string[] = [];
-    let followupExists = true;
     const prisma = createMockPrisma();
-    prisma.conversationFollowup.deleteMany.mockImplementation(async () => {
-      order.push("followups");
-      followupExists = false;
-      return { count: 1 };
-    });
-    prisma.message.deleteMany.mockImplementation(async () => {
-      order.push("messages");
-      if (followupExists) {
-        throw Object.assign(new Error("Followup anchor foreign key blocks message deletion"), { code: "P2003" });
-      }
-      return { count: 1 };
-    });
+    prisma.conversationFollowup.deleteMany.mockImplementation(async () => { order.push("followups"); return { count: 1 }; });
     prisma.aiAgentSession.deleteMany.mockImplementation(async () => {
-      order.push("sessions");
-      if (followupExists) {
-        throw Object.assign(new Error("Followup session foreign key blocks session deletion"), { code: "P2003" });
-      }
-      return { count: 1 };
+      expect(order).toContain("followups"); order.push("sessions"); return { count: 1 };
     });
-
-    await expect(createConversationsService(prisma).resetConversation({
-      workspaceId: "workspace_a",
-      conversationId: "conv_1",
-      actorUserId: "user_1"
-    })).resolves.toMatchObject({ conversation: { id: "conv_1" } });
-
-    expect(order).toEqual(expect.arrayContaining(["followups", "messages", "sessions"]));
-    expect(order.indexOf("followups")).toBeLessThan(order.indexOf("messages"));
-    expect(order.indexOf("followups")).toBeLessThan(order.indexOf("sessions"));
+    await expect(createConversationsService(prisma).resetConversation({ workspaceId: "workspace_a", conversationId: "conv_1", actorUserId: "user_1" })).resolves.toMatchObject({ conversation: { id: "conv_1" } });
+    expect(prisma.message.deleteMany).not.toHaveBeenCalled();
+    expect(order).toEqual(["followups", "sessions"]);
   });
+
 });
 
 describe("conversation routes", () => {
+  it("counts all pending handoffs in the selected workspace and channel", async () => {
+    const prisma = createMockPrisma();
+    const app = Fastify({ logger: false });
+    app.decorate("prisma", prisma as never);
+    app.decorate("realtime", { publish: vi.fn(), addClient: vi.fn(), clientCount: vi.fn() });
+    app.addHook("preHandler", async (request) => { request.talk = { workspaceId: "workspace_a", role: "agent" }; });
+    await app.register(conversationsRoutes);
+    try {
+      const channelId = "00000000-0000-4000-8000-000000000001";
+      const response = await app.inject({ method: "GET", url: `/conversations/attention-count?channelId=${channelId}` });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ count: 71 });
+      expect(prisma.conversation.count).toHaveBeenCalledWith({ where: expect.objectContaining({
+        workspaceId: "workspace_a", channelId, status: { not: "closed" }, OR: expect.any(Array)
+      }) });
+    } finally { await app.close(); }
+  });
+  it("forwards channel and cursor filters to the paginated conversation query", async () => {
+    const prisma = createMockPrisma();
+    const app = Fastify({ logger: false });
+    app.decorate("prisma", prisma as never);
+    app.addHook("preHandler", async (request) => { request.talk = { workspaceId: "workspace_a", role: "agent" }; });
+    await app.register(conversationsRoutes);
+    try {
+      const channelId = "00000000-0000-4000-8000-000000000001";
+      const cursor = "00000000-0000-4000-8000-000000000002";
+      const response = await app.inject({
+        method: "GET",
+        url: `/conversations?status=active&channelId=${channelId}&cursor=${cursor}`
+      });
+      expect(response.statusCode).toBe(200);
+      expect(prisma.conversation.findMany).toHaveBeenCalledWith(expect.objectContaining({
+        where: expect.objectContaining({ workspaceId: "workspace_a", channelId }),
+        cursor: { id: cursor },
+        skip: 1
+      }));
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("searches older conversations by contact name or phone on the server", async () => {
+    const prisma = createMockPrisma();
+    const app = Fastify({ logger: false });
+    app.decorate("prisma", prisma as never);
+    app.addHook("preHandler", async (request) => { request.talk = { workspaceId: "workspace_a", role: "agent" }; });
+    await app.register(conversationsRoutes);
+    try {
+      const response = await app.inject({ method: "GET", url: "/conversations?status=all&search=Ana%20Silva" });
+      expect(response.statusCode).toBe(200);
+      expect(prisma.conversation.findMany).toHaveBeenCalledWith(expect.objectContaining({
+        where: expect.objectContaining({
+          workspaceId: "workspace_a",
+          contact: { is: { OR: [
+            { name: { contains: "Ana Silva", mode: "insensitive" } },
+            { phone: { contains: "Ana Silva" } }
+          ] } }
+        }),
+        take: 50
+      }));
+    } finally { await app.close(); }
+  });
+
+  it("normalizes a pasted formatted number before searching saved phone records", async () => {
+    const prisma = createMockPrisma();
+    const service = createConversationsService(prisma);
+    await service.listConversations({ workspaceId: "workspace_a", search: "+55 (47) 99139-6920" });
+    expect(prisma.conversation.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ contact: { is: { OR: [
+        { name: { contains: "+55 (47) 99139-6920", mode: "insensitive" } },
+        { phone: { contains: "554791396920" } }
+      ] } } })
+    }));
+  });
+
+  it("completes a handoff, reports the improvement analysis and publishes the cleared queue state", async () => {
+    let completedAt: Date | null = null;
+    const prisma = createMockPrisma({
+      findUnique: vi.fn<PrismaLike["conversation"]["findUnique"]>().mockImplementation(async () => ({
+        id: "00000000-0000-4000-8000-000000000001", workspaceId: "workspace_a", channelId: "channel_1", contactId: "contact_1",
+        status: "open", assignedUserId: null, departmentId: null, lastMessageAt: null, lastMessagePreview: null,
+        unreadCount: 0, priority: "normal", aiControlStatus: "human_controlled", activeAgentSessionId: "session_1",
+        activeAgentSession: { status: "handoff_requested", handoffReason: "Confirmar catálogo", handoffActionCompletedAt: completedAt, agent: { name: "JEV" } },
+        channel: { displayName: "WhatsApp", phoneNumber: null, provider: "evolution" },
+        contact: { name: "João", phone: "5547999990000" }, department: null, assignedUser: null, tags: []
+      }))
+    });
+    prisma.aiAgentSession.update.mockImplementation(async (args) => {
+      completedAt = args.data.handoffActionCompletedAt as Date | null;
+      return {} as never;
+    });
+    const publish = vi.fn();
+    const control = vi.fn().mockResolvedValue(undefined);
+    const handoffCompleted = vi.fn().mockResolvedValue(undefined);
+    const observeLatestHumanReplyAfterHandoff = vi.fn().mockResolvedValue({ created: true });
+    const app = Fastify({ logger: false });
+    app.decorate("prisma", prisma as never);
+    app.decorate("realtime", { publish, addClient: vi.fn(), clientCount: vi.fn() });
+    app.addHook("preHandler", async (request) => { request.talk = { workspaceId: "workspace_a", role: "agent" }; });
+    await app.register(conversationsRoutes, {
+      assistantScheduler: { control, handoffCompleted } as never,
+      agentImprovements: { observeHumanReply: vi.fn(), observeLatestHumanReplyAfterHandoff }
+    });
+    try {
+      const response = await app.inject({
+        method: "POST", url: "/conversations/00000000-0000-4000-8000-000000000001/actions",
+        payload: { action: "complete_handoff_action" }
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        conversation: { aiControlStatus: "human_controlled", activeAgentSessionStatus: "handoff_requested", handoffActionCompletedAt: expect.any(String) },
+        improvementAnalysis: { created: true }
+      });
+      expect(observeLatestHumanReplyAfterHandoff).toHaveBeenCalledWith({
+        workspaceId: "workspace_a", conversationId: "00000000-0000-4000-8000-000000000001"
+      });
+      expect(publish).toHaveBeenCalledWith(expect.objectContaining({ type: "conversation.updated" }));
+      expect(handoffCompleted).toHaveBeenCalledWith("workspace_a", "00000000-0000-4000-8000-000000000001");
+    } finally {
+      await app.close();
+    }
+  });
+
   it("restricts conversation resets to workspace owners", async () => {
     const prisma = createMockPrisma();
     const app = Fastify({ logger: false });
@@ -1943,6 +2229,9 @@ describe("conversation routes", () => {
   it("returns outbound messages and publishes message plus conversation updates once", async () => {
     const prisma = createMockPrisma();
     const publish = vi.fn();
+    const observeMessage = vi.fn().mockResolvedValue(undefined);
+    const control = vi.fn().mockResolvedValue(undefined);
+    const assistantMessage = vi.fn().mockResolvedValue(undefined);
     const observeConversationActivity = vi.fn().mockResolvedValue({ status: "scheduled" });
     const app = Fastify({ logger: false });
 
@@ -1952,7 +2241,9 @@ describe("conversation routes", () => {
       request.talk = { workspaceId: "workspace_a", role: "agent" };
     });
     await app.register(conversationsRoutes, {
-      followupService: { observeConversationActivity }
+      followupService: { observeConversationActivity },
+      inboxTriage: { observeMessage },
+      assistantScheduler: { control, message: assistantMessage } as never
     });
 
     try {
@@ -1963,7 +2254,16 @@ describe("conversation routes", () => {
       });
 
       expect(response.statusCode).toBe(201);
+      expect(prisma.conversation.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({ aiControlStatus: "human_controlled" })
+      }));
+      expect(prisma.aiAgentPendingReply.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({ status: "cancelled" })
+      }));
+      expect(control).toHaveBeenCalledWith("workspace_a", "00000000-0000-4000-8000-000000000001", true);
+      expect(assistantMessage).not.toHaveBeenCalled();
       expect(messageSchema.parse(response.json())).toEqual(response.json());
+      expect(observeMessage).not.toHaveBeenCalled();
       expect(observeConversationActivity).toHaveBeenCalledWith({
         workspaceId: "workspace_a",
         conversationId: "00000000-0000-4000-8000-000000000001",
@@ -2243,7 +2543,7 @@ describe("conversation routes", () => {
       expect(response.statusCode).toBe(502);
       expect(response.json()).toEqual({
         code: "EVOLUTION_SEND_FAILED",
-        error: "Evolution did not accept the outbound message."
+        error: "A Evolution recusou o envio. Tente novamente após conferir a conexão do canal."
       });
       expect(prisma.message.create).not.toHaveBeenCalled();
       expect(publish).not.toHaveBeenCalled();
@@ -2252,6 +2552,105 @@ describe("conversation routes", () => {
     }
   });
 
+  it("shows a specific error when Evolution reports a closed WhatsApp connection", async () => {
+    const sendText = vi.fn().mockRejectedValue(new EvolutionClientError(500, {
+      status: 500, response: { message: "Connection Closed" }
+    }));
+    const prisma = createMockPrisma({
+      findUnique: vi.fn<PrismaLike["conversation"]["findUnique"]>().mockResolvedValue({
+        id: "conv_1",
+        workspaceId: "workspace_a",
+        channelId: "channel_1",
+        contactId: "contact_1",
+        channel: { provider: "evolution", providerKey: "talk-workspace_a-abc" },
+        contact: { phone: "5547999990000" }
+      })
+    });
+    prisma.channel.findFirst.mockResolvedValue({
+      id: "channel_1", workspaceId: "workspace_a", provider: "evolution",
+      providerKey: "talk-workspace_a-abc", phoneNumber: null, displayName: "Geral Villefer",
+      status: "failed", createdAt: new Date("2026-09-01T00:00:00.000Z"), updatedAt: new Date("2026-09-29T18:00:00.000Z")
+    });
+    const app = Fastify({ logger: false });
+    const publish = vi.fn();
+    app.decorate("prisma", prisma as never);
+    app.decorate("realtime", { publish, addClient: vi.fn(), clientCount: vi.fn() });
+    app.addHook("preHandler", async (request) => {
+      request.talk = { workspaceId: "workspace_a", role: "agent" };
+    });
+    await app.register(conversationsRoutes, {
+      evolution: {
+        mode: "real",
+        webhookSecret: "secret",
+        publicWebhookUrl: vi.fn(),
+        localWebhookUrl: vi.fn(),
+        client: { createInstance: vi.fn(), connectInstance: vi.fn(), setWebhook: vi.fn(), sendText, sendMedia: vi.fn() }
+      }
+    });
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/conversations/00000000-0000-4000-8000-000000000001/messages",
+        payload: { body: "Oi" }
+      });
+      expect(response.statusCode).toBe(502);
+      expect(response.json()).toEqual({
+        code: "EVOLUTION_CONNECTION_CLOSED",
+        error: "A conexão do WhatsApp fechou durante o envio. Confira a conversa do destinatário antes de tentar novamente e reconecte o canal em Canais se o problema continuar."
+      });
+      expect(prisma.channel.updateMany).toHaveBeenCalledWith({
+        where: {
+          workspaceId: "workspace_a",
+          id: "channel_1"
+        },
+        data: { status: "failed" }
+      });
+      expect(publish).toHaveBeenCalledWith({
+        type: "channel.updated", workspaceId: "workspace_a",
+        payload: expect.objectContaining({ id: "channel_1", status: "failed" })
+      });
+      expect(prisma.message.create).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("compacts a 10 MiB inline attachment only when message listing opts in, preserving the default DTO", async () => {
+    const conversationId = '00000000-0000-4000-8000-000000000001';
+    const messageId = '00000000-0000-4000-8000-000000000002';
+    const mediaUrl = 'data:image/png;base64,' + 'A'.repeat(10 * 1024 * 1024);
+    const record = { id: messageId, conversationId, workspaceId: 'workspace_a', providerMessageId: 'provider-id',
+      direction: 'inbound' as const, type: 'image' as const, body: 'Caption kept', mediaUrl, status: 'delivered' as const,
+      createdAt: new Date('2026-09-30T00:00:00Z'), metadata: { attachment: { fileName: 'image.png', caption: 'Original caption', durationSeconds: 12 },
+        historyImport: { source: 'evolution', mediaStatus: 'unread' } } };
+    const prisma = createMockPrisma({ findMessages: vi.fn().mockResolvedValue([record]) });
+    const app = Fastify({ logger: false }); const publish = vi.fn();
+    app.decorate('prisma', prisma as never);
+    app.decorate('realtime', { publish, addClient: vi.fn(), clientCount: vi.fn() });
+    app.addHook('preHandler', async request => { request.talk = { workspaceId: 'workspace_a', role: 'agent' }; });
+    await app.register(conversationsRoutes, { publicTalkUrl: 'https://talk.example.test' });
+    try {
+      const original = await app.inject({ method: 'GET', url: `/conversations/${conversationId}/messages` });
+      const compact = await app.inject({ method: 'GET', url: `/conversations/${conversationId}/messages?compactMedia=1` });
+      expect(original.statusCode).toBe(200); expect(compact.statusCode).toBe(200);
+      expect(Buffer.byteLength(original.body)).toBeGreaterThan(10 * 1024 * 1024);
+      expect(Buffer.byteLength(compact.body)).toBeLessThan(2_048);
+      expect(compact.body).not.toContain(mediaUrl); expect(compact.body).not.toContain('data:image/');
+      const sourceHash = createHash('sha256').update(JSON.stringify([messageId, 'image', mediaUrl])).digest('hex');
+      const normalDto = original.json()[0]; const compactDto = compact.json()[0];
+      expect(compactDto).toEqual({ ...normalDto,
+        mediaUrl: `https://talk.example.test/api/conversations/${conversationId}/messages/${messageId}/media?v=${sourceHash}`,
+        attachment: { ...normalDto.attachment, mimeType: 'image/png' } });
+      expect(messageSchema.parse(compactDto)).toEqual(compactDto);
+      const disabled = await app.inject({ method: 'GET', url: `/conversations/${conversationId}/messages?compactMedia=0` });
+      expect(disabled.json()).toEqual(original.json());
+      const reads = prisma.message.findMany.mock.calls.length;
+      const invalid = await app.inject({ method: 'GET', url: `/conversations/${conversationId}/messages?compactMedia=2` });
+      expect(invalid.statusCode).toBe(400); expect(prisma.message.findMany).toHaveBeenCalledTimes(reads);
+      expect(publish).not.toHaveBeenCalled(); expect(prisma.message.create).not.toHaveBeenCalled();
+    } finally { await app.close(); }
+  });
   it("returns messages for a workspace conversation", async () => {
     const prisma = createMockPrisma();
     const publish = vi.fn();
@@ -2662,6 +3061,90 @@ describe("conversation routes", () => {
     } finally {
       await app.close();
     }
+  });
+});
+
+describe('compact history attachment DTOs', () => {
+  it('keeps the same source hash across raw/compact/transcription DTOs and changes it only with the media source', () => {
+    const record = { id: 'm', conversationId: 'c', workspaceId: 'w', direction: 'inbound' as const, type: 'audio' as const,
+      body: 'Áudio recebido', mediaUrl: 'data:audio/ogg;base64,YQ==', status: 'read' as const, createdAt: new Date() };
+    const sourceHash = createHash('sha256').update(JSON.stringify([record.id, record.type, record.mediaUrl])).digest('hex');
+    const original = toMessageDto(record); const compact = toCompactMessageDto(record, 'https://talk.example.test');
+    expect(original.mediaSourceHash).toBe(sourceHash); expect(compact.mediaSourceHash).toBe(sourceHash);
+    expect(toMessageDto({ ...record, body: 'Transcrição recebida', status: 'delivered' }).mediaSourceHash).toBe(sourceHash);
+    expect(toMessageDto({ ...record, mediaUrl: 'data:audio/ogg;base64,Yg==' }).mediaSourceHash).not.toBe(sourceHash);
+    expect(toMessageDto({ ...record, type: 'text', mediaUrl: null }).mediaSourceHash).toBeUndefined();
+    expect(messageSchema.parse(original).mediaSourceHash).toBe(sourceHash);
+    expect(realtimeEventSchema.parse({ type: 'message.updated', workspaceId: 'w', payload: original })).toMatchObject({ payload: { mediaSourceHash: sourceHash } });
+  });
+  it.each(['YQ', 'YR==', 'YWF=', 'Y Q==', 'YQ%3D%3D'])('preserves browser-decodable direct JPEG base64 %s outside the strict decoder format', async encoded => {
+    const mediaUrl = `data:image/jpeg;base64,${encoded}`;
+    const bytes = Buffer.from(await (await fetch(mediaUrl)).arrayBuffer());
+    expect(bytes.length).toBeGreaterThan(0);
+    const record = { id: 'm', conversationId: 'c', workspaceId: 'w', direction: 'inbound' as const, type: 'image' as const,
+      body: null, mediaUrl, status: 'read' as const, createdAt: new Date() };
+    expect(toCompactMessageDto(record, 'https://talk.example.test')).toEqual(toMessageDto(record));
+  });
+  it.each(['YQ==', 'YWE=', 'YWFh'])('compacts canonical direct visual base64 %s accepted by the decoder', encoded => {
+    const record = { id: 'm', conversationId: 'c', workspaceId: 'w', direction: 'inbound' as const, type: 'file' as const,
+      body: null, mediaUrl: `data:video/mp4;base64,${encoded}`, status: 'read' as const, createdAt: new Date() };
+    expect(toCompactMessageDto(record, 'https://talk.example.test').mediaUrl).toMatch(/^https:/);
+  });
+  it('compacts stored visual bytes at the 64 MiB cache boundary and preserves direct display above it', () => {
+    // Canonical base64 length/padding represents the boundary without allocating a binary buffer.
+    const byteLimit = 64 * 1024 * 1024;
+    const encodedLength = Math.ceil(byteLimit / 3) * 4;
+    const encoded = 'A'.repeat(encodedLength - 2);
+    const record = { id: 'm', conversationId: 'c', workspaceId: 'w', direction: 'inbound' as const, type: 'image' as const,
+      body: null, mediaUrl: `data:image/png;base64,${encoded}==`, status: 'read' as const, createdAt: new Date() };
+    expect(toCompactMessageDto(record, 'https://talk.example.test').mediaUrl).toMatch(/^https:/);
+    const oversize = { ...record, type: 'file' as const, mediaUrl: `data:video/mp4;base64,${encoded}A=` };
+    expect(toCompactMessageDto(oversize, 'https://talk.example.test').mediaUrl).toBe(oversize.mediaUrl);
+  });
+  it.each([
+    ['image', 'data:image/png;charset=utf-8;base64,YQ=='],
+    ['image', 'data:image/png;charset=utf-8,%61'],
+    ['file', 'data:video/mp4;charset=utf-8;base64,YQ=='],
+    ['file', 'data:video/mp4;charset=utf-8,%61']
+  ] as const)('preserves direct inline %s URLs outside the media decoder format', (type, mediaUrl) => {
+    const record = { id: 'm', conversationId: 'c', workspaceId: 'w', direction: 'inbound' as const, type,
+      body: null, mediaUrl, status: 'read' as const, createdAt: new Date() };
+    expect(toCompactMessageDto(record, 'https://talk.example.test')).toEqual(toMessageDto(record));
+  });
+  it.each([['image', 'image/png'], ['audio', 'audio/ogg'], ['file', 'application/pdf'], ['file', 'video/mp4']] as const)('preserves %s presentation/state and infers %s without inline bytes', (type, mimeType) => {
+    const mediaUrl = `data:${mimeType};base64,YQ==`;
+    const sourceHash = createHash('sha256').update(JSON.stringify(['m', type, mediaUrl])).digest('hex');
+    const record = { id: 'm', conversationId: 'c', workspaceId: 'w', providerMessageId: 'provider-id', direction: 'inbound' as const,
+      type, body: 'Original body', mediaUrl, status: 'read' as const, sentByUserId: 'sender', createdAt: new Date('2026-09-30T00:00:00Z'),
+      metadata: { attachment: { fileName: 'Original name', caption: 'Original caption', durationSeconds: 73 },
+        assistantMedia: { sourceHash, result: { status: 'failed' } }, editedAt: '2026-09-30T00:01:00Z' } };
+    const original = toMessageDto(record); const compact = toCompactMessageDto(record, 'https://talk.example.test');
+    expect(compact).toEqual({ ...original,
+      mediaUrl: `https://talk.example.test/api/conversations/c/messages/m/media?v=${sourceHash}`,
+      attachment: { ...original.attachment, mimeType } });
+    expect(compact.attachmentReadStatus).toBe('unread'); expect(messageSchema.parse(compact)).toEqual(compact);
+    expect(original.mediaUrl).toBe(mediaUrl); expect(original.attachment?.mimeType).toBeUndefined();
+    const changed = toCompactMessageDto({ ...record, mediaUrl: `data:${mimeType};base64,Yg==` }, 'https://talk.example.test');
+    expect(changed.mediaUrl).not.toBe(compact.mediaUrl); expect(changed.attachmentReadStatus).toBeUndefined();
+  });
+  it('keeps existing MIME metadata and leaves remote, absent and non-attachment media unchanged', () => {
+    const record = { id: 'm', conversationId: 'c', workspaceId: 'w', direction: 'inbound' as const, type: 'file' as const,
+      body: 'File', mediaUrl: 'data:application/pdf;base64,YQ==', status: 'delivered' as const, createdAt: new Date(),
+      metadata: { attachment: { mimeType: 'application/custom', fileName: 'Original filename' } } };
+    expect(toCompactMessageDto(record, 'https://talk.example.test').attachment).toEqual(record.metadata.attachment);
+    for (const value of [{ ...record, mediaUrl: 'https://provider.example.test/file.pdf' }, { ...record, mediaUrl: null }, { ...record, type: 'text' as const }, { ...record, mediaUrl: 'DATA:application/pdf;base64,YQ==' }]) {
+      expect(toCompactMessageDto(value, 'https://talk.example.test')).toEqual(toMessageDto(value));
+    }
+  });
+  it.each(['video/mp4', 'application/pdf'])('retains %s preview identity alongside generic provider MIME metadata', mimeType => {
+    const record = { id: 'm', conversationId: 'c', workspaceId: 'w', direction: 'inbound' as const, type: 'file' as const,
+      body: 'Original body', mediaUrl: `data:${mimeType};base64,YQ==`, status: 'delivered' as const, createdAt: new Date(),
+      metadata: { attachment: { mimeType: 'application/octet-stream' } } };
+    const compact = toCompactMessageDto(record, 'https://talk.example.test');
+    expect(compact.attachment).toEqual(record.metadata.attachment);
+    expect(new URL(compact.mediaUrl!).searchParams.get('previewMime')).toBe(mimeType);
+    expect(compact.mediaUrl).not.toContain('base64'); expect(messageSchema.parse(compact)).toEqual(compact);
+    expect(toMessageDto(record).mediaUrl).toBe(record.mediaUrl);
   });
 });
 

@@ -62,7 +62,7 @@ function provenanceRecord(overrides: Record<string, unknown> = {}) {
 
 function createPrisma(overrides: Record<string, any> = {}) {
   const tx: Record<string, any> = {
-    $queryRaw: vi.fn().mockResolvedValue([{ pg_advisory_xact_lock: null }]),
+    $queryRaw: vi.fn().mockResolvedValue([{ locked: false }]),
     lead: {
       findMany: vi.fn().mockResolvedValue([lead])
     },
@@ -111,6 +111,29 @@ function createPrisma(overrides: Record<string, any> = {}) {
 }
 
 describe("lead conversion", () => {
+  it("preserves a country-coded availability result for a local Google Maps phone", async () => {
+    const { prisma, tx } = createPrisma();
+    tx.lead.findMany.mockResolvedValue([{
+      ...lead, normalizedPhone: "47991396920", phones: ["(47) 99139-6920"]
+    }]);
+    tx.leadWhatsappVerification.findMany.mockResolvedValue([{
+      id: "verification-local", leadId: ids.lead1, normalizedPhone: "554791396920",
+      status: "available", checkedAt: now, createdAt: now
+    }]);
+    const service = createLeadConversionService(prisma as never, { now: () => now });
+
+    await service.importSelectedLeads({
+      workspaceId: "workspace-a", selectedLeadIds: [ids.lead1], actor: { id: "user-1" }
+    });
+
+    expect(tx.contact.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      where: { workspaceId_phone: { workspaceId: "workspace-a", phone: "554791396920" } }
+    }));
+    expect(tx.leadContactProvenance.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      create: expect.objectContaining({ whatsappStatus: "available" })
+    }));
+  });
+
   it("imports a new contact transactionally with deterministic available phone, tag, snapshot and locked default reply", async () => {
     const { prisma, tx } = createPrisma();
     tx.leadWhatsappVerification.findMany.mockResolvedValue([
@@ -144,6 +167,7 @@ describe("lead conversion", () => {
       }
     });
     expect(tx.$queryRaw).toHaveBeenCalledBefore(tx.quickReply.findFirst);
+    expect(tx.$queryRaw.mock.calls[0]?.[0].join("?")).toContain("IS NULL AS locked");
     expect(tx.contact.upsert).toHaveBeenCalledWith(expect.objectContaining({
       where: { workspaceId_phone: { workspaceId: "workspace-a", phone: "551133334444" } },
       update: {},
@@ -428,6 +452,8 @@ describe("lead conversion", () => {
     const result = await service.createCampaignDraftFromLeads({
       workspaceId: "workspace-a",
       selectedLeadIds: [ids.lead1, ids.lead2],
+      originalSelectedLeadIds: [ids.lead1, ids.lead2],
+      listId: ids.list1,
       name: "Prospecção setembro"
     });
 
@@ -436,7 +462,10 @@ describe("lead conversion", () => {
       data: expect.objectContaining({
         status: "draft",
         messageBody: "Corpo comum",
-        audience: expect.objectContaining({ type: "imported", rows: [expect.objectContaining({ phone: "551199990000" })] })
+        audience: expect.objectContaining({ type: "imported", origin: "leads",
+          selectedCount: 2, listId: ids.list1,
+          exclusions: { notImported: 0, duplicateOrInvalidPhone: 1 },
+          rows: [expect.objectContaining({ phone: "551199990000" })] })
       })
     }));
     expect((tx as Record<string, unknown>).campaignRecipient).toBeUndefined();
@@ -457,7 +486,7 @@ describe("lead conversion", () => {
     expect(tx.campaign.create).not.toHaveBeenCalled();
   });
 
-  it("requires an explicit common body when selected snapshots differ", async () => {
+  it("creates the list without a message when the selected snapshots differ: it is written in Disparos", async () => {
     const { prisma, tx } = createPrisma();
     tx.leadContactProvenance.findMany.mockResolvedValue([
       { id: ids.provenance1, leadId: ids.lead1, contactId: ids.contact1, suggestedMessage: "Corpo A", contact: record() },
@@ -466,8 +495,8 @@ describe("lead conversion", () => {
     const service = createLeadConversionService(prisma as never);
 
     await expect(service.createCampaignDraftFromLeads({ workspaceId: "workspace-a", selectedLeadIds: [ids.lead1, ids.lead2] }))
-      .rejects.toMatchObject({ code: "LEAD_CAMPAIGN_COMMON_BODY_REQUIRED" } satisfies Partial<LeadConversionError>);
-    expect(tx.campaign.create).not.toHaveBeenCalled();
+      .resolves.toMatchObject({ status: "draft", contactCount: 2 });
+    expect(tx.campaign.create).toHaveBeenLastCalledWith(expect.objectContaining({ data: expect.objectContaining({ messageBody: "" }) }));
 
     await expect(service.createCampaignDraftFromLeads({
       workspaceId: "workspace-a",

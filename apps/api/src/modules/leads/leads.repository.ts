@@ -17,8 +17,11 @@ import type {
   LeadResultDto,
   LeadWhatsappVerificationResult
 } from "@prymeira-talk/shared";
+import { MAX_LEAD_BULK_SELECTION_SIZE } from "@prymeira-talk/shared";
 import { canTransitionLeadJob } from "./leads.types.js";
 import { canonicalizePhone } from "../contacts/phone-normalization.js";
+import { aggregateLeadWhatsappStatus } from "./lead-whatsapp-status.js";
+import { whatsappPhoneCandidates } from "./lead-whatsapp-numbers.js";
 
 type DateLike = Date | string;
 
@@ -210,6 +213,10 @@ export function toLeadResultDto(
   record: Lead,
   whatsappVerifications: LeadResultDto["whatsappVerifications"] = []
 ): LeadResultDto {
+  const phones = new Set([record.normalizedPhone, ...strings(record.phones)]
+    .filter((phone): phone is string => Boolean(phone))
+    .map((phone) => whatsappPhoneCandidates(phone)?.key ?? null)
+    .filter((phone): phone is string => phone !== null));
   return {
     id: record.id,
     workspaceId: record.workspaceId,
@@ -235,7 +242,7 @@ export function toLeadResultDto(
     longitude: record.longitude,
     sourceUrl: record.sourceUrl,
     searchOrigin: searchOriginFromSnapshot(record.sourceSnapshot),
-    whatsappStatus: whatsappVerifications[0]?.status ?? "unverified",
+    whatsappStatus: aggregateLeadWhatsappStatus(phones.size, whatsappVerifications.map((item) => item.status)),
     whatsappVerifications,
     createdAt: toIso(record.createdAt),
     updatedAt: toIso(record.updatedAt)
@@ -413,8 +420,37 @@ export class LeadsRepository {
   }
 
   async deleteList(workspaceId: string, listId: string) {
-    const result = await this.prisma.leadList.deleteMany({ where: { workspaceId, id: listId } });
-    if (result.count !== 1) throw new LeadsDomainError("LEAD_NOT_FOUND", "Lead list not found.");
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        const list = await tx.leadList.findFirst({ where: { workspaceId, id: listId } });
+        if (!list) throw new LeadsDomainError("LEAD_NOT_FOUND", "Lead list not found.");
+
+        const activeJobs = await tx.leadJob.count({
+          where: { workspaceId, listId, status: { in: ["queued", "running"] } }
+        });
+        if (activeJobs > 0) {
+          throw new LeadsDomainError(
+            "LEAD_INVALID_TRANSITION", "Aguarde a busca ou verificação em andamento antes de excluir esta lista."
+          );
+        }
+
+        const importedContacts = await tx.leadContactProvenance.count({ where: { workspaceId, listId } });
+        if (importedContacts > 0) {
+          throw new LeadsDomainError("LEAD_INVALID_TRANSITION", "Esta lista já originou contatos e não pode ser excluída.");
+        }
+
+        const result = await tx.leadList.deleteMany({ where: { workspaceId, id: listId } });
+        if (result.count !== 1) throw new LeadsDomainError("LEAD_NOT_FOUND", "Lead list not found.");
+      }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2003") {
+        throw new LeadsDomainError("LEAD_INVALID_TRANSITION", "Esta lista possui contatos vinculados e não pode ser excluída.");
+      }
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2034") {
+        throw new LeadsDomainError("LEAD_INVALID_TRANSITION", "A lista mudou durante a exclusão. Atualize e tente novamente.");
+      }
+      throw error;
+    }
   }
 
   async listLeads(input: { workspaceId: string; listId: string; page: number; pageSize: number }): Promise<LeadPaginatedResultDto> {
@@ -433,11 +469,18 @@ export class LeadsRepository {
       row.id,
       new Set([row.normalizedPhone, ...strings(row.phones)].flatMap((phone) => {
         if (!phone) return [];
-        const normalized = canonicalizePhone(phone);
-        return /^\d{8,15}$/.test(normalized) ? [normalized] : [];
+        const normalized = whatsappPhoneCandidates(phone)?.key;
+        return normalized ? [normalized] : [];
       }))
     ]));
-    const phones = [...new Set([...currentPhones.values()].flatMap((set) => [...set]))];
+    const phones = [...new Set(rows.flatMap((row) =>
+      [row.normalizedPhone, ...strings(row.phones)].flatMap((phone) => {
+        if (!phone) return [];
+        const current = whatsappPhoneCandidates(phone)?.key;
+        const legacy = canonicalizePhone(phone);
+        return current ? [current, legacy] : [];
+      })
+    ))];
     const recent = phones.length === 0 ? [] : await this.prisma.leadWhatsappVerification.findMany({
       where: {
         workspaceId: input.workspaceId,
@@ -448,7 +491,7 @@ export class LeadsRepository {
     });
     const latest = new Map<string, LeadWhatsappVerification>();
     for (const verification of recent) {
-      const key = `${verification.leadId}:${canonicalizePhone(verification.normalizedPhone)}`;
+      const key = `${verification.leadId}:${whatsappPhoneCandidates(verification.normalizedPhone)?.key ?? canonicalizePhone(verification.normalizedPhone)}`;
       if (!latest.has(key)) latest.set(key, verification);
     }
     return {
@@ -468,6 +511,24 @@ export class LeadsRepository {
       page: input.page,
       pageSize: input.pageSize,
       total
+    };
+  }
+
+  async listLeadSelection(workspaceId: string, listId: string) {
+    await this.getList(workspaceId, listId);
+    const rows = await this.prisma.lead.findMany({
+      where: { workspaceId, listId },
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      take: MAX_LEAD_BULK_SELECTION_SIZE + 1,
+      select: { id: true, normalizedPhone: true, phones: true }
+    });
+    if (rows.length > MAX_LEAD_BULK_SELECTION_SIZE) {
+      throw new LeadsDomainError("LEAD_LIMIT_EXCEEDED", `Esta lista excede o limite de ${MAX_LEAD_BULK_SELECTION_SIZE} leads por seleção.`);
+    }
+    return {
+      ids: rows.map(row => row.id),
+      verifiableIds: rows.filter(row => [row.normalizedPhone, ...strings(row.phones)]
+        .some(phone => Boolean(phone && whatsappPhoneCandidates(phone)))).map(row => row.id)
     };
   }
 
@@ -501,7 +562,7 @@ export class LeadsRepository {
     idempotencyKey: string;
     requestId: string;
     requestFingerprint: string;
-    batches: Array<Array<{ phone: string; leadIds: string[] }>>;
+    batches: Array<Array<{ phone: string; primary: string; alternate: string | null; leadIds: string[] }>>;
   }) {
     const create = () => this.prisma.$transaction(async (tx) => {
       const existing = await tx.leadJob.findUnique({
@@ -573,7 +634,12 @@ export class LeadsRepository {
               totalBatches: input.batches.length,
               channelId: input.channelId,
               instanceName: input.instanceName,
-              numbers: batch.map((item) => item.phone),
+              numbers: batch.map((item) => item.primary),
+              lookups: batch.map((item) => ({
+                phone: item.phone,
+                primary: item.primary,
+                alternate: item.alternate
+              })),
               entries
             },
             output: { totalCount: entries.length, processedCount: 0, failedCount: 0 }
@@ -732,6 +798,21 @@ export class LeadsRepository {
         entries.push({ verificationId: row.id, leadId: row.leadId, phone: row.normalizedPhone });
       }
       const previous = inputRecord(current.input);
+      const previousLookups = Array.isArray(previous.lookups)
+        ? previous.lookups.map(inputRecord)
+        : [];
+      const lookups = [...new Set(rows.map((row) => whatsappPhoneCandidates(row.normalizedPhone)?.key))].map((phone) => {
+        if (!phone) throw new LeadsDomainError("LEAD_INVALID_INPUT", "WhatsApp retry number is invalid.");
+        const prior = previousLookups.find((lookup) => lookup.phone === phone &&
+          typeof lookup.primary === "string" &&
+          (typeof lookup.alternate === "string" || lookup.alternate === null));
+        if (prior) {
+          return { phone, primary: prior.primary as string, alternate: prior.alternate as string | null };
+        }
+        const candidates = whatsappPhoneCandidates(phone);
+        if (!candidates) throw new LeadsDomainError("LEAD_INVALID_INPUT", "WhatsApp retry number is invalid.");
+        return { phone, primary: candidates.primary, alternate: candidates.alternate };
+      });
       const updated = await tx.leadJob.updateMany({
         where: {
           workspaceId,
@@ -755,7 +836,8 @@ export class LeadsRepository {
             ],
             channelId: channel.id,
             instanceName: channel.providerKey.trim(),
-            numbers: [...new Set(rows.map((row) => row.normalizedPhone))],
+            numbers: lookups.map((lookup) => lookup.primary),
+            lookups,
             entries
           },
           output: { totalCount: rows.length, processedCount: 0, failedCount: 0, retryable: false }
@@ -1420,6 +1502,7 @@ export type LeadsRepositoryLike = Pick<
   | "updateList"
   | "deleteList"
   | "listLeads"
+  | "listLeadSelection"
   | "getWhatsappVerificationContext"
   | "createWhatsappVerificationJobs"
   | "fencedFinishWhatsappVerificationJob"

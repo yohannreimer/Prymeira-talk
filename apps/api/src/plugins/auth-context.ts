@@ -1,6 +1,10 @@
 import fp from "fastify-plugin";
 import type { FastifyRequest } from "fastify";
+import { AUTOMATION_WEBHOOK_PATH_PREFIX } from "@prymeira-talk/shared";
 import { z } from "zod";
+import { SupervisionError, validateSupervisionAccess, type SupervisionContext } from "../modules/supervision/supervision-access.js";
+import { createAccessSingleflight } from "./access-singleflight.js";
+import { measureInboxHub } from "./inbox-timing.js";
 
 const workspaceAccessSchema = z.object({
   allowed: z.boolean(),
@@ -18,18 +22,32 @@ const realtimeAuthProtocol = "prymeira-talk-auth";
 
 declare module "fastify" {
   interface FastifyRequest {
+    supervision?: SupervisionContext;
     talk: {
       workspaceId: string;
       role: "owner" | "manager" | "agent";
       clerkToken?: string;
       clerkUserId?: string | null;
+      /** Paid add-ons the Hub released for this workspace (limits.modules), plus the internal-test override. */
+      addons?: TalkAddons;
     };
   }
 }
 
+export type TalkAddons = { orcamentos: boolean };
+/** Workspaces that get every add-on without the Hub (internal tests). "*" means all. */
+export type AddonOverrides = "*" | ReadonlySet<string>;
+
+export function readTalkAddons(limits: unknown, workspaceId: string, overrides?: AddonOverrides): TalkAddons {
+  const forced = overrides === "*" || Boolean(overrides?.has(workspaceId));
+  const modules = limits && typeof limits === "object" ? (limits as { modules?: unknown }).modules : undefined;
+  const fromHub = Boolean(modules && typeof modules === "object" && (modules as Record<string, unknown>).orcamentos === true);
+  return { orcamentos: forced || fromHub };
+}
+
 type RequireProductAccess = (
   productKey: string,
-  options: { accountApiUrl: string; clerkToken: string }
+  options: { accountApiUrl: string; clerkToken: string; signal?: AbortSignal }
 ) => Promise<unknown>;
 type Fetch = typeof fetch;
 
@@ -42,6 +60,9 @@ export interface AuthContextPluginOptions {
   };
   requireProductAccess?: RequireProductAccess;
   fetch?: Fetch;
+  addonOverrides?: AddonOverrides;
+  /** How long an allowed access is reused for the same token (default 30 s; 0 asks the Hub on every request). */
+  accessCacheMs?: number;
 }
 
 class AuthBoundaryError extends Error {
@@ -77,6 +98,7 @@ function isPublicPath(pathname: string) {
     pathname === "/ready" ||
     pathname === "/webhooks/evolution" ||
     pathname.startsWith("/webhooks/evolution/") ||
+    pathname.startsWith(AUTOMATION_WEBHOOK_PATH_PREFIX) ||
     pathname.startsWith("/uploads/automations/") ||
     pathname.includes("/uploads/automations/")
   );
@@ -143,12 +165,13 @@ function readClerkUserIdFromToken(clerkToken: string) {
 
 async function defaultRequireProductAccess(
   productKey: string,
-  options: { accountApiUrl: string; clerkToken: string },
+  options: { accountApiUrl: string; clerkToken: string; signal?: AbortSignal },
   fetchAccess: Fetch = fetch
 ) {
   const response = await fetchAccess(
     `${options.accountApiUrl.replace(/\/$/, "")}/access-check?product_key=${encodeURIComponent(productKey)}`,
     {
+      signal: options.signal,
       headers: {
         Authorization: `Bearer ${options.clerkToken}`
       }
@@ -173,15 +196,21 @@ async function defaultRequireProductAccess(
 export const authContextPlugin = fp(
   async (app, options: AuthContextPluginOptions) => {
     app.decorateRequest("talk");
+    app.decorateRequest("supervision");
     const fetchAccess = options.fetch ?? fetch;
+    // An allowed answer is reused for 30 s by the same token (a removed member loses access within 30 s);
+    // denials and Hub failures are always asked again.
+    const validateAccess = createAccessSingleflight<unknown>({ keepMs: options.accessCacheMs ?? 30_000,
+      keep: (value) => Boolean(value && typeof value === "object" && (value as { allowed?: unknown }).allowed === true) });
     const requireAccess =
       options.requireProductAccess ??
-      ((productKey: string, input: { accountApiUrl: string; clerkToken: string }) =>
+      ((productKey: string, input: { accountApiUrl: string; clerkToken: string; signal?: AbortSignal }) =>
         defaultRequireProductAccess(productKey, input, fetchAccess));
 
-    app.addHook("onRequest", async (request) => {
+    app.addHook("onRequest", async (request, reply) => {
       const pathname = readPathname(request);
-      if (isPublicPath(pathname)) {
+      const supervisionPath = pathname === "/supervision" || pathname.startsWith("/supervision/");
+      if (!supervisionPath && isPublicPath(pathname)) {
         return;
       }
 
@@ -190,20 +219,40 @@ export const authContextPlugin = fp(
         throw authError(401, "Missing bearer token.");
       }
 
+      if (supervisionPath) {
+        reply.header("Cache-Control", "private, no-store");
+        // Read only, except a supervisor answering a customer in a seller's conversation, marking a customer as not
+        // needing an answer, and the product owner deciding the agents' rules and improvements.
+        const supervisorReply = request.method === "POST" && /^\/supervision\/workspaces\/[^/]+\/conversations\/[^/]+\/(messages|waiting)$/.test(pathname);
+        // The product owner deciding a customer's agent rules and improvements (Hub admins only, checked below on /admin/session).
+        const ownerEvaluation = request.method === "POST" && /^\/supervision\/admin\/(agent-evaluations\/[^/]+\/(run|proposals|rules\/remove)|agent-improvements\/[^/]+\/[^/]+\/(update|normalize|approve))$/.test(pathname);
+        if (request.method !== "GET" && !supervisorReply && !ownerEvaluation) {
+          throw new SupervisionError(403, "A supervisão permite somente consulta.");
+        }
+        request.supervision = await validateSupervisionAccess({
+          accountApiUrl: options.accountApiUrl,
+          token: clerkToken,
+          admin: pathname.startsWith("/supervision/admin/"),
+          fetch: fetchAccess
+        });
+        return;
+      }
+
       if (options.localAuthBypass) {
         request.talk = {
           workspaceId: options.localAuthBypass.workspaceId,
           role: options.localAuthBypass.role,
           clerkToken,
-          clerkUserId: readClerkUserIdFromToken(clerkToken)
+          clerkUserId: readClerkUserIdFromToken(clerkToken),
+          addons: readTalkAddons(undefined, options.localAuthBypass.workspaceId, options.addonOverrides)
         };
         return;
       }
 
-      const access = await requireAccess(options.productKey, {
-        accountApiUrl: options.accountApiUrl,
-        clerkToken
-      }).catch((error: unknown) => {
+      const access = await measureInboxHub(() => validateAccess(options.productKey, options.accountApiUrl, clerkToken,
+        (signal) => requireAccess(options.productKey, {
+          accountApiUrl: options.accountApiUrl, clerkToken, signal
+        }))).catch((error: unknown) => {
         const statusCode = readErrorStatusCode(error);
 
         if (statusCode === null || statusCode >= 500) {
@@ -231,7 +280,8 @@ export const authContextPlugin = fp(
         workspaceId: parsedAccess.workspace_id,
         role: normalizeRole(parsedAccess.product_role ?? parsedAccess.workspace_role),
         clerkToken,
-        clerkUserId: readClerkUserIdFromToken(clerkToken)
+        clerkUserId: readClerkUserIdFromToken(clerkToken),
+        addons: readTalkAddons(parsedAccess.limits, parsedAccess.workspace_id, options.addonOverrides)
       };
     });
   }

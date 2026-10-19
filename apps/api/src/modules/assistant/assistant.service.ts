@@ -28,10 +28,10 @@ export interface PrismaLike {
     findMany(args: AiActionFindManyArgs): Promise<AiActionRecord[]>;
   };
   conversation: {
-    findUnique(args: ConversationFindUniqueArgs): Promise<{ id: string; workspaceId: string } | null>;
+    findUnique(args: ConversationFindUniqueArgs): Promise<{ id: string; workspaceId: string; contact?: { isGroup?: boolean } | null } | null>;
   };
   contact: {
-    findUnique(args: ContactFindUniqueArgs): Promise<{ id: string; workspaceId: string } | null>;
+    findUnique(args: ContactFindUniqueArgs): Promise<{ id: string; workspaceId: string; isGroup?: boolean } | null>;
   };
 }
 
@@ -123,11 +123,12 @@ export function createAssistantService(prisma: PrismaLike) {
         },
         select: {
           id: true,
-          workspaceId: true
+          workspaceId: true,
+          contact: { select: { isGroup: true } }
         }
       });
 
-      if (!conversation) {
+      if (!conversation || conversation.contact?.isGroup) {
         throw new AssistantServiceError(
           "ASSISTANT_CONVERSATION_NOT_FOUND",
           "Assistant conversation not found."
@@ -145,11 +146,12 @@ export function createAssistantService(prisma: PrismaLike) {
         },
         select: {
           id: true,
-          workspaceId: true
+          workspaceId: true,
+          isGroup: true
         }
       });
 
-      if (!contact) {
+      if (!contact || contact.isGroup) {
         throw new AssistantServiceError(
           "ASSISTANT_CONTACT_NOT_FOUND",
           "Assistant contact not found."

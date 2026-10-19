@@ -1,9 +1,51 @@
 import Fastify from "fastify";
 import { conversationSchema, messageSchema, realtimeEventSchema } from "@prymeira-talk/shared";
 import { describe, expect, it, vi } from "vitest";
-import { evolutionRoutes, isUniqueConstraintError } from "./evolution.routes.js";
+import { evolutionRoutes, extractMessageContent, isUniqueConstraintError, resolveWebhookPhone } from "./evolution.routes.js";
 import type { EvolutionRoutesOptions } from "./evolution.routes.js";
 import { evolutionWebhookEnvelopeSchema, evolutionWebhookSchema } from "./evolution.schemas.js";
+import { createCipheriv, hkdfSync } from "node:crypto";
+
+function encodedField(number: number, value: Buffer | number): Buffer {
+  const varint = (input: number) => {
+    const out: number[] = [];
+    while (input > 127) { out.push((input & 127) | 128); input >>>= 7; }
+    out.push(input);
+    return Buffer.from(out);
+  };
+  return typeof value === "number"
+    ? Buffer.concat([varint(number * 8), varint(value)])
+    : Buffer.concat([varint(number * 8 + 2), varint(value.length), value]);
+}
+
+function encryptedEditFixture() {
+  const targetId = "provider_msg_1";
+  const jid = "5511999999999@s.whatsapp.net";
+  const secret = Buffer.alloc(32, 7);
+  const iv = Buffer.alloc(12, 9);
+  const key = encodedField(3, Buffer.from(targetId));
+  const edited = encodedField(1, Buffer.from("Bom dia"));
+  const protocol = Buffer.concat([encodedField(1, key), encodedField(2, 14), encodedField(14, edited)]);
+  const plaintext = encodedField(12, protocol);
+  const info = Buffer.from(targetId + jid + jid + "Message Edit");
+  const cipher = createCipheriv("aes-256-gcm", Buffer.from(hkdfSync("sha256", secret, Buffer.alloc(32), info, 32)), iv);
+  cipher.setAAD(Buffer.alloc(0));
+  const payload = Buffer.concat([cipher.update(plaintext), cipher.final(), cipher.getAuthTag()]);
+  return {
+    data: {
+      key: { id: "edit_1", remoteJid: jid, fromMe: false },
+      message: { secretEncryptedMessage: {
+        targetMessageKey: { id: targetId, fromMe: true },
+        secretEncType: 2, encIv: iv.toString("base64"), encPayload: payload.toString("base64")
+      } }
+    },
+    original: {
+      key: { id: targetId, remoteJid: jid, fromMe: false },
+      messageTimestamp: 1779300000,
+      message: { conversation: "Bom muito", messageContextInfo: { messageSecret: secret.toString("base64") } }
+    }
+  };
+}
 
 const validWebhookBody = {
   event: "messages.upsert",
@@ -15,12 +57,86 @@ const validWebhookBody = {
   }
 };
 
+const locationPayload = { degreesLatitude: -26.254, degreesLongitude: -48.875,
+  name: 'Grupo Villefer', address: 'R. Landmann, 464, Joinville, SC', url: 'https://www.villefer.com.br' };
+const locationDto = { latitude: -26.254, longitude: -48.875, name: 'Grupo Villefer',
+  address: 'R. Landmann, 464, Joinville, SC', isLive: false };
+
+describe('WhatsApp locations', () => {
+  it('recognizes the business place, address and coordinates without using its website as a map', () => {
+    const content = extractMessageContent({ locationMessage: locationPayload });
+    expect(content).toMatchObject({ type: 'text', mediaUrl: null, location: locationDto });
+    expect(content.body).toContain('Grupo Villefer');
+    expect(content.body).toContain(locationPayload.address);
+    expect(content.body).toContain('https://www.google.com/maps/search/?api=1&query=-26.254%2C-48.875');
+    expect(content.body).not.toContain('villefer.com.br');
+  });
+
+  it('recognizes a wrapped location and coordinates at zero', () => {
+    expect(extractMessageContent({ ephemeralMessage: { message: { locationMessage: {
+      degreesLatitude: 0, degreesLongitude: 0
+    } } } })).toMatchObject({ type: 'text', location: { latitude: 0, longitude: 0, name: null, address: null } });
+  });
+
+  it.each([{ liveLocationMessage: { ...locationPayload, caption: 'Entrega' } },
+    { locationMessage: { ...locationPayload, isLive: true } }])('labels a live location as the received position', message => {
+    const content = extractMessageContent(message);
+    expect(content).toMatchObject({ type: 'text', location: { isLive: true } });
+    expect(content.body).toContain('Última posição recebida');
+  });
+
+  it.each([undefined, null, '', ' ', 'oops', 91, NaN, Infinity])('does not invent coordinates for latitude %s', degreesLatitude => {
+    expect(extractMessageContent({ locationMessage: { degreesLatitude, degreesLongitude: -48.875,
+      address: 'R. Landmann, 464, Joinville' } })).toMatchObject({
+      type: 'text', location: { latitude: null, longitude: null }
+    });
+  });
+
+  it('keeps an empty location recognizable without inventing a map', () => {
+    expect(extractMessageContent({ locationMessage: {} })).toMatchObject({
+      type: 'text', body: 'Localização compartilhada', location: { latitude: null, longitude: null }
+    });
+  });
+});
+
+describe('WhatsApp contact cards', () => {
+  it('reads a single shared contact and its vCard phone', () => {
+    expect(extractMessageContent({ contactMessage: {
+      displayName: 'Nelson Tecol',
+      vcard: 'BEGIN:VCARD\nVERSION:3.0\nFN:Nelson Tecol\nTEL;type=CELL;waid=556784432788:+55 67 8443-2788\nEND:VCARD'
+    } })).toMatchObject({
+      type: 'text', body: 'Contato compartilhado: Nelson Tecol (556784432788)',
+      contactCards: [{ fullName: 'Nelson Tecol', phoneNumber: '556784432788' }]
+    });
+  });
+
+  it('reads a group of shared contacts through a wrapped message', () => {
+    expect(extractMessageContent({ ephemeralMessage: { message: { contactsArrayMessage: { contacts: [
+      { displayName: 'Ana', vcard: 'BEGIN:VCARD\nTEL;type=CELL:+55 11 98765-4321\nEND:VCARD' },
+      { displayName: 'Bruno', vcard: 'BEGIN:VCARD\nTEL;waid=5511999999999:+55 11 99999-9999\nEND:VCARD' }
+    ] } } } })).toMatchObject({ type: 'text', contactCards: [
+      { fullName: 'Ana', phoneNumber: '5511987654321' },
+      { fullName: 'Bruno', phoneNumber: '5511999999999' }
+    ] });
+  });
+});
+
+describe('WhatsApp videos', () => {
+  it('classifies a video message as an attachment with a video preview', () => {
+    expect(extractMessageContent({ videoMessage: {
+      mimetype: 'video/mp4', url: 'https://example.test/media/encrypted'
+    } })).toMatchObject({ type: 'file', body: 'Vídeo recebido', preview: 'Vídeo recebido' });
+  });
+});
+
 function createMockPrisma(overrides: {
   $transaction?: ReturnType<typeof vi.fn>;
   channel?: { findUnique?: ReturnType<typeof vi.fn>; update?: ReturnType<typeof vi.fn> };
   contact?: {
     findFirst?: ReturnType<typeof vi.fn>;
     create?: ReturnType<typeof vi.fn>;
+    upsert?: ReturnType<typeof vi.fn>;
+    update?: ReturnType<typeof vi.fn>;
     updateMany?: ReturnType<typeof vi.fn>;
   };
   conversation?: {
@@ -29,6 +145,9 @@ function createMockPrisma(overrides: {
     update?: ReturnType<typeof vi.fn>;
     updateMany?: ReturnType<typeof vi.fn>;
   };
+  campaignRecipient?: { findFirst?: ReturnType<typeof vi.fn> };
+  aiAgentSession?: { updateMany?: ReturnType<typeof vi.fn> };
+  aiAgentPendingReply?: { updateMany?: ReturnType<typeof vi.fn> };
   message?: {
     findUnique?: ReturnType<typeof vi.fn>;
     count?: ReturnType<typeof vi.fn>;
@@ -64,6 +183,7 @@ function createMockPrisma(overrides: {
 } = {}) {
   const prisma = {
     channel: {
+      findMany: vi.fn().mockResolvedValue([{ id: 'channel_1', workspaceId: 'workspace_a', provider: 'evolution', providerKey: 'client-one' }]),
       findUnique:
         overrides.channel?.findUnique ??
         vi.fn().mockResolvedValue({
@@ -106,6 +226,8 @@ function createMockPrisma(overrides: {
           workspaceId: "workspace_a",
           phone: "551199999999"
         }),
+      upsert: overrides.contact?.upsert ?? vi.fn().mockResolvedValue({ id: "contact_1", phone: "551199999999" }),
+      update: overrides.contact?.update ?? vi.fn().mockResolvedValue({ id: "contact_1", phone: "551199999999" }),
       updateMany: overrides.contact?.updateMany ?? vi.fn().mockResolvedValue({ count: 1 })
     },
     conversation: {
@@ -123,6 +245,9 @@ function createMockPrisma(overrides: {
           lastMessagePreview: "Oi",
           unreadCount: 1,
           priority: "normal",
+          aiControlStatus: "agent_allowed",
+          aiControlUpdatedAt: null,
+          activeAgentSessionId: "session_1",
           channel: { displayName: "Client One", phoneNumber: null },
           contact: { name: null, phone: "551199999999" },
           department: null,
@@ -152,6 +277,7 @@ function createMockPrisma(overrides: {
           count: 1
         })
     },
+    campaignRecipient: { findFirst: overrides.campaignRecipient?.findFirst ?? vi.fn().mockResolvedValue(null) },
     message: {
       findUnique:
         overrides.message?.findUnique ??
@@ -234,10 +360,13 @@ function createMockPrisma(overrides: {
       findMany: overrides.automationRule?.findMany ?? vi.fn().mockResolvedValue([])
     },
     automationRun: {
+      updateMany: vi.fn().mockResolvedValue({ count: 1 }),
       upsert:
         overrides.automationRun?.upsert ??
         vi.fn().mockImplementation(async (args) => ({
-          id: "run_1",
+          id: args.create.id ?? "run_1",
+          executionToken: args.create.executionToken,
+          leaseUntil: args.create.leaseUntil,
           workspaceId: args.create.workspaceId,
           ruleId: args.create.ruleId,
           eventKey: args.create.eventKey,
@@ -266,7 +395,9 @@ function createMockPrisma(overrides: {
     },
     contactNote: {
       create: overrides.contactNote?.create ?? vi.fn().mockResolvedValue({})
-    }
+    },
+    aiAgentSession: { updateMany: overrides.aiAgentSession?.updateMany ?? vi.fn().mockResolvedValue({ count: 1 }) },
+    aiAgentPendingReply: { updateMany: overrides.aiAgentPendingReply?.updateMany ?? vi.fn().mockResolvedValue({ count: 1 }) }
   };
 
   return {
@@ -312,6 +443,16 @@ describe("Evolution webhook schema", () => {
 
     expect(parsed.data.key.id).toBe("provider_msg_1");
   });
+
+  it("uses a phone alternate for LID messages without treating the LID as a phone", () => {
+    const parsed = evolutionWebhookSchema.parse({ ...validWebhookBody, data: {
+      ...validWebhookBody.data, key: { ...validWebhookBody.data.key,
+        remoteJid: '123456789012345@lid', remoteJidAlt: '5511999999999@s.whatsapp.net' }
+    } });
+    expect(resolveWebhookPhone(parsed.data.key.remoteJid, parsed.data.key.remoteJidAlt)).toBe('551199999999');
+    expect(resolveWebhookPhone('123456789012345@lid')).toBe('123456789012345@lid');
+    expect(resolveWebhookPhone('123456789012345@g.us')).toBeNull();
+  });
 });
 
 describe("Evolution webhook routes", () => {
@@ -331,6 +472,118 @@ describe("Evolution webhook routes", () => {
     ).toBe(true);
 
     expect(isUniqueConstraintError({ code: "P2002", meta: { target: ["email"] } })).toBe(false);
+  });
+
+  it("ingests an unmapped LID under its exact identity without treating it as a phone", async () => {
+    const prisma = createMockPrisma({ contact: { findFirst: vi.fn().mockResolvedValue(null) } });
+    const { app } = await buildEvolutionApp(prisma);
+    try {
+      const response = await app.inject({ method: 'POST', url: '/webhooks/evolution/workspace_a',
+        headers: { 'x-prymeira-talk-secret': 'top_secret' },
+        payload: { ...validWebhookBody, data: { ...validWebhookBody.data,
+          key: { ...validWebhookBody.data.key, remoteJid: '123456789012345@lid' } } } });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({ ok: true });
+      expect(prisma.contact.create).toHaveBeenCalledWith({ data: { workspaceId: 'workspace_a', phone: '123456789012345@lid' } });
+      expect(prisma.conversation.upsert).toHaveBeenCalledWith(expect.objectContaining({ create: expect.objectContaining({ aiControlStatus: 'human_controlled' }) }));
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('upgrades an LID-only contact when Evolution supplies its phone alternate', async () => {
+    const lid = { id: 'contact_lid', workspaceId: 'workspace_a', phone: '123456789012345@lid' };
+    const findFirst = vi.fn().mockResolvedValueOnce(lid).mockResolvedValueOnce(null);
+    const update = vi.fn().mockResolvedValue({ ...lid, phone: '551199999999' });
+    const prisma = createMockPrisma({ contact: { findFirst, update } });
+    const { app } = await buildEvolutionApp(prisma);
+    try {
+      const response = await app.inject({ method: 'POST', url: '/webhooks/evolution/workspace_a',
+        headers: { 'x-prymeira-talk-secret': 'top_secret' }, payload: { ...validWebhookBody, data: { ...validWebhookBody.data,
+          key: { ...validWebhookBody.data.key, remoteJid: lid.phone, remoteJidAlt: '5511999999999@s.whatsapp.net' } } } });
+      expect(response.statusCode).toBe(200);
+      expect(update).toHaveBeenCalledWith({ where: { workspaceId_id: { workspaceId: 'workspace_a', id: lid.id } }, data: { phone: '551199999999', customFields: { evolutionLid: lid.phone } } });
+      expect(prisma.conversation.upsert).toHaveBeenCalledWith(expect.objectContaining({
+        where: { workspaceId_channelId_contactId: { workspaceId: 'workspace_a', channelId: 'channel_1', contactId: lid.id } }
+      }));
+    } finally { await app.close(); }
+  });
+
+  it('routes an LID-only message to a previously linked phone contact', async () => {
+    const lid = { id: 'contact_lid', workspaceId: 'workspace_a', phone: '123456789012345@lid' };
+    const linked = { id: 'contact_phone', workspaceId: 'workspace_a', phone: '551199999999', customFields: { evolutionLid: lid.phone } };
+    const findFirst = vi.fn().mockResolvedValueOnce(lid).mockResolvedValueOnce(lid).mockResolvedValueOnce(linked);
+    const prisma = createMockPrisma({ contact: { findFirst } });
+    const { app } = await buildEvolutionApp(prisma);
+    try {
+      const response = await app.inject({ method: 'POST', url: '/webhooks/evolution/workspace_a',
+        headers: { 'x-prymeira-talk-secret': 'top_secret' }, payload: { ...validWebhookBody, data: { ...validWebhookBody.data,
+          key: { ...validWebhookBody.data.key, remoteJid: lid.phone } } } });
+      expect(response.statusCode).toBe(200);
+      expect(prisma.conversation.upsert).toHaveBeenCalledWith(expect.objectContaining({
+        where: { workspaceId_channelId_contactId: { workspaceId: 'workspace_a', channelId: 'channel_1', contactId: linked.id } }
+      }));
+    } finally { await app.close(); }
+  });
+
+  it.each([false, true])('stores location metadata from the WhatsApp webhook (fromMe=%s)', async fromMe => {
+    const prisma = createMockPrisma();
+    const { app } = await buildEvolutionApp(prisma);
+    try {
+      const response = await app.inject({ method: 'POST', url: '/webhooks/evolution/workspace_a',
+        headers: { 'x-prymeira-talk-secret': 'top_secret' }, payload: { ...validWebhookBody, data: { ...validWebhookBody.data,
+          key: { ...validWebhookBody.data.key, fromMe }, message: { locationMessage: locationPayload } } } });
+      expect(response.statusCode).toBe(200);
+      expect(prisma.message.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({
+        direction: fromMe ? 'outbound' : 'inbound', type: 'text', body: expect.stringContaining('Grupo Villefer'),
+        metadata: expect.objectContaining({ location: locationDto })
+      }) }));
+    } finally { await app.close(); }
+  });
+
+  it('keeps the video MIME type when storing an inbound message', async () => {
+    const prisma = createMockPrisma();
+    const { app } = await buildEvolutionApp(prisma);
+    try {
+      const response = await app.inject({ method: 'POST', url: '/webhooks/evolution/workspace_a',
+        headers: { 'x-prymeira-talk-secret': 'top_secret' }, payload: { ...validWebhookBody, data: { ...validWebhookBody.data,
+          message: { videoMessage: { mimetype: 'video/mp4', url: 'https://example.test/video.enc' } } } } });
+      expect(response.statusCode).toBe(200);
+      expect(prisma.message.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({
+        type: 'file', body: 'Vídeo recebido', metadata: expect.objectContaining({ attachment: expect.objectContaining({ mimeType: 'video/mp4' }) })
+      }) }));
+    } finally { await app.close(); }
+  });
+
+  it('asks for older context when a new inbound Evolution message arrives', async () => {
+    const historyBackfill = vi.fn().mockResolvedValue(undefined);
+    const { app } = await buildEvolutionApp(createMockPrisma(), undefined, { historyBackfill });
+    try {
+      const response = await app.inject({ method: 'POST', url: '/webhooks/evolution/workspace_a',
+        headers: { 'x-prymeira-talk-secret': 'top_secret' }, payload: validWebhookBody });
+      expect(response.statusCode).toBe(200);
+      expect(historyBackfill).toHaveBeenCalledWith(expect.objectContaining({
+        workspaceId: 'workspace_a', channelId: 'channel_1', conversationId: 'conv_1',
+        providerKey: 'client-one', remoteJid: validWebhookBody.data.key.remoteJid
+      }));
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('publishes a new message without waiting for historical backfill', async () => {
+    let release!: () => void;
+    const historyBackfill = vi.fn().mockImplementation(() => new Promise<void>((resolve) => { release = resolve; }));
+    const { app, publish } = await buildEvolutionApp(createMockPrisma(), undefined, { historyBackfill });
+    try {
+      const response = await Promise.race([
+        app.inject({ method: 'POST', url: '/webhooks/evolution/workspace_a',
+          headers: { 'x-prymeira-talk-secret': 'top_secret' }, payload: validWebhookBody }),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Webhook waited for history')), 500))
+      ]);
+      expect(response.statusCode).toBe(200);
+      expect(publish).toHaveBeenCalledWith(expect.objectContaining({ type: 'message.created' }));
+    } finally { release?.(); await app.close(); }
   });
 
   it("returns 401 for invalid secrets without touching Prisma", async () => {
@@ -419,6 +672,30 @@ describe("Evolution webhook routes", () => {
     } finally {
       await app.close();
     }
+  });
+  it.each([
+    { event: 'QRCODE_UPDATED', data: { qrcode: { code: 'primary-qr' } } },
+    { event: 'CONNECTION_UPDATE', data: { state: 'close' } }
+  ])('keeps WAHA-only logical state and full DTO after legacy $event', async control => {
+    const prisma = createMockPrisma();
+    const row: any = { ...await (prisma.channel.findUnique as unknown as () => Promise<Record<string, unknown>>)(), status: 'connected', redundancyEnabled: true, activeConnectionId: 'secondary-connection' };
+    const primary = { id: 'primary-connection', workspaceId: 'workspace_a', channelId: 'channel_1', provider: 'evolution', sessionName: 'client-one', status: 'connecting', health: 'unknown', verifiedPhoneNumber: '15550000001', eligible: false, lifecycleGeneration: 0 };
+    const secondary = { ...primary, id: 'secondary-connection', provider: 'waha', sessionName: 'secondary', status: 'connected', health: 'healthy', eligible: true, lastHealthyAt: new Date() };
+    const upsert = vi.fn(async ({ update }: any) => Object.assign(primary, update));
+    (prisma.channel as any).findFirst = vi.fn(async () => ({ ...row }));
+    (prisma.channel as any).findMany = vi.fn(async () => [{ ...row }]);
+    (prisma.channel as any).updateMany = vi.fn(async () => ({ count: 1 }));
+    prisma.channel.update.mockImplementation(async ({ data }: any) => Object.assign(row, data));
+    (prisma as any).channelConnection = { upsert, findMany: vi.fn(async () => [primary, secondary]) };
+    prisma.$transaction = vi.fn(async (callback: (db: any) => Promise<unknown>) => callback(prisma));
+    const { app, publish } = await buildEvolutionApp(prisma);
+    try {
+      const response = await app.inject({ method: 'POST', url: '/webhooks/evolution/workspace_a', headers: { 'x-prymeira-talk-secret': 'top_secret' }, payload: { ...control, instance: 'client-one' } });
+      expect(response.statusCode).toBe(200);
+      expect(row.status).toBe('connected');
+      expect(publish).toHaveBeenCalledWith(expect.objectContaining({ type: 'channel.updated', payload: expect.objectContaining({ status: 'connected', connectedCount: 1, connectionTotal: 2, connections: expect.arrayContaining([expect.objectContaining({ id: 'secondary-connection', eligible: true })]) }) }));
+      if (control.event === 'QRCODE_UPDATED') expect(publish).toHaveBeenCalledWith(expect.objectContaining({ type: 'channel.qr_updated', payload: expect.objectContaining({ connectionId: 'primary-connection', provider: 'evolution' }) }));
+    } finally { await app.close(); }
   });
 
   it("updates a channel for lowercase connection updates before parsing message-shaped data", async () => {
@@ -531,6 +808,208 @@ describe("Evolution webhook routes", () => {
     }
   });
 
+  it("applies an edited upsert to the original message without creating another bubble", async () => {
+    const prisma = createMockPrisma({
+      message: {
+        update: vi.fn().mockImplementation(async ({ data }) => ({
+          id: "msg_1", workspaceId: "workspace_a", conversationId: "conv_1",
+          providerMessageId: "provider_msg_1", direction: "inbound", mediaUrl: null,
+          status: "delivered", sentByUserId: null, createdAt: new Date("2026-05-20T12:00:00.000Z"),
+          ...data
+        }))
+      }
+    });
+    const { app, publish } = await buildEvolutionApp(prisma);
+    try {
+      const response = await app.inject({
+        method: "POST", url: "/webhooks/evolution/workspace_a",
+        headers: { "x-prymeira-talk-secret": "top_secret" },
+        payload: { ...validWebhookBody, data: {
+          ...validWebhookBody.data,
+          key: { ...validWebhookBody.data.key, id: "edit_event_1" },
+          message: { protocolMessage: {
+            type: 14,
+            key: { id: "provider_msg_1" },
+            editedMessage: { conversation: "Bom dia" }
+          } }
+        } }
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(prisma.message.create).not.toHaveBeenCalled();
+      expect(prisma.message.update).toHaveBeenCalledWith(expect.objectContaining({
+        where: { workspaceId_providerMessageId: { workspaceId: "workspace_a", providerMessageId: "provider_msg_1" } },
+        data: expect.objectContaining({ body: "Bom dia", type: "text" })
+      }));
+      expect(publish).toHaveBeenCalledWith(expect.objectContaining({ type: "message.updated" }));
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("applies a messages.update edited wrapper and keeps ordinary status updates separate", async () => {
+    const prisma = createMockPrisma({
+      message: {
+        update: vi.fn().mockImplementation(async ({ data }) => ({
+          id: "msg_1", workspaceId: "workspace_a", conversationId: "conv_1",
+          providerMessageId: "provider_msg_1", direction: "inbound", mediaUrl: null,
+          status: "delivered", sentByUserId: null, createdAt: new Date("2026-05-20T12:00:00.000Z"),
+          ...data
+        }))
+      }
+    });
+    const { app, publish } = await buildEvolutionApp(prisma);
+    try {
+      const response = await app.inject({
+        method: "POST", url: "/webhooks/evolution/workspace_a",
+        headers: { "x-prymeira-talk-secret": "top_secret" },
+        payload: {
+          event: "MESSAGES_UPDATE", instance: "client-one",
+          data: {
+            key: { id: "provider_msg_1" },
+            update: { message: { editedMessage: { message: { conversation: "Bom dia" } } } }
+          }
+        }
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(prisma.message.create).not.toHaveBeenCalled();
+      expect(prisma.message.update).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({ body: "Bom dia" })
+      }));
+      expect(publish).toHaveBeenCalledWith(expect.objectContaining({ type: "message.updated" }));
+      expect(publish).not.toHaveBeenCalledWith(expect.objectContaining({ type: "message.status_changed" }));
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("ignores edit notices without readable replacement text", async () => {
+    const { app, prisma, publish } = await buildEvolutionApp();
+    try {
+      const response = await app.inject({
+        method: "POST", url: "/webhooks/evolution/workspace_a",
+        headers: { "x-prymeira-talk-secret": "top_secret" },
+        payload: { ...validWebhookBody, data: {
+          ...validWebhookBody.data,
+          key: { ...validWebhookBody.data.key, id: "edit_event_2" },
+          message: { protocolMessage: {
+            type: "MESSAGE_EDIT", key: { id: "provider_msg_1" },
+            editedMessage: { secretEncryptedMessage: {} }
+          } }
+        } }
+      });
+      expect(response.json()).toEqual({ ok: true, ignored: true });
+      expect(prisma.message.create).not.toHaveBeenCalled();
+      expect(prisma.message.update).not.toHaveBeenCalled();
+      expect(publish).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("decrypts a WhatsApp secretEncryptedMessage and edits the existing bubble", async () => {
+    const fixture = encryptedEditFixture();
+    const prisma = createMockPrisma({
+      message: {
+        update: vi.fn().mockImplementation(async ({ data }) => ({
+          id: "msg_1", workspaceId: "workspace_a", conversationId: "conv_1",
+          providerMessageId: "provider_msg_1", direction: "inbound", mediaUrl: null,
+          status: "delivered", sentByUserId: null, createdAt: new Date("2026-05-20T12:00:00.000Z"),
+          ...data
+        }))
+      }
+    });
+    const findMessage = vi.fn().mockResolvedValue(fixture.original);
+    const { app, publish } = await buildEvolutionApp(prisma, undefined, { messageHistory: { findMessage } });
+    try {
+      const response = await app.inject({
+        method: "POST", url: "/webhooks/evolution/workspace_a",
+        headers: { "x-prymeira-talk-secret": "top_secret" },
+        payload: { event: "MESSAGES_UPSERT", instance: "client-one", data: fixture.data }
+      });
+      expect(response.json()).toEqual({ ok: true });
+      expect(findMessage).toHaveBeenCalledWith({ instanceName: "client-one", id: "provider_msg_1" });
+      expect(prisma.message.update).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({ body: "Bom dia", type: "text" })
+      }));
+      expect(prisma.message.create).not.toHaveBeenCalled();
+      expect(publish).toHaveBeenCalledWith(expect.objectContaining({ type: "message.updated" }));
+    } finally { await app.close(); }
+  });
+
+  it("does not create a phantom bubble when an encrypted edit fails authentication", async () => {
+    const fixture = encryptedEditFixture();
+    fixture.original.message.messageContextInfo.messageSecret = Buffer.alloc(32, 3).toString("base64");
+    const findMessage = vi.fn().mockResolvedValue(fixture.original);
+    const { app, prisma, publish } = await buildEvolutionApp(undefined, undefined, { messageHistory: { findMessage } });
+    try {
+      const response = await app.inject({
+        method: "POST", url: "/webhooks/evolution/workspace_a",
+        headers: { "x-prymeira-talk-secret": "top_secret" },
+        payload: { event: "MESSAGES_UPSERT", instance: "client-one", data: fixture.data }
+      });
+      expect(response.json()).toEqual({ ok: true, ignored: true });
+      expect(prisma.message.create).not.toHaveBeenCalled();
+      expect(prisma.message.update).not.toHaveBeenCalled();
+      expect(publish).not.toHaveBeenCalled();
+    } finally { await app.close(); }
+  });
+
+  it("ignores a standalone encrypted control envelope with no readable content", async () => {
+    const { app, prisma, publish } = await buildEvolutionApp();
+    try {
+      const response = await app.inject({
+        method: "POST", url: "/webhooks/evolution/workspace_a",
+        headers: { "x-prymeira-talk-secret": "top_secret" },
+        payload: { ...validWebhookBody, data: {
+          ...validWebhookBody.data,
+          key: { ...validWebhookBody.data.key, id: "encrypted_notice_1" },
+          messageType: "secretEncryptedMessage",
+          message: { messageContextInfo: {}, secretEncryptedMessage: { secretEncType: 2 } }
+        } }
+      });
+      expect(response.json()).toEqual({ ok: true, ignored: true });
+      expect(prisma.message.create).not.toHaveBeenCalled();
+      expect(publish).not.toHaveBeenCalled();
+    } finally { await app.close(); }
+  });
+
+  it("refreshes the conversation preview only when the edited message is the latest", async () => {
+    const prisma = createMockPrisma({
+      message: {
+        findFirst: vi.fn().mockResolvedValue({ id: "msg_1" }),
+        update: vi.fn().mockImplementation(async ({ data }) => ({
+          id: "msg_1", workspaceId: "workspace_a", conversationId: "conv_1",
+          providerMessageId: "provider_msg_1", direction: "inbound", mediaUrl: null,
+          status: "delivered", sentByUserId: null, createdAt: new Date("2026-05-20T12:00:00.000Z"),
+          ...data
+        }))
+      }
+    });
+    const { app, publish } = await buildEvolutionApp(prisma);
+    try {
+      const response = await app.inject({
+        method: "POST", url: "/webhooks/evolution/workspace_a",
+        headers: { "x-prymeira-talk-secret": "top_secret" },
+        payload: {
+          event: "MESSAGES_EDITED", instance: "client-one",
+          data: { key: { id: "provider_msg_1" }, message: { conversation: "Bom dia" } }
+        }
+      });
+      expect(response.json()).toEqual({ ok: true });
+      expect(prisma.conversation.updateMany).toHaveBeenCalledWith({
+        where: { workspaceId: "workspace_a", id: "conv_1" },
+        data: { lastMessagePreview: "Bom dia" }
+      });
+      expect(publish).toHaveBeenCalledWith(expect.objectContaining({ type: "conversation.updated" }));
+      const editedEvent = publish.mock.calls.find(([event]) => event.type === "message.updated")?.[0];
+      expect(realtimeEventSchema.parse(editedEvent)).toEqual(editedEvent);
+    } finally {
+      await app.close();
+    }
+  });
+
   it("updates message status using Evolution keyId before local messageId", async () => {
     const { app, prisma } = await buildEvolutionApp();
 
@@ -632,6 +1111,19 @@ describe("Evolution webhook routes", () => {
     } finally {
       await app.close();
     }
+  });
+
+  it.each(['logical', 'physical', 'identity'] as const)('rejects legacy %s source conflicts before customer processing', async conflict => {
+    const prisma = createMockPrisma();
+    const own = { id: 'channel_1', workspaceId: 'workspace_a', provider: 'evolution', providerKey: 'client-one', verifiedMessagingPhoneNumber: conflict === 'identity' ? '15550000001' : null };
+    prisma.channel.findMany.mockResolvedValue(conflict === 'logical' ? [own, { ...own, id: 'foreign', workspaceId: 'foreign' }] : [own]);
+    if (conflict !== 'logical') (prisma as any).channelConnection = { findMany: vi.fn().mockResolvedValue([{ id: 'primary', provider: 'evolution', workspaceId: conflict === 'physical' ? 'foreign' : 'workspace_a', channelId: 'channel_1', verifiedPhoneNumber: '15550000002' }]) };
+    const { app } = await buildEvolutionApp(prisma);
+    try {
+      const response = await app.inject({ method: 'POST', url: '/webhooks/evolution/workspace_a', headers: { 'x-prymeira-talk-secret': 'top_secret' }, payload: validWebhookBody });
+      expect(response.statusCode).toBe(409);
+      expect(prisma.message.create).not.toHaveBeenCalled(); expect(prisma.contact.create).not.toHaveBeenCalled(); expect(prisma.$transaction).not.toHaveBeenCalled();
+    } finally { await app.close(); }
   });
 
   it("returns 404 when the Evolution channel is missing", async () => {
@@ -793,6 +1285,118 @@ describe("Evolution webhook routes", () => {
     }
   });
 
+  it("pauses the agent and cancels its queued reply when a human sends through another app", async () => {
+    const prisma = createMockPrisma({ message: { create: vi.fn().mockImplementation(async (args) => ({
+      id: "msg_1", workspaceId: "workspace_a", conversationId: "conv_1",
+      providerMessageId: args.data.providerMessageId, direction: args.data.direction,
+      type: args.data.type, body: args.data.body, mediaUrl: args.data.mediaUrl,
+      status: args.data.status, createdAt: args.data.createdAt
+    })) } });
+    const control = vi.fn().mockResolvedValue(undefined);
+    const assistantMessage = vi.fn().mockResolvedValue(undefined);
+    const observeConversationActivity = vi.fn().mockResolvedValue({ status: "scheduled" });
+    const observeMessage = vi.fn().mockResolvedValue(undefined);
+    const { app, publish } = await buildEvolutionApp(prisma, undefined, {
+      assistantScheduler: { control, message: assistantMessage, persistInbound: vi.fn().mockResolvedValue(undefined) } as never,
+      followupService: { observeConversationActivity },
+      inboxTriage: { observeMessage }
+    });
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/webhooks/evolution/workspace_a",
+        headers: { "x-prymeira-talk-secret": "top_secret" },
+        payload: {
+          ...validWebhookBody,
+          data: {
+            ...validWebhookBody.data,
+            key: { ...validWebhookBody.data.key, id: "external_human_1", fromMe: true },
+            message: { conversation: "Vou mandar a quantidade" }
+          }
+        }
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ ok: true });
+      expect(prisma.conversation.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+        where: expect.objectContaining({ workspaceId: "workspace_a", id: "conv_1" }),
+        data: expect.objectContaining({ aiControlStatus: "human_controlled" })
+      }));
+      expect(prisma.aiAgentSession.updateMany).toHaveBeenCalledWith({
+        where: { workspaceId: "workspace_a", id: "session_1", status: "active" },
+        data: { status: "paused_by_human" }
+      });
+      expect(prisma.aiAgentPendingReply.updateMany).toHaveBeenCalledWith({
+        where: { workspaceId: "workspace_a", conversationId: "conv_1", status: { in: ["pending", "processing"] } },
+        data: { status: "cancelled", lockedAt: null, lastError: "human_outbound" }
+      });
+      expect(control).toHaveBeenCalledWith("workspace_a", "conv_1", true);
+      expect(assistantMessage).not.toHaveBeenCalled();
+      expect(observeConversationActivity).toHaveBeenCalledWith({
+        workspaceId: "workspace_a",
+        conversationId: "conv_1",
+        messageId: "msg_1",
+        direction: "outbound",
+        source: "human"
+      });
+      expect(observeMessage).toHaveBeenCalledWith(expect.objectContaining({
+        workspaceId: "workspace_a", conversationId: "conv_1", messageId: "msg_1", direction: "outbound"
+      }));
+      expect(publish).toHaveBeenCalledWith(expect.objectContaining({ type: "conversation.updated" }));
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("does not pause the agent when an already recorded system send returns through the webhook", async () => {
+    const prisma = createMockPrisma({
+      message: { create: vi.fn().mockRejectedValue({ code: "P2002", meta: { target: ["workspace_id", "provider_message_id"] } }) }
+    });
+    const { app } = await buildEvolutionApp(prisma);
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/webhooks/evolution/workspace_a",
+        headers: { "x-prymeira-talk-secret": "top_secret" },
+        payload: {
+          ...validWebhookBody,
+          data: { ...validWebhookBody.data, key: { ...validWebhookBody.data.key, fromMe: true } }
+        }
+      });
+      expect(response.json()).toEqual({ ok: true, duplicate: true });
+      expect(prisma.aiAgentSession.updateMany).not.toHaveBeenCalled();
+      expect(prisma.aiAgentPendingReply.updateMany).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("keeps a hidden campaign send out of inbox recency when its outbound webhook arrives first", async () => {
+    const prisma = createMockPrisma({ campaignRecipient: {
+      findFirst: vi.fn().mockResolvedValue({ id: 'recipient-1' })
+    } });
+    const { app } = await buildEvolutionApp(prisma);
+    try {
+      const response = await app.inject({ method: 'POST', url: '/webhooks/evolution/workspace_a',
+        headers: { 'x-prymeira-talk-secret': 'top_secret' },
+        payload: { ...validWebhookBody, data: { ...validWebhookBody.data,
+          key: { ...validWebhookBody.data.key, fromMe: true } } } });
+      expect(response.statusCode).toBe(200);
+      expect(prisma.campaignRecipient.findFirst).toHaveBeenCalledWith(expect.objectContaining({
+        where: expect.objectContaining({ workspaceId: 'workspace_a', channelId: 'channel_1',
+          campaign: { is: { hideFromInboxUntilReply: true } } })
+      }));
+      expect(prisma.conversation.upsert).toHaveBeenCalledWith(expect.objectContaining({
+        create: expect.objectContaining({ hiddenUntilReply: true })
+      }));
+      const previewUpdate = prisma.conversation.updateMany.mock.calls.find(([input]) =>
+        input.data?.lastMessagePreviewAt);
+      expect(previewUpdate?.[0].data).not.toHaveProperty('lastMessageAt');
+    } finally { await app.close(); }
+  });
+
   it("stores Evolution image messages with media type and readable preview", async () => {
     const prisma = createMockPrisma();
     const { app } = await buildEvolutionApp(prisma);
@@ -842,6 +1446,57 @@ describe("Evolution webhook routes", () => {
     } finally {
       await app.close();
     }
+  });
+
+  describe("durable media copy on the legacy webhook", () => {
+    const imageBody = (id: string) => ({ ...validWebhookBody, data: { ...validWebhookBody.data, key: { ...validWebhookBody.data.key, id },
+      message: { base64: "aW1hZ2Vt", imageMessage: { caption: "Comprovante", mimetype: "image/jpeg", url: "https://media.example.com/image.jpg" } } } });
+    const send = (app: Awaited<ReturnType<typeof buildEvolutionApp>>["app"], payload: unknown) =>
+      app.inject({ method: "POST", url: "/webhooks/evolution/workspace_a", headers: { "x-prymeira-talk-secret": "top_secret" }, payload: payload as never });
+
+    it("prepares the saved attachment with an Evolution fetch as the fallback source", async () => {
+      const prisma = createMockPrisma();
+      const prepare = vi.fn().mockResolvedValue({ state: "stored", playback: "not_applicable" });
+      const fetchMedia = vi.fn().mockResolvedValue("data:image/jpeg;base64,aW1hZ2Vt");
+      const { app } = await buildEvolutionApp(prisma, undefined, { durableMedia: { prepare }, evolutionClient: { fetchMedia } });
+      try {
+        expect((await send(app, imageBody("provider_image_durable"))).statusCode).toBe(200);
+        expect(prepare).toHaveBeenCalledTimes(1);
+        const call = prepare.mock.calls[0]![0];
+        expect(call).toMatchObject({ workspaceId: "workspace_a", messageId: expect.any(String) });
+        expect(call.fetchers).toHaveLength(1);
+        await call.fetchers[0].fetch();
+        expect(fetchMedia).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: "workspace_a", channelId: "channel_1", instanceName: validWebhookBody.instance, id: "provider_image_durable", key: expect.objectContaining({ rawId: "provider_image_durable", direction: "inbound", chatAddress: expect.any(String) }) }));
+      } finally { await app.close(); }
+    });
+
+    it("never fails or delays the webhook because the durable copy failed, and ignores text messages", async () => {
+      const prisma = createMockPrisma();
+      const prepare = vi.fn().mockRejectedValue(new Error("disk full"));
+      const { app } = await buildEvolutionApp(prisma, undefined, { durableMedia: { prepare } });
+      try {
+        expect((await send(app, imageBody("provider_image_failing"))).statusCode).toBe(200);
+        expect(prepare).toHaveBeenCalledTimes(1);
+        expect((await send(app, validWebhookBody)).statusCode).toBe(200);
+        expect(prepare).toHaveBeenCalledTimes(1);
+      } finally { await app.close(); }
+    });
+
+    it("a workspace outside the staged rollout gets no durable copy", async () => {
+      const prisma = createMockPrisma();
+      const prepare = vi.fn().mockResolvedValue({ state: "stored", playback: "not_applicable" });
+      const { app } = await buildEvolutionApp(prisma, undefined, { durableMedia: { prepare }, durableMediaWorkspaces: (workspaceId) => workspaceId === "someone_else" });
+      try {
+        expect((await send(app, imageBody("provider_image_outside"))).statusCode).toBe(200);
+        expect(prepare).not.toHaveBeenCalled();
+      } finally { await app.close(); }
+    });
+
+    it("keeps the legacy behaviour untouched when no durable store is configured", async () => {
+      const prisma = createMockPrisma();
+      const { app } = await buildEvolutionApp(prisma);
+      try { expect((await send(app, imageBody("provider_image_legacy"))).statusCode).toBe(200); } finally { await app.close(); }
+    });
   });
 
   it("stores Evolution audio and sticker messages with non-empty previews", async () => {
@@ -917,6 +1572,118 @@ describe("Evolution webhook routes", () => {
     } finally {
       await app.close();
     }
+  });
+
+  it("recognizes stickers without a URL and inside temporary message wrappers", async () => {
+    const prisma = createMockPrisma();
+    const { app } = await buildEvolutionApp(prisma);
+    try {
+      for (const [id, message] of [
+        ["sticker_direct_path", { stickerMessage: { directPath: "/v/t62.15575-24/asset", mediaKey: "key" } }],
+        ["sticker_ephemeral", { ephemeralMessage: { message: { stickerMessage: { directPath: "/v/t62.15575-24/asset" } } } }],
+        ["sticker_type_only", undefined]
+      ] as const) {
+        const response = await app.inject({
+          method: "POST",
+          url: "/webhooks/evolution/workspace_a",
+          headers: { "x-prymeira-talk-secret": "top_secret" },
+          payload: { ...validWebhookBody, data: { ...validWebhookBody.data, key: { ...validWebhookBody.data.key, id }, message, messageType: id === "sticker_type_only" ? "stickerMessage" : undefined } }
+        });
+        expect(response.statusCode).toBe(200);
+        expect(prisma.message.create).toHaveBeenCalledWith({ data: expect.objectContaining({
+          providerMessageId: id, type: "image", body: "Figurinha recebida", mediaUrl: null
+        }) });
+      }
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("reads the text of an incoming WhatsApp template", async () => {
+    const prisma = createMockPrisma();
+    const { app } = await buildEvolutionApp(prisma);
+    try {
+      const response = await app.inject({ method: "POST", url: "/webhooks/evolution/workspace_a",
+        headers: { "x-prymeira-talk-secret": "top_secret" },
+        payload: { ...validWebhookBody, data: { ...validWebhookBody.data,
+          key: { ...validWebhookBody.data.key, id: "template_with_text" },
+          messageType: "templateMessage",
+          message: { templateMessage: { hydratedTemplate: {
+            hydratedTitleText: "Pedido de orçamento",
+            hydratedContentText: "Preciso de chapa galvanizada."
+          } } }
+        } }
+      });
+      expect(response.statusCode).toBe(200);
+      expect(prisma.message.create).toHaveBeenCalledWith({ data: expect.objectContaining({
+        providerMessageId: "template_with_text",
+        type: "template",
+        body: "Pedido de orçamento\nPreciso de chapa galvanizada."
+      }) });
+      expect(prisma.conversation.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({ lastMessagePreview: "Pedido de orçamento\nPreciso de chapa galvanizada." })
+      }));
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("does not schedule the agent for a template or unknown event without readable content", async () => {
+    const prisma = createMockPrisma();
+    const persistInbound = vi.fn();
+    const agentReply = vi.fn();
+    const { app } = await buildEvolutionApp(prisma, undefined, {
+      assistantScheduler: { persistInbound } as never,
+      agentReplyScheduler: { scheduleActiveSessionForMessage: agentReply }
+    });
+    try {
+      for (const [id, message, messageType] of [
+        ["empty_template", { templateMessage: { hydratedTemplate: {} } }, "templateMessage"],
+        ["unknown_event", { protocolMessage: {} }, "protocolMessage"]
+      ] as const) {
+        const response = await app.inject({ method: "POST", url: "/webhooks/evolution/workspace_a",
+          headers: { "x-prymeira-talk-secret": "top_secret" },
+          payload: { ...validWebhookBody, data: { ...validWebhookBody.data,
+            key: { ...validWebhookBody.data.key, id }, message, messageType
+          } }
+        });
+        expect(response.statusCode).toBe(200);
+        expect(prisma.message.create).toHaveBeenCalledWith({ data: expect.objectContaining({
+          providerMessageId: id, type: "system"
+        }) });
+      }
+      expect(persistInbound).not.toHaveBeenCalled();
+      expect(agentReply).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("shows WhatsApp reactions without scheduling an assistant reply", async () => {
+    const prisma = createMockPrisma();
+    const persistInbound = vi.fn().mockResolvedValue(undefined);
+    const assistantMessage = vi.fn().mockResolvedValue(undefined);
+    const agentReply = vi.fn().mockResolvedValue({ scheduled: true });
+    const { app } = await buildEvolutionApp(prisma, undefined, {
+      assistantScheduler: { persistInbound, message: assistantMessage } as never,
+      agentReplyScheduler: { scheduleActiveSessionForMessage: agentReply }
+    });
+    try {
+      const response = await app.inject({ method: "POST", url: "/webhooks/evolution/workspace_a",
+        headers: { "x-prymeira-talk-secret": "top_secret" },
+        payload: { ...validWebhookBody, data: { ...validWebhookBody.data,
+          key: { ...validWebhookBody.data.key, id: "reaction_1" },
+          messageType: "reactionMessage", message: { reactionMessage: { text: "👍" } }
+        } }
+      });
+      expect(response.statusCode).toBe(200);
+      expect(prisma.message.create).toHaveBeenCalledWith({ data: expect.objectContaining({
+        providerMessageId: "reaction_1", type: "system", body: "Reagiu com 👍"
+      }) });
+      expect(persistInbound).not.toHaveBeenCalled();
+      expect(assistantMessage).not.toHaveBeenCalled();
+      expect(agentReply).not.toHaveBeenCalled();
+    } finally { await app.close(); }
   });
 
   it("prepares inbound audio before automations and reply scheduling", async () => {
@@ -1062,7 +1829,8 @@ describe("Evolution webhook routes", () => {
           }
         },
         data: {
-          unreadCount: { increment: 1 }
+          unreadCount: { increment: 1 },
+          hiddenUntilReply: false
         }
       });
       expect(prisma.conversation.updateMany).toHaveBeenCalledWith({
@@ -1073,7 +1841,8 @@ describe("Evolution webhook routes", () => {
         },
         data: {
           lastMessageAt: incomingMessageAt,
-          lastMessagePreview: "Oi"
+          lastMessagePreview: "Oi",
+          lastMessagePreviewAt: incomingMessageAt
         }
       });
       expect(publish).toHaveBeenCalledTimes(2);
@@ -1242,10 +2011,56 @@ describe("Evolution webhook routes", () => {
     }
   });
 
+  it.each(["Você", "556392370750", "103547450441825@lid"])("does not use the inbound push name %j as a contact name", async (pushName) => {
+    const contactCreateMock = vi.fn().mockResolvedValue({
+      id: "contact_1",
+      workspaceId: "workspace_a",
+      phone: "554799990000"
+    });
+    const prisma = createMockPrisma({
+      contact: {
+        findFirst: vi.fn().mockResolvedValue(null),
+        create: contactCreateMock
+      }
+    });
+    const { app } = await buildEvolutionApp(prisma);
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/webhooks/evolution/workspace_a",
+        headers: { "x-prymeira-talk-secret": "top_secret" },
+        payload: {
+          event: "MESSAGES_UPSERT",
+          instance: "client-one",
+          data: {
+            key: { id: "provider_msg_placeholder", remoteJid: "5547999990000@s.whatsapp.net", fromMe: false },
+            pushName,
+            message: { conversation: "Oi" },
+            messageTimestamp: 1779300000
+          }
+        }
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(contactCreateMock).toHaveBeenCalledWith({
+        data: {
+          workspaceId: "workspace_a",
+          phone: "554799990000"
+        }
+      });
+      expect(prisma.contact.updateMany).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
   it("ingests a new inbound text event and publishes a workspace-consistent message", async () => {
     const observeConversationActivity = vi.fn().mockResolvedValue({ status: "cancelled" });
+    const observeMessage = vi.fn().mockResolvedValue(undefined);
     const { app, prisma, publish } = await buildEvolutionApp(undefined, undefined, {
-      followupService: { observeConversationActivity }
+      followupService: { observeConversationActivity },
+      inboxTriage: { observeMessage }
     });
 
     try {
@@ -1265,6 +2080,9 @@ describe("Evolution webhook routes", () => {
         direction: "inbound",
         source: "customer"
       });
+      expect(observeMessage).toHaveBeenCalledWith(expect.objectContaining({
+        workspaceId: "workspace_a", conversationId: "conv_1", messageId: "msg_1", direction: "inbound"
+      }));
       expect(prisma.contact.findFirst).toHaveBeenCalledWith({
         where: {
           workspaceId: "workspace_a",
@@ -1310,7 +2128,8 @@ describe("Evolution webhook routes", () => {
           }
         },
         data: {
-          unreadCount: { increment: 1 }
+          unreadCount: { increment: 1 },
+          hiddenUntilReply: false
         }
       });
       expect(prisma.conversation.updateMany).toHaveBeenCalledWith({
@@ -1321,7 +2140,8 @@ describe("Evolution webhook routes", () => {
         },
         data: {
           lastMessageAt: timestampDate,
-          lastMessagePreview: "Oi"
+          lastMessagePreview: "Oi",
+          lastMessagePreviewAt: timestampDate
         }
       });
 
@@ -1359,6 +2179,82 @@ describe("Evolution webhook routes", () => {
     } finally {
       await app.close();
     }
+  });
+
+  it("keeps a group message in its own conversation without running direct-chat observers", async () => {
+    const groupJid = "120363024158769234@g.us";
+    const participant = "5511999999999@s.whatsapp.net";
+    const contact = { id: "group_contact", workspaceId: "workspace_a", phone: groupJid, name: "Equipe comercial", isGroup: true };
+    const conversation = {
+      id: "group_conversation", workspaceId: "workspace_a", channelId: "channel_1", contactId: contact.id,
+      status: "open", assignedUserId: null, departmentId: null, lastMessageAt: new Date(),
+      lastMessagePreview: "Bom dia", unreadCount: 1, priority: "normal", aiControlStatus: "human_controlled",
+      aiControlUpdatedAt: null, activeAgentSessionId: null,
+      channel: { displayName: "Client One", phoneNumber: null, provider: "evolution" }, contact,
+      department: null, assignedUser: null
+    };
+    const metadata = { groupSender: { jid: participant, name: "Ana" } };
+    const message = { id: "group_message", workspaceId: "workspace_a", conversationId: conversation.id,
+      providerMessageId: "group_provider_1", direction: "inbound", type: "text", body: "Bom dia",
+      mediaUrl: null, metadata, status: "delivered", sentByUserId: null, createdAt: new Date() };
+    const prisma = createMockPrisma({ contact: { findFirst: vi.fn().mockResolvedValue(null), upsert: vi.fn().mockResolvedValue(contact) },
+      conversation: { findUnique: vi.fn().mockResolvedValue(conversation), upsert: vi.fn().mockResolvedValue(conversation) },
+      message: { create: vi.fn().mockResolvedValue(message) } });
+    const followup = vi.fn().mockResolvedValue({ status: "skipped" });
+    const triage = vi.fn().mockResolvedValue(undefined);
+    const assistant = vi.fn().mockResolvedValue(undefined);
+    const groupInfo = vi.fn().mockResolvedValue({ subject: "Equipe comercial" });
+    const { app, publish } = await buildEvolutionApp(prisma,
+      { mode: "real", client: { getGroupInfo: groupInfo } } as never,
+      { followupService: { observeConversationActivity: followup }, inboxTriage: { observeMessage: triage },
+        assistantScheduler: { message: assistant, persistInbound: assistant } as never });
+    try {
+      const response = await app.inject({ method: "POST", url: "/webhooks/evolution/workspace_a",
+        headers: { "x-prymeira-talk-secret": "top_secret" },
+        payload: { event: "messages.upsert", instance: "client-one", data: {
+          key: { id: "group_provider_1", remoteJid: groupJid, participant, fromMe: false },
+          pushName: "Ana", message: { conversation: "Bom dia" }, messageTimestamp: 1779300000
+        } } });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ ok: true });
+      expect(groupInfo).toHaveBeenCalledWith({ instanceName: "client-one", groupJid });
+      expect(prisma.contact.upsert).toHaveBeenCalledWith(expect.objectContaining({
+        create: expect.objectContaining({ workspaceId: "workspace_a", phone: groupJid,
+          name: "Equipe comercial", isGroup: true })
+      }));
+      expect(prisma.conversation.upsert).toHaveBeenCalledWith(expect.objectContaining({
+        create: expect.objectContaining({ aiControlStatus: "human_controlled", contactId: contact.id })
+      }));
+      expect(prisma.message.create).toHaveBeenCalledWith({ data: expect.objectContaining({ metadata }) });
+      expect(publish).toHaveBeenCalledWith(expect.objectContaining({ type: "message.created",
+        payload: expect.objectContaining({ senderName: "Ana", senderJid: participant }) }));
+      expect(publish).toHaveBeenCalledWith(expect.objectContaining({ type: "conversation.updated",
+        payload: expect.objectContaining({ isGroup: true, contactName: "Equipe comercial", contactPhone: null }) }));
+      expect(followup).not.toHaveBeenCalled();
+      expect(triage).not.toHaveBeenCalled();
+      expect(assistant).not.toHaveBeenCalled();
+    } finally { await app.close(); }
+  });
+
+  it("keeps a group message when Evolution cannot provide its subject", async () => {
+    const groupJid = '120363024158769234@g.us';
+    const groupInfo = vi.fn().mockRejectedValue(new Error('Group info unavailable'));
+    const { app, prisma } = await buildEvolutionApp(createMockPrisma({
+      contact: { findFirst: vi.fn().mockResolvedValue(null) }
+    }), { mode: 'real', client: { getGroupInfo: groupInfo } } as never);
+    try {
+      const response = await app.inject({ method: 'POST', url: '/webhooks/evolution/workspace_a',
+        headers: { 'x-prymeira-talk-secret': 'top_secret' }, payload: {
+          event: 'messages.upsert', instance: 'client-one', data: {
+            key: { id: 'group_fallback_1', remoteJid: groupJid, fromMe: false },
+            message: { conversation: 'Olá' }, messageTimestamp: 1779300000
+          }
+        } });
+      expect(response.json()).toEqual({ ok: true });
+      expect(prisma.contact.upsert).toHaveBeenCalledWith(expect.objectContaining({
+        create: expect.objectContaining({ phone: groupJid, isGroup: true, name: 'Grupo 58769234' })
+      }));
+    } finally { await app.close(); }
   });
 
   it("runs enabled automations after an inbound Evolution message is ingested", async () => {
@@ -1427,10 +2323,11 @@ describe("Evolution webhook routes", () => {
             workspaceId: "workspace_a",
             ruleId: "automation_1",
             eventKey: "message.received:provider_msg_1",
-            status: "completed"
+            status: "running"
           })
         })
       );
+      expect(prisma.automationRun.updateMany).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ status: 'completed' }) }));
       expect(publish).toHaveBeenCalledWith(
         expect.objectContaining({
           type: "automation_run.created",
@@ -1442,3 +2339,22 @@ describe("Evolution webhook routes", () => {
     }
   });
 });
+
+describe("legacy webhook delegation to the ingress", () => {
+  const post = (app: Awaited<ReturnType<typeof buildEvolutionApp>>["app"], workspaceId: string) => app.inject({
+    method: "POST", url: `/webhooks/evolution/${workspaceId}`, headers: { "x-prymeira-talk-secret": "top_secret" }, payload: validWebhookBody });
+  it("refuses a delegated workspace without touching the database and keeps serving the others", async () => {
+    const { app, prisma } = await buildEvolutionApp(createMockPrisma(), undefined, { delegatedWorkspaces: new Set(["delegated-ws"]) });
+    const refused = await post(app, "delegated-ws");
+    expect(refused.statusCode).toBe(409);
+    expect(refused.json()).toEqual({ ok: false, error: "delegated_to_ingress" });
+    expect(JSON.stringify(Object.values(prisma).flatMap((v) => (typeof v === "function" ? [(v as { mock?: { calls: unknown[] } }).mock?.calls] : [])))).not.toContain("delegated-ws");
+    expect((await post(app, "workspace_a")).statusCode).not.toBe(409);
+  });
+  it("refuses every workspace for '*' and still authenticates first", async () => {
+    const { app } = await buildEvolutionApp(createMockPrisma(), undefined, { delegatedWorkspaces: "*" });
+    expect((await post(app, "any")).statusCode).toBe(409);
+    expect((await app.inject({ method: "POST", url: "/webhooks/evolution/any", headers: { "x-prymeira-talk-secret": "wrong" }, payload: validWebhookBody })).statusCode).toBe(401);
+  });
+});
+

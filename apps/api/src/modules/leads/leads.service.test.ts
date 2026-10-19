@@ -803,8 +803,9 @@ describe("Leads service", () => {
 
     await context.service.runClaimedJob(job);
 
-    expect(context.googleMapsClient.findJobByName).not.toHaveBeenCalled();
-    expect(context.googleMapsClient.createJob).not.toHaveBeenCalled();
+    // The centre is not resubmitted (the short list then searches the areas around it under their own names).
+    expect(context.googleMapsClient.findJobByName).not.toHaveBeenCalledWith(`prymeira-${job.id}-g0`);
+    expect(context.googleMapsClient.createJob).not.toHaveBeenCalledWith(expect.objectContaining({ name: `prymeira-${job.id}-g0` }));
     expect(context.googleMapsClient.getJob).toHaveBeenCalledWith("remote-existing");
     expect(context.googleMapsClient.download).toHaveBeenCalledWith("remote-existing");
   });
@@ -838,13 +839,83 @@ describe("Leads service", () => {
     await context.service.runClaimedJob(job);
 
     expect(context.googleMapsClient.findJobByName).toHaveBeenCalledWith(`prymeira-${job.id}-g1`);
-    expect(context.googleMapsClient.createJob).not.toHaveBeenCalled();
+    expect(context.googleMapsClient.createJob).not.toHaveBeenCalledWith(expect.objectContaining({ name: `prymeira-${job.id}-g1` }));
     expect(context.repository.fencedCheckpointJob).toHaveBeenCalledWith(
       expect.anything(),
       { output: expect.objectContaining({ remoteGeneration: 1, remoteJobId: "remote-g1" }) },
       now,
       300_000
     );
+  });
+
+  describe("Google Maps 'visualização limitada': the centre came back short", () => {
+    const header = "title,link,category,address,phone,website,review_rating,review_count,latitude,longitude,place_id,complete_address";
+    const rows = (prefix: string, count: number) => Array.from({ length: count }, (_, index) =>
+      `${prefix} ${index},https://www.google.com/maps/place/${prefix}-${index},Metalúrgica,Rua ${index},(47) 3000-${String(1000 + index)},,4.5,10,-26.3,-48.8,${prefix}-${index},`);
+    const input = { requestFingerprint: "a".repeat(64), niche: "metalurgica", city: "Joinville", state: "SC",
+      latitude: -26.3044898, longitude: -48.8486726, maxTimeSeconds: 600 };
+
+    it("searches the four areas around the centre and saves each company once", async () => {
+      const context = setup();
+      // Centre: 20 places (Google's limited list). North repeats 5 of them and adds 10; the others add a few each.
+      const csvs = [rows("centro", 20), [...rows("centro", 5), ...rows("norte", 10)], rows("sul", 3), rows("leste", 4), [...rows("oeste", 2), ...rows("norte", 2)]];
+      context.googleMapsClient.download.mockImplementation(async () => [header, ...csvs.shift()!].join("\n"));
+      let created = 0;
+      context.googleMapsClient.createJob.mockImplementation(async () => ({ id: `remote-${created++}` }));
+      const job = rawJob("google_maps_search", input);
+
+      await context.service.runClaimedJob(job);
+
+      const calls = context.googleMapsClient.createJob.mock.calls.map(([call]: any[]) => call);
+      expect(calls.map((call: any) => call.name)).toEqual([0, 1, 2, 3, 4].map((index) => index ? `prymeira-${job.id}-g0-p${index}` : `prymeira-${job.id}-g0`));
+      expect(calls.every((call: any) => call.keywords[0] === "metalurgica em Joinville, SC")).toBe(true);
+      // North and south ~5 km away (latitude), east and west (longitude), centre untouched.
+      expect(calls[0]).toMatchObject({ latitude: -26.3044898, longitude: -48.8486726 });
+      expect(calls[1].latitude).toBeCloseTo(-26.3044898 + 5 / 111, 4);
+      expect(calls[2].latitude).toBeCloseTo(-26.3044898 - 5 / 111, 4);
+      expect(calls[3].longitude).toBeGreaterThan(-48.8486726 + 0.04);
+      expect(calls[4].longitude).toBeLessThan(-48.8486726 - 0.04);
+      const saved = context.repository.upsertLeads.mock.calls.flatMap(([batch]: any[]) => batch.map((lead: any) => lead.sourceDedupeKey));
+      expect(saved).toHaveLength(39);
+      expect(new Set(saved).size).toBe(39);
+      expect(context.repository.finishJob).toHaveBeenCalledWith(expect.objectContaining({ status: "completed",
+        output: expect.objectContaining({ processedCount: 39, searchedAreas: 5 }) }));
+    });
+
+    it("a full centre list (the scroll worked) needs no extra areas", async () => {
+      const context = setup();
+      context.googleMapsClient.download.mockResolvedValue([header, ...rows("centro", 60)].join("\n"));
+      await context.service.runClaimedJob(rawJob("google_maps_search", input));
+      expect(context.googleMapsClient.createJob).toHaveBeenCalledTimes(1);
+      expect(context.repository.finishJob).toHaveBeenCalledWith(expect.objectContaining({ status: "completed",
+        output: expect.objectContaining({ processedCount: 60, searchedAreas: 1 }) }));
+    });
+
+    it("an extra area that fails keeps what was found; a restart continues from the next area", async () => {
+      const context = setup();
+      const csvs = [rows("centro", 20), rows("norte", 6)];
+      context.googleMapsClient.download.mockImplementation(async () => [header, ...csvs.shift()!].join("\n"));
+      context.googleMapsClient.getJob
+        .mockResolvedValueOnce({ id: "a", status: "succeeded" })
+        .mockResolvedValueOnce({ id: "b", status: "succeeded" })
+        .mockResolvedValueOnce({ id: "c", status: "failed" } as any);
+      await context.service.runClaimedJob(rawJob("google_maps_search", input));
+      expect(context.googleMapsClient.createJob).toHaveBeenCalledTimes(3);
+      expect(context.repository.finishJob).toHaveBeenCalledWith(expect.objectContaining({ status: "completed",
+        output: expect.objectContaining({ processedCount: 26, searchedAreas: 2 }) }));
+
+      const resumed = setup();
+      resumed.repository.listLeads.mockResolvedValue({ total: 29 });
+      resumed.googleMapsClient.download.mockResolvedValue([header, ...rows("leste", 3)].join("\n"));
+      const job = rawJob("google_maps_search", input);
+      job.output = { passIndex: 3, plannedPasses: 5 };
+      await resumed.service.runClaimedJob(job);
+      expect(resumed.googleMapsClient.createJob.mock.calls.map(([call]: any[]) => call.name))
+        .toEqual([`prymeira-${job.id}-g0-p3`, `prymeira-${job.id}-g0-p4`]);
+      expect(resumed.repository.finishJob).toHaveBeenCalledWith(expect.objectContaining({
+        output: expect.objectContaining({ processedCount: 29 })
+      }));
+    });
   });
 
   it("marks malformed Google rows partial while preserving useful rows and safe counts", async () => {
@@ -901,8 +972,8 @@ describe("Leads service", () => {
       await context.service.runClaimedJob(job);
 
       expect(context.nearbyCities.nearby).toHaveBeenCalledWith("Guaramirim", "SC");
-      expect(context.googleMapsClient.createJob).toHaveBeenCalledTimes(2);
-      expect(context.googleMapsClient.createJob).toHaveBeenNthCalledWith(2, {
+      expect(context.googleMapsClient.createJob).toHaveBeenCalledTimes(6);
+      expect(context.googleMapsClient.createJob).toHaveBeenNthCalledWith(6, {
         name: `prymeira-${job.id}-g0-x`,
         keywords: [
           "caldeiraria #!#x-r",
@@ -931,7 +1002,7 @@ describe("Leads service", () => {
       expect(upserted.map((lead: any) => lead.city)).toContain("Schroeder");
       expect(context.repository.finishJob).toHaveBeenCalledWith(expect.objectContaining({
         status: "completed",
-        output: expect.objectContaining({ primaryCount: 2, expansionAddedCount: 3, processedCount: 5, downloadedRows: 6 })
+        output: expect.objectContaining({ primaryCount: 2, expansionAddedCount: 3, processedCount: 5, downloadedRows: 14 })
       }));
     });
 
@@ -939,7 +1010,7 @@ describe("Leads service", () => {
       for (const minResults of [2, undefined]) {
         const context = expansionContext();
         await context.service.runClaimedJob(rawJob("google_maps_search", input(minResults)));
-        expect(context.googleMapsClient.createJob).toHaveBeenCalledTimes(1);
+        expect(context.googleMapsClient.createJob).toHaveBeenCalledTimes(5);
         expect(context.nearbyCities.nearby).not.toHaveBeenCalled();
       }
     });
@@ -978,7 +1049,9 @@ describe("Leads service", () => {
       const context = expansionContext();
       const job = rawJob("google_maps_search", input(30));
       job.output = {
-        remoteJobId: "remote-p", remoteStatus: "succeeded", remoteSubmittedAt: now.toISOString(),
+        passIndex: 5, plannedPasses: 5,
+        primaryKeys: parseGoogleMapsCsv(primaryCsv, { workspaceId, listId, city: "Guaramirim", state: "SC" }).leads.map(lead => lead.sourceDedupeKey),
+        primaryCategories: ["Caldeiraria"],
         expansionJobId: "remote-x", expansionStatus: "running", expansionSubmittedAt: now.toISOString(),
         expansionKeywords: [{ id: "x-c0", keyword: "caldeiraria em Jaraguá do Sul, SC", term: "caldeiraria", city: "Jaraguá do Sul" }]
       };
@@ -986,6 +1059,7 @@ describe("Leads service", () => {
       await context.service.runClaimedJob(job);
 
       expect(context.googleMapsClient.createJob).not.toHaveBeenCalled();
+      expect(context.repository.upsertLeads.mock.calls.flatMap((call: any[]) => call[0]).some((lead: any) => lead.companyName === "Caldeiraria Alfa")).toBe(false);
       expect(context.nearbyCities.nearby).not.toHaveBeenCalled();
       const upserted = context.repository.upsertLeads.mock.calls.flatMap((call: any[]) => call[0]);
       expect(upserted.find((lead: any) => lead.companyName === "Metalúrgica Gama")?.sourceSnapshot).toMatchObject({
@@ -1093,7 +1167,8 @@ describe("Leads service", () => {
       latitude: -22.9, longitude: -47.06, maxTimeSeconds: 180
     }));
 
-    expect(context.googleMapsClient.getJob).toHaveBeenCalledTimes(3);
+    // Three polls for the centre, then one per extra area (the centre list was short).
+    expect(context.googleMapsClient.getJob).toHaveBeenCalledTimes(7);
     expect(sleep).toHaveBeenNthCalledWith(1, 5_000);
     expect(sleep).toHaveBeenNthCalledWith(2, 5_000);
     expect(context.repository.finishJob).toHaveBeenCalledWith(expect.objectContaining({ status: "completed" }));

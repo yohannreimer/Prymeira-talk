@@ -102,7 +102,11 @@ describe("resolveMetaRuntime", () => {
   });
 
   it("returns an Evolution official runtime when Evolution settings exist", async () => {
-    const prisma = {
+    const prisma: any = {
+      channel: { findMany: vi.fn(async () => [{ id: 'meta-channel', workspaceId: 'local_workspace', provider: 'meta_cloud', providerKey: 'official-instance', providerInstanceClaim: 'official-instance', archivedAt: null }]) },
+      channelConnection: { findMany: vi.fn(async () => []) },
+      outboundDispatch: { create: vi.fn(async () => ({ id: 'dispatch' })), updateMany: vi.fn(async () => ({ count: 1 })) },
+      $executeRaw: vi.fn(async () => 1),
       integrationConfig: {
         findUnique: async () => ({
           mode: "real",

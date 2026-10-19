@@ -1,3 +1,5 @@
+import { enterCanonicalWorkspaceTransaction } from "../messaging/canonical-boundary.js";
+import { claimAutomationExecution, type AutomationExecution } from './automation-execution.js';
 import {
   automationFlowSchema,
   getAutomationBlock,
@@ -7,10 +9,11 @@ import {
 } from "@prymeira-talk/shared";
 import { EvolutionClientError } from "../evolution/evolution.client.js";
 import type { EvolutionRuntime } from "../evolution/evolution-runtime.js";
+import { interpolateAutomationText, type AutomationVariables } from "./automation-variables.js";
 
 type DateLike = Date | string;
 
-interface AutomationRuleRecord {
+export interface AutomationRuleRecord {
   id: string;
   workspaceId: string;
   name: string;
@@ -22,7 +25,7 @@ interface AutomationRuleRecord {
   updatedAt: DateLike;
 }
 
-interface AutomationRunRecord {
+export interface AutomationRunRecord {
   id: string;
   workspaceId: string;
   ruleId: string;
@@ -32,12 +35,15 @@ interface AutomationRunRecord {
   result: unknown;
   createdAt: DateLike;
   updatedAt: DateLike;
+  executionToken?: string | null;
+  leaseUntil?: DateLike | null;
 }
 
 interface MessageRecord {
   id: string;
   workspaceId: string;
   conversationId: string;
+  hiddenByReset?: boolean;
   providerMessageId?: string | null;
   providerEventId?: string | null;
   direction: "inbound" | "outbound";
@@ -60,6 +66,7 @@ interface ConversationRecord {
   assignedUserId?: string | null;
   departmentId?: string | null;
   priority: string;
+  historyResetAt?: DateLike | null;
   lastMessageAt?: DateLike | null;
   lastMessagePreview?: string | null;
   unreadCount: number;
@@ -101,19 +108,24 @@ export interface AutomationRunnerPrisma {
         };
       };
       create: {
+        id?: string;
         workspaceId: string;
         ruleId: string;
         eventKey: string;
         status: string;
         input: unknown;
         result: unknown;
+        executionToken?: string | null;
+        leaseUntil?: Date | null;
       };
       update: {
-        status: string;
-        input: unknown;
-        result: unknown;
+        status?: string;
+        input?: unknown;
+        result?: unknown;
       };
     }): Promise<AutomationRunRecord>;
+    updateMany?(args: unknown): Promise<{ count: number }>;
+    findMany?(args: unknown): Promise<AutomationRunRecord[]>;
   };
   message: {
     findUnique(args: unknown): Promise<MessageRecord | null>;
@@ -152,7 +164,7 @@ interface AutomationRunnerRealtime {
 
 export interface AutomationRunnerEvolution {
   mode: EvolutionRuntime["mode"];
-  client?: Pick<NonNullable<EvolutionRuntime["client"]>, "sendText" | "sendMedia"> | null;
+  client?: Pick<NonNullable<EvolutionRuntime["client"]>, "sendText" | "sendMedia" | "getGroupInfo"> | null;
 }
 
 export interface AutomationRunnerAgentRuntime {
@@ -194,6 +206,7 @@ export interface AutomationRunnerAgentReplyScheduler {
 
 export interface AutomationRunnerOptions {
   prisma: AutomationRunnerPrisma;
+  onRecoveryError?: (failure: { id: string; code: string }) => void;
   agentRuntime?: AutomationRunnerAgentRuntime;
   agentReplyScheduler?: AutomationRunnerAgentReplyScheduler;
   evolution?: AutomationRunnerEvolution;
@@ -214,7 +227,19 @@ export interface RunForInboundMessageInput {
   includeDisabled?: boolean;
 }
 
-interface ActionResult {
+export interface RunForWebhookEventInput {
+  workspaceId: string;
+  rule: AutomationRuleRecord;
+  /** System message that records the external event; anchors the conversation. */
+  messageId: string;
+  eventKey: string;
+  variables: AutomationVariables;
+  /** When set, steps that would send WhatsApp messages are skipped with this reason. */
+  outboundBlockedReason?: string | null;
+  runInput?: Record<string, unknown>;
+}
+
+export interface ActionResult {
   nodeId: string;
   type: string;
   label: string;
@@ -231,7 +256,18 @@ interface ExecuteContext {
   message: MessageRecord;
   conversation: ConversationRecord;
   eventKey: string;
+  variables?: AutomationVariables;
+  outboundBlockedReason?: string | null;
 }
+
+const OUTBOUND_BLOCK_TYPES = new Set([
+  "send_message",
+  "ask_open_reply",
+  "send_quick_reply",
+  "send_image",
+  "send_file",
+  "run_agent"
+]);
 
 const MAX_GRAPH_STEPS = 80;
 
@@ -362,6 +398,16 @@ function messageText(context: ExecuteContext) {
   return context.message.body?.trim() ?? "";
 }
 
+// Only externally triggered runs carry variables; message-triggered flows keep
+// their configured text untouched.
+function withVariables(context: ExecuteContext, text: string): string;
+function withVariables(context: ExecuteContext, text: string | null): string | null;
+function withVariables(context: ExecuteContext, text: string | null) {
+  return text !== null && context.variables
+    ? interpolateAutomationText(text, context.variables)
+    : text;
+}
+
 function textContains(haystack: string, needle: string) {
   return haystack.toLocaleLowerCase("pt-BR").includes(needle.toLocaleLowerCase("pt-BR"));
 }
@@ -440,6 +486,7 @@ async function createOutboundText(
       sentByUserId: null
     }
   });
+  if (!await sourceStillCurrent(options, context)) return;
   await options.prisma.conversation.update({
     where: {
       workspaceId_id: {
@@ -492,6 +539,7 @@ async function createOutboundMedia(
       sentByUserId: null
     }
   });
+  if (!await sourceStillCurrent(options, context)) return;
   await options.prisma.conversation.update({
     where: {
       workspaceId_id: {
@@ -515,8 +563,16 @@ async function executeNode(
     return { result: resultFor(node, "completed") };
   }
 
+  if (context.outboundBlockedReason && OUTBOUND_BLOCK_TYPES.has(node.type)) {
+    return {
+      result: resultFor(node, "skipped", { message: context.outboundBlockedReason }),
+      stop: node.type === "run_agent"
+    };
+  }
+
   if (node.type === "send_message" || node.type === "ask_open_reply" || node.type === "send_quick_reply") {
-    const text = configValue(node, ["message", "body", "text"]);
+    const configuredText = configValue(node, ["message", "body", "text"]);
+    const text = configuredText ? withVariables(context, configuredText).trim() : null;
     if (!text) {
       return {
         result: resultFor(node, "failed", { error: "Message text is required." }),
@@ -536,7 +592,7 @@ async function executeNode(
     const mimetype =
       configValue(node, ["mimetype", "mimeType"]) ??
       (node.type === "send_image" ? "image/jpeg" : "application/octet-stream");
-    const caption = configValue(node, ["caption", "message", "body"]) ?? undefined;
+    const caption = withVariables(context, configValue(node, ["caption", "message", "body"])) ?? undefined;
 
     if (!mediaUrl) {
       return {
@@ -633,6 +689,7 @@ async function executeNode(
       update: {}
     });
     try {
+      if (!await sourceStillCurrent(options, context)) return { result: resultFor(node, "skipped", { message: "Conversation history was reset." }), stop: true };
       await options.prisma.conversationTag.create({
         data: {
           workspaceId: context.message.workspaceId,
@@ -663,6 +720,7 @@ async function executeNode(
       where: { workspaceId: context.message.workspaceId, name: tagName }
     });
     if (tag) {
+      if (!await sourceStillCurrent(options, context)) return { result: resultFor(node, "skipped", { message: "Conversation history was reset." }), stop: true };
       await options.prisma.conversationTag.deleteMany({
         where: {
           workspaceId: context.message.workspaceId,
@@ -690,6 +748,7 @@ async function executeNode(
       return { result: resultFor(node, "failed", { error: "Board stage was not found." }), stop: true };
     }
 
+    if (!await sourceStillCurrent(options, context)) return { result: resultFor(node, "skipped", { message: "Conversation history was reset." }), stop: true };
     await options.prisma.contactBoardMembership.upsert({
       where: {
         workspaceId_contactId_boardId: {
@@ -719,7 +778,8 @@ async function executeNode(
       return { result: resultFor(node, "failed", { error: "User ID is required." }), stop: true };
     }
 
-    await options.prisma.conversation.update({
+    if (!await sourceStillCurrent(options, context)) return { result: resultFor(node, "skipped", { message: "Conversation history was reset." }), stop: true };
+  await options.prisma.conversation.update({
       where: { workspaceId_id: { workspaceId: context.message.workspaceId, id: context.conversation.id } },
       data: { assignedUserId: userId }
     });
@@ -728,7 +788,8 @@ async function executeNode(
 
   if (node.type === "change_priority") {
     const priority = configValue(node, ["priority"]) ?? "normal";
-    await options.prisma.conversation.update({
+    if (!await sourceStillCurrent(options, context)) return { result: resultFor(node, "skipped", { message: "Conversation history was reset." }), stop: true };
+  await options.prisma.conversation.update({
       where: { workspaceId_id: { workspaceId: context.message.workspaceId, id: context.conversation.id } },
       data: { priority }
     });
@@ -736,7 +797,8 @@ async function executeNode(
   }
 
   if (node.type === "create_internal_note") {
-    const body = configValue(node, ["note", "body", "message"]);
+    const configuredBody = configValue(node, ["note", "body", "message"]);
+    const body = configuredBody ? withVariables(context, configuredBody).trim() : null;
     if (!body) {
       return { result: resultFor(node, "failed", { error: "Note body is required." }), stop: true };
     }
@@ -754,7 +816,8 @@ async function executeNode(
   }
 
   if (node.type === "close_conversation") {
-    await options.prisma.conversation.update({
+    if (!await sourceStillCurrent(options, context)) return { result: resultFor(node, "skipped", { message: "Conversation history was reset." }), stop: true };
+  await options.prisma.conversation.update({
       where: { workspaceId_id: { workspaceId: context.message.workspaceId, id: context.conversation.id } },
       data: { status: "closed" }
     });
@@ -763,7 +826,7 @@ async function executeNode(
 
   if (node.type === "run_agent") {
     const agentId = configValue(node, ["agentId"]);
-    const instruction = configValue(node, ["instruction", "prompt", "message"]);
+    const instruction = withVariables(context, configValue(node, ["instruction", "prompt", "message"]));
 
     if (!agentId) {
       return { result: resultFor(node, "failed", { error: "Agent ID is required." }), stop: true };
@@ -861,6 +924,7 @@ async function triggerMatches(
         workspaceId: context.message.workspaceId,
         conversationId: context.message.conversationId,
         direction: "inbound",
+        hiddenByReset: false,
         id: { not: context.message.id }
       }
     });
@@ -874,6 +938,7 @@ async function triggerMatches(
         workspaceId: context.message.workspaceId,
         conversationId: context.message.conversationId,
         direction: "inbound",
+        hiddenByReset: false,
         id: { not: context.message.id },
         createdAt: { lt: toDate(context.message.createdAt) }
       },
@@ -901,22 +966,65 @@ async function triggerMatches(
   return false;
 }
 
+async function sourceStillCurrent(options: AutomationRunnerOptions, context: ExecuteContext) {
+  const source = await options.prisma.message.findUnique({ where: { id: context.message.id }, include: { conversation: true } });
+  const epoch = (value: DateLike | null | undefined) => value ? toDate(value).getTime() : null;
+  return Boolean(source && !source.hiddenByReset && source.workspaceId === context.message.workspaceId &&
+    epoch(source.conversation?.historyResetAt) === epoch(context.conversation.historyResetAt));
+}
+
+function fencedFlowOptions(options: AutomationRunnerOptions, context: ExecuteContext): AutomationRunnerOptions {
+  const prisma = { ...options.prisma };
+  const methods: Record<string, string[]> = {
+    message: ["create"], conversation: ["update", "updateMany"], tag: ["upsert"],
+    conversationTag: ["create", "deleteMany"], contactBoardMembership: ["upsert"], contactNote: ["create"], automationRun: ["upsert"]
+  };
+  for (const [model, writes] of Object.entries(methods)) {
+    const delegate = (options.prisma as any)[model];
+    (prisma as any)[model] = { ...delegate };
+    for (const method of writes) {
+      (prisma as any)[model][method] = async (args: unknown) => {
+        const write = async (db: AutomationRunnerPrisma) => {
+          const current = await sourceStillCurrent({ ...options, prisma: db }, context);
+          if (!current && model === "message" && method === "create") {
+            const record = args as { data: Record<string, unknown> };
+            // A send already accepted by the provider remains a hidden transport fact.
+            if (record.data.status === "sent") return db.message.create({ data: { ...record.data, hiddenByReset: true } });
+          }
+          if (!current) throw new Error("Conversation history was reset.");
+          return (db as any)[model][method](args);
+        };
+        const transactional = options.prisma as AutomationRunnerPrisma & { $transaction?: (work: (tx: AutomationRunnerPrisma) => Promise<unknown>, options: { isolationLevel: "ReadCommitted" }) => Promise<unknown> };
+        return transactional.$transaction ? transactional.$transaction(async tx => {
+          if (typeof (tx as any).$queryRaw === "function") await enterCanonicalWorkspaceTransaction(tx as any, context.message.workspaceId);
+          return write(tx);
+        }, { isolationLevel: "ReadCommitted" }) : write(options.prisma);
+      };
+    }
+  }
+  return { ...options, prisma };
+}
+
 async function executeFlow(
   options: AutomationRunnerOptions,
   context: ExecuteContext,
   flow: AutomationFlowDefinition,
-  triggerNode: AutomationNodeDefinition
+  triggerNode: AutomationNodeDefinition,
+  lease?: AutomationExecution
 ) {
+  const fenced = fencedFlowOptions(options, context);
   const results: ActionResult[] = [];
   let current: AutomationNodeDefinition | null = triggerNode;
   let steps = 0;
 
   while (current && steps < MAX_GRAPH_STEPS) {
+    if (!await sourceStillCurrent(options, context)) break;
     steps += 1;
 
     let execution: Awaited<ReturnType<typeof executeNode>>;
     try {
-      execution = await executeNode(options, context, current);
+      execution = lease ? await lease.step(steps - 1, current.id, () => executeNode(fenced, context, current!))
+        : await executeNode(fenced, context, current);
     } catch (error) {
       results.push(resultFor(current, "failed", { error: sanitizeError(error) }));
       break;
@@ -968,7 +1076,7 @@ async function loadContext(options: AutomationRunnerOptions, input: RunForInboun
     }
   });
 
-  if (!message || message.workspaceId !== input.workspaceId || message.direction !== "inbound") {
+  if (!message || message.hiddenByReset || message.workspaceId !== input.workspaceId || message.direction !== "inbound") {
     return null;
   }
 
@@ -1015,13 +1123,16 @@ function sanitizeError(error: unknown) {
 
 async function recordAutomationRun(
   options: AutomationRunnerOptions,
-  input: RunForInboundMessageInput,
+  input: Pick<RunForInboundMessageInput, "workspaceId" | "eventKey">,
   context: ExecuteContext,
   rule: AutomationRuleRecord,
   status: string,
-  result: unknown
+  result: unknown,
+  recordedInput: unknown = runInput(context),
+  execution?: AutomationExecution
 ) {
-  const run = await options.prisma.automationRun.upsert({
+  const run = execution ? await execution.finish(status, result, recordedInput)
+    : await fencedFlowOptions(options, context).prisma.automationRun.upsert({
     where: {
       workspaceId_ruleId_eventKey: {
         workspaceId: input.workspaceId,
@@ -1034,12 +1145,12 @@ async function recordAutomationRun(
       ruleId: rule.id,
       eventKey: input.eventKey,
       status,
-      input: runInput(context),
+      input: recordedInput,
       result
     },
     update: {
       status,
-      input: runInput(context),
+      input: recordedInput,
       result
     }
   });
@@ -1064,7 +1175,35 @@ async function recordAutomationRun(
 }
 
 export function createAutomationRunner(options: AutomationRunnerOptions) {
-  return {
+  const runner = {
+    /** Recovery of inbound runs whose process died outside a durable ingress
+     * handler. Per-node checkpoints still decide whether replay is safe. */
+    async recoverDueRuns(input: { now?: Date; limit?: number } = {}): Promise<string[]> {
+      if (!options.prisma.automationRun.findMany || !options.prisma.automationRun.updateMany) return [];
+      const at = input.now ?? new Date();
+      const rows = await options.prisma.automationRun.findMany({ where: { status: 'running',
+        OR: [{ executionToken: { not: null }, leaseUntil: { lte: at } }, { executionToken: null, updatedAt: { lte: new Date(at.getTime() - 5 * 60_000) } }],
+        input: { path: ['source'], equals: 'evolution_webhook' } }, orderBy: { createdAt: 'asc' }, take: input.limit ?? 20 });
+      const recovered: string[] = [];
+      for (const row of rows) {
+        const payload = isRecord(row.input) ? row.input : {};
+        if (typeof payload.messageId !== 'string') continue;
+        try {
+          const runs = await runner.runForInboundMessage({ workspaceId: row.workspaceId, messageId: payload.messageId,
+            eventKey: row.eventKey, automationId: row.ruleId });
+          if (!runs.length) await options.prisma.automationRun.updateMany({ where: { workspaceId: row.workspaceId,
+            id: row.id, status: 'running', executionToken: row.executionToken, ...(row.executionToken ? { leaseUntil: { lte: at } } : { updatedAt: row.updatedAt }) },
+            data: { status: 'skipped', executionToken: null, leaseUntil: null,
+              result: { reason: 'source_reset_or_rule_disabled', previous: row.result } } });
+          recovered.push(row.id);
+        } catch (error) {
+          if ((error as { code?: string }).code !== 'AUTOMATION_EXECUTION_BUSY') {
+            options.onRecoveryError?.({ id: row.id, code: (error as { code?: string }).code ?? 'RECOVERY_FAILED' });
+          }
+        }
+      }
+      return recovered;
+    },
     async runForInboundMessage(input: RunForInboundMessageInput) {
       const context = await loadContext(options, input);
       if (!context) {
@@ -1083,6 +1222,7 @@ export function createAutomationRunner(options: AutomationRunnerOptions) {
       const runs: AutomationRunRecord[] = [];
 
       for (const rule of rules) {
+        if (!await sourceStillCurrent(options, context)) break;
         const flow = flowFromRule(rule);
         if (!flow) {
           continue;
@@ -1091,9 +1231,19 @@ export function createAutomationRunner(options: AutomationRunnerOptions) {
         const triggerNodes = flow.nodes.filter(
           (node) => getAutomationBlock(node.type)?.category === "trigger"
         );
-        const triggerNode = (
+        if (triggerNodes.some((node) => node.type === "trigger_webhook")) {
+          // External webhook flows only start from their public URL.
+          continue;
+        }
+
+        const claim = await claimAutomationExecution(options.prisma, { workspaceId: input.workspaceId,
+          ruleId: rule.id, eventKey: input.eventKey, input: runInput(context), flow });
+        if (!claim.claimed) { runs.push(claim.run); continue; }
+        try {
+        const frozenTriggers = claim.flow.nodes.filter(node => getAutomationBlock(node.type)?.category === 'trigger');
+        const triggerNode = claim.firstNodeId ? frozenTriggers.find(node => node.id === claim.firstNodeId) : (
           await Promise.all(
-            triggerNodes.map(async (node) => ({
+            frozenTriggers.map(async (node) => ({
               node,
               matches: await triggerMatches(options, context, node)
             }))
@@ -1117,12 +1267,12 @@ export function createAutomationRunner(options: AutomationRunnerOptions) {
               })
             ]
           };
-          const run = await recordAutomationRun(options, input, context, rule, "skipped", result);
+          const run = await recordAutomationRun(options, input, context, rule, "skipped", result, runInput(context), claim);
           runs.push(run);
           continue;
         }
 
-        const results = await executeFlow(options, context, flow, triggerNode);
+        const results = await executeFlow(options, context, claim.flow, triggerNode, claim);
 
         const result = {
           mode: "real",
@@ -1130,11 +1280,78 @@ export function createAutomationRunner(options: AutomationRunnerOptions) {
           triggerNodeId: triggerNode.id,
           actionResults: results
         };
-        const run = await recordAutomationRun(options, input, context, rule, runStatus(results), result);
+        if (!await sourceStillCurrent(options, context)) break;
+        const run = await recordAutomationRun(options, input, context, rule, runStatus(results), result, runInput(context), claim);
         runs.push(run);
+        } finally { claim.close(); }
       }
 
       return runs;
+    },
+
+    async runForWebhookEvent(input: RunForWebhookEventInput) {
+      const flow = flowFromRule(input.rule);
+      const triggerNode = flow?.nodes.find((node) => node.type === "trigger_webhook");
+      if (!flow || !triggerNode) {
+        return null;
+      }
+
+      const loaded = await loadContext(options, {
+        workspaceId: input.workspaceId,
+        messageId: input.messageId,
+        eventKey: input.eventKey
+      });
+      if (!loaded) {
+        return null;
+      }
+
+      const context: ExecuteContext = {
+        ...loaded,
+        variables: input.variables,
+        outboundBlockedReason: input.outboundBlockedReason ?? null
+      };
+      const claim = await claimAutomationExecution(options.prisma, { workspaceId: input.workspaceId,
+        ruleId: input.rule.id, eventKey: input.eventKey, input: input.runInput ?? runInput(context), flow });
+      if (!claim.claimed) return claim.run;
+      try {
+      const frozenTrigger = claim.flow.nodes.find(node => node.type === 'trigger_webhook');
+      if (!frozenTrigger) throw new Error('Webhook trigger missing from durable flow.');
+      const results = await executeFlow(options, context, claim.flow, frozenTrigger, claim);
+      const outboundBlocked = Boolean(
+        context.outboundBlockedReason &&
+          results.some((result) => result.status === "skipped" && OUTBOUND_BLOCK_TYPES.has(result.type))
+      );
+      const status = runStatus(results) === "failed" ? "failed" : outboundBlocked ? "skipped" : "completed";
+      const result = {
+        mode: "real",
+        runner: "graph",
+        triggerNodeId: triggerNode.id,
+        ...(outboundBlocked
+          ? { skippedReason: "outbound_blocked", skippedMessage: context.outboundBlockedReason }
+          : {}),
+        actionResults: results
+      };
+
+      if (!await sourceStillCurrent(options, context)) return null;
+      return recordAutomationRun(
+        options,
+        input,
+        context,
+        input.rule,
+        status,
+        result,
+        {
+          source: "automation_webhook",
+          trigger: "webhook.received",
+          messageId: context.message.id,
+          conversationId: context.conversation.id,
+          contactId: context.conversation.contactId,
+          ...input.runInput
+        },
+        claim
+      );
+      } finally { claim.close(); }
     }
   };
+  return runner;
 }

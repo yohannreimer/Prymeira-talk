@@ -4,6 +4,15 @@ import { createAssistantRepository } from './assistant-repository.js';
 
 describe('assistant durable leases', () => {
   const state = { id: 's', workspaceId: 'w', conversationId: 'c', revision: 4 } as AssistantConversationState;
+  it('clears a previous generation error when the next action is completed', async () => {
+    const updateMany = vi.fn().mockResolvedValue({ count: 1 });
+    const repository = createAssistantRepository({ assistantConversationState: { updateMany } } as unknown as PrismaClient);
+    await repository.invalidate('w', 'c');
+    expect(updateMany).toHaveBeenCalledWith({
+      where: { workspaceId: 'w', conversationId: 'c' },
+      data: { status: 'stale', revision: { increment: 1 }, scheduledAt: null, lastError: null }
+    });
+  });
   it('only the successful compare-and-swap worker obtains a lease', async () => {
     let claimed = false;
     const updateMany = vi.fn(async () => { if (claimed) return { count: 0 }; claimed = true; return { count: 1 }; });

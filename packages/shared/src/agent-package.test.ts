@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { agentPackageSchema } from "./agent-package.js";
+import { agentFollowupConfigSchema, agentPackageSchema } from "./agent-package.js";
 
 const validPackage = {
   schemaVersion: 1,
@@ -71,6 +71,46 @@ const validPackage = {
 } as const;
 
 describe("agentPackageSchema", () => {
+  it("preserves an older attendance package with an empty plan and no automatic closure", () => {
+    const parsed = agentPackageSchema.parse(validPackage);
+    expect(parsed.agent.type ?? "attendance").toBe("attendance");
+    expect(parsed.agent.followup.steps).toEqual([]);
+    expect(parsed.agent.followup.closeAfterBusinessMinutes).toBe(0);
+  });
+
+  it.each([
+    ["unknown time zone", { timeZone: "America/Not_A_Zone" }],
+    ["reversed hours", { businessHours: { start: "18:00", end: "08:00" } }],
+    ["equal hours", { businessHours: { start: "08:00", end: "08:00" } }],
+    ["duplicate days", { businessDays: [1, 1, 2] }],
+    ["more than seven days", { businessDays: [0, 1, 2, 3, 4, 5, 6, 0] }],
+    ["repeated cumulative delays", { steps: [
+      { afterBusinessMinutes: 60, instruction: "First" },
+      { afterBusinessMinutes: 60, instruction: "Second" }
+    ] }],
+    ["decreasing cumulative delays", { steps: [
+      { afterBusinessMinutes: 120, instruction: "First" },
+      { afterBusinessMinutes: 60, instruction: "Second" }
+    ] }]
+  ])("rejects %s in both direct configuration and imported packages", (_label, invalid) => {
+    const followup = { ...validPackage.agent.followup, ...invalid };
+    expect(agentFollowupConfigSchema.safeParse(followup).success).toBe(false);
+    expect(agentPackageSchema.safeParse({
+      ...validPackage, agent: { ...validPackage.agent, followup }
+    }).success).toBe(false);
+  });
+
+  it("accepts increasing cumulative delays and every distinct weekday", () => {
+    const followup = { ...validPackage.agent.followup, timeZone: "UTC",
+      businessDays: [0, 1, 2, 3, 4, 5, 6],
+      steps: [
+        { afterBusinessMinutes: 60, instruction: "First" },
+        { afterBusinessMinutes: 120, instruction: "Second" }
+      ]
+    };
+    expect(agentFollowupConfigSchema.parse(followup)).toEqual(followup);
+  });
+
   it("accepts a portable package with custom fields and taxonomy", () => {
     const parsed = agentPackageSchema.parse(validPackage);
 

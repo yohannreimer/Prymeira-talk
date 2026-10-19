@@ -19,7 +19,7 @@ describe('assistant access', () => {
     await expect(requireAssistantConversation(db, actor, 'c')).resolves.toBeTruthy();
     await expect(requireAssistantConversation(db, actor, 'c')).rejects.toMatchObject({ statusCode: 403 });
     await expect(requireAssistantConversation(db, actor, 'c')).rejects.toMatchObject({ statusCode: 404 });
-    expect(findFirst).toHaveBeenCalledWith({ where: { workspaceId: 'w', id: 'c' }, include: { channel: true } });
+    expect(findFirst).toHaveBeenCalledWith({ where: { workspaceId: 'w', id: 'c' }, include: { channel: true, activeAgentSession: true } });
   });
   it.each(['owner', 'manager'] as const)('allows %s to review workspace conversations', async role => {
     const db = { conversation: { findFirst: vi.fn().mockResolvedValue({ assignedUserId: 'other' }) } } as unknown as AssistantDb;

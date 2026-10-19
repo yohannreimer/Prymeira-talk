@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const assistantModeSchema=z.enum(['disabled','automatic','on_demand']);
+export const assistantModeSchema=z.enum(['disabled','automatic','on_demand','automatic_with_agent']);
 export type AssistantMode=z.infer<typeof assistantModeSchema>;
 export const assistantChannelSettingsSchema=z.object({
   mode:assistantModeSchema.default('disabled'),
@@ -23,7 +23,17 @@ export type AssistantSuggestionDto={
 };
 export type AssistantConversationDto={
   currentContextKey:string|null;
-  settings:AssistantChannelSettings;status:AssistantDraftStatus;humanControlled:boolean;
+  settings:AssistantChannelSettings;status:AssistantDraftStatus;humanControlled:boolean;humanSupport:boolean;awaitingCustomer:boolean;
   suggestion:AssistantSuggestionDto|null;history:AssistantSuggestionDto[];
   agentName:string|null;error:string|null;
 };
+
+export const handoffBriefDtoSchema = z.object({
+  status: z.enum(['pending', 'ready', 'stale', 'failed']),
+  nextAction: z.string().nullable(),
+  summary: z.string().nullable(),
+  contextKey: z.string().nullable(),
+  updatedAt: z.string().datetime().nullable(),
+  error: z.string().nullable()
+}).strict();
+export type HandoffBriefDto = z.infer<typeof handoffBriefDtoSchema>;

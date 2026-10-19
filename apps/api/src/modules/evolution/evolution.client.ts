@@ -1,8 +1,13 @@
+import { createEvolutionHistorySource } from './evolution-history.js';
+import type { WhatsAppMessageKey } from '../messaging/whatsapp-identity.js';
+import { AgentMediaError } from '../agents/agent-media-resolver.js';
+
 const EVOLUTION_EVENTS = [
   "QRCODE_UPDATED",
   "CONNECTION_UPDATE",
   "MESSAGES_UPSERT",
   "MESSAGES_UPDATE",
+  "MESSAGES_EDITED",
   "SEND_MESSAGE"
 ] as const;
 
@@ -32,9 +37,14 @@ export interface CreateEvolutionClientOptions {
   baseUrl: string;
   apiKey: string;
   fetch?: typeof fetch;
+  /** How long a number's connected phone is remembered (default 10 min). */
+  identityTtlMs?: number;
+  now?: () => number;
 }
 
-export interface CreateInstanceInput {
+export interface ChannelCommandScope { workspaceId?: string; channelId?: string }
+
+export interface CreateInstanceInput extends ChannelCommandScope {
   instanceName: string;
   webhookUrl: string;
   webhookSecret: string;
@@ -46,7 +56,7 @@ export interface CreateInstanceResult {
   raw: unknown;
 }
 
-export interface ConnectInstanceInput {
+export interface ConnectInstanceInput extends ChannelCommandScope {
   instanceName: string;
 }
 
@@ -56,7 +66,9 @@ export interface ConnectInstanceResult {
   raw: unknown;
 }
 
-export interface SetWebhookInput {
+export type EvolutionConnectionState = "open" | "connecting" | "close";
+
+export interface SetWebhookInput extends ChannelCommandScope {
   instanceName: string;
   webhookUrl: string;
   webhookSecret: string;
@@ -66,19 +78,45 @@ export interface SetWebhookResult {
   raw: unknown;
 }
 
-export interface SendTextInput {
+export interface SendTextInput extends ChannelCommandScope {
   instanceName: string;
   number: string;
   text: string;
+  prospectingMessageId?: string;
   linkPreview?: boolean;
+  /** Milliseconds WhatsApp shows "digitando..." before the message arrives. */
+  delay?: number;
+  /** Reply to this WhatsApp message (stanza id; participant for a group member's message). */
+  quoted?: { id: string; fromMe: boolean; participant?: string | null; body?: string | null };
 }
 
 export interface SendTextResult {
   providerMessageId: string | null;
   raw: unknown;
+  localMessageId?: string;
 }
 
-export interface SendMediaInput {
+export interface EditMessageInput extends ChannelCommandScope {
+  instanceName: string;
+  id: string;
+  remoteJid: string;
+  text: string;
+}
+
+export interface DeleteMessageInput extends ChannelCommandScope {
+  instanceName: string;
+  id: string;
+  remoteJid: string;
+  fromMe: true;
+}
+
+export interface SendContactInput extends ChannelCommandScope {
+  instanceName: string;
+  number: string;
+  contact: { fullName: string; wuid: string; phoneNumber: string }[];
+}
+
+export interface SendMediaInput extends ChannelCommandScope {
   instanceName: string;
   number: string;
   mediatype: "image" | "video" | "document";
@@ -93,7 +131,7 @@ export interface SendMediaResult {
   raw: unknown;
 }
 
-export interface SendTemplateInput {
+export interface SendTemplateInput extends ChannelCommandScope {
   instanceName: string;
   number: string;
   name: string;
@@ -122,7 +160,7 @@ export interface EvolutionTemplateRecord {
   components: EvolutionTemplateComponent[];
 }
 
-export interface ListTemplatesInput {
+export interface ListTemplatesInput extends ChannelCommandScope {
   instanceName: string;
 }
 
@@ -131,7 +169,7 @@ export interface ListTemplatesResult {
   raw: unknown;
 }
 
-export interface CheckWhatsappNumbersAvailabilityInput {
+export interface CheckWhatsappNumbersAvailabilityInput extends ChannelCommandScope {
   instanceName: string;
   numbers: string[];
 }
@@ -148,13 +186,22 @@ export interface CheckWhatsappNumbersAvailabilityResult {
 }
 
 export interface EvolutionClient {
-  sendAudio?(input: { instanceName: string; number: string; audio: string }): Promise<SendMediaResult>;
-  fetchProfilePicture?(input: { instanceName: string; number: string }): Promise<string | null>;
-  fetchMedia?(input: { instanceName: string; id: string }): Promise<string>;
+  getWebhook?(input: ConnectInstanceInput): Promise<unknown>;
+  getInstanceIdentity?(input: ConnectInstanceInput): Promise<string | null>;
+  deleteMessageForEveryone?(input: DeleteMessageInput): Promise<void>;
+  editMessage?(input: EditMessageInput): Promise<void>;
+  getGroupInfo?(input: ChannelCommandScope & { instanceName: string; groupJid: string }): Promise<{ subject: string | null }>;
+  sendAudio?(input: ChannelCommandScope & { instanceName: string; number: string; audio: string }): Promise<SendMediaResult>;
+  fetchProfilePicture?(input: ChannelCommandScope & { instanceName: string; number: string }): Promise<string | null>;
+  fetchMedia?(input: ChannelCommandScope & { instanceName: string; id: string; key?: WhatsAppMessageKey }): Promise<string>;
   createInstance(input: CreateInstanceInput): Promise<CreateInstanceResult>;
   connectInstance(input: ConnectInstanceInput): Promise<ConnectInstanceResult>;
+  logoutInstance?(input: ConnectInstanceInput): Promise<void>;
+  getConnectionState?(input: ConnectInstanceInput): Promise<EvolutionConnectionState | null>;
   setWebhook(input: SetWebhookInput): Promise<SetWebhookResult>;
   sendText(input: SendTextInput): Promise<SendTextResult>;
+  sendCampaignText?(input: SendTextInput & { recipientId: string; leaseToken: string }): Promise<SendTextResult>;
+  sendContact?(input: SendContactInput): Promise<SendTextResult>;
   sendMedia(input: SendMediaInput): Promise<SendMediaResult>;
   sendTemplate?(input: SendTemplateInput): Promise<SendTemplateResult>;
   listTemplates?(input: ListTemplatesInput): Promise<ListTemplatesResult>;
@@ -374,11 +421,16 @@ export function isEvolutionLicenseRequiredError(error: unknown): error is Evolut
   );
 }
 
+export function isEvolutionConnectionClosedError(error: unknown): error is EvolutionClientError {
+  return error instanceof EvolutionClientError &&
+    collectStrings(error.responseBody).some((message) => /\bconnection closed\b/i.test(message));
+}
+
 function webhookPayload(webhookUrl: string, webhookSecret: string) {
   return {
     url: webhookUrl,
     byEvents: false,
-    base64: true,
+    base64: false,
     headers: {
       "x-prymeira-talk-secret": webhookSecret,
       "Content-Type": "application/json"
@@ -393,7 +445,7 @@ function setWebhookPayload(webhookUrl: string, webhookSecret: string) {
       enabled: true,
       url: webhookUrl,
       byEvents: false,
-      base64: true,
+      base64: false,
       headers: {
         "x-prymeira-talk-secret": webhookSecret,
         "Content-Type": "application/json"
@@ -441,6 +493,12 @@ async function parseResponseBody(response: Response, maxBytes?: number) {
 export function createEvolutionClient(options: CreateEvolutionClientOptions): EvolutionClientWithAvailability {
   const baseUrl = options.baseUrl.replace(/\/$/, "");
   const fetchImpl = options.fetch ?? globalThis.fetch;
+  const clock = options.now ?? Date.now;
+  const identityTtlMs = options.identityTtlMs ?? 10 * 60_000;
+  /** Evolution's fetchInstances counts every message, contact and chat of the number (a full table read on its
+   * database). The health monitor asks for the phone every 15 s, so it is remembered for a while; a number that is
+   * not connected forgets it at once, so a new scan is always verified again. */
+  const identities = new Map<string, { phone: string | null; at: number }>();
 
   async function post(path: string, body: unknown, timeoutMs?: number) {
     const response = await fetchImpl(`${baseUrl}${path}`, {
@@ -461,12 +519,13 @@ export function createEvolutionClient(options: CreateEvolutionClientOptions): Ev
     return responseBody;
   }
 
-  async function get(path: string) {
+  async function get(path: string, timeoutMs?: number) {
     const response = await fetchImpl(`${baseUrl}${path}`, {
       method: "GET",
       headers: {
         apikey: options.apiKey
-      }
+      },
+      ...(timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : {})
     });
     const responseBody = sanitizeResponseBody(await parseResponseBody(response));
 
@@ -477,7 +536,57 @@ export function createEvolutionClient(options: CreateEvolutionClientOptions): Ev
     return responseBody;
   }
 
+  async function remove(path: string) {
+    const response = await fetchImpl(`${baseUrl}${path}`, {
+      method: "DELETE",
+      headers: { apikey: options.apiKey },
+      signal: AbortSignal.timeout(15_000)
+    });
+    const responseBody = sanitizeResponseBody(await parseResponseBody(response));
+
+    if (!response.ok || (isRecord(responseBody) && responseBody.error === true)) {
+      throw new EvolutionClientError(response.status, responseBody);
+    }
+  }
+
+  async function del(path: string, body: unknown) {
+    const response = await fetchImpl(`${baseUrl}${path}`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json", apikey: options.apiKey },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(15_000)
+    });
+    const responseBody = sanitizeResponseBody(await parseResponseBody(response));
+    if (!response.ok) throw new EvolutionClientError(response.status, responseBody);
+  }
+
   return {
+    async getInstanceIdentity(input) {
+      const cached = identities.get(input.instanceName);
+      if (cached && cached.phone && clock() - cached.at < identityTtlMs) return cached.phone;
+      const raw = await get(`/instance/fetchInstances?instanceName=${encodeURIComponent(input.instanceName)}`, 8000);
+      const entries = Array.isArray(raw) ? raw : [raw];
+      let phone: string | null = null;
+      for (const entry of entries) {
+        const nested = getRecord(entry, 'instance');
+        const name = getString(entry, 'name') ?? getString(entry, 'instanceName') ?? getString(nested, 'instanceName');
+        if (name === input.instanceName) { phone = getString(entry, 'ownerJid') ?? getString(nested, 'ownerJid') ?? getString(nested, 'owner') ?? null; break; }
+      }
+      if (phone) identities.set(input.instanceName, { phone, at: clock() });
+      else identities.delete(input.instanceName);
+      return phone;
+    },
+    async deleteMessageForEveryone(input) {
+      await del(`/chat/deleteMessageForEveryone/${encodeURIComponent(input.instanceName)}`, {
+        id: input.id, remoteJid: input.remoteJid, fromMe: input.fromMe
+      });
+    },
+    async editMessage(input) {
+      // Evolution 2.x: POST /chat/updateMessage with the sent message's key and the new text.
+      await post(`/chat/updateMessage/${encodeURIComponent(input.instanceName)}`, {
+        number: input.remoteJid, key: { remoteJid: input.remoteJid, fromMe: true, id: input.id }, text: input.text
+      }, 15_000);
+    },
     async checkWhatsappNumbersAvailability(input) {
       const responseBody = await post(
         `/chat/whatsappNumbers/${encodeURIComponent(input.instanceName)}`,
@@ -495,19 +604,61 @@ export function createEvolutionClient(options: CreateEvolutionClientOptions): Ev
       };
     },
     async fetchProfilePicture(input) {
-      const data = await post(`/chat/fetchProfilePictureUrl/${encodeURIComponent(input.instanceName)}`, { number: input.number }, 8000);
-      const url = getString(data, 'profilePictureUrl');
-      if (!url) return null;
-      try { return new URL(url).protocol === 'https:' ? url : null; } catch { return null; }
+      const httpsUrl = (value: unknown) => {
+        if (typeof value !== 'string') return null;
+        try { return new URL(value).protocol === 'https:' ? value : null; } catch { return null; }
+      };
+      let liveError: unknown;
+      try {
+        const data = await post(`/chat/fetchProfilePictureUrl/${encodeURIComponent(input.instanceName)}`, { number: input.number }, 8000);
+        const url = httpsUrl(getString(data, 'profilePictureUrl'));
+        if (url) return url;
+      } catch (error) { liveError = error; }
+
+      // Evolution retains contact photos from the last sync, even when a live lookup is unavailable.
+      const remoteJid = `${input.number.replace(/\D/g, '')}@s.whatsapp.net`;
+      try {
+        const data = await post(`/chat/findContacts/${encodeURIComponent(input.instanceName)}`, { where: { remoteJid } }, 8000);
+        const contacts = Array.isArray(data) ? data : isRecord(data) && Array.isArray(data.contacts) ? data.contacts : [];
+        const contact = contacts.find((item) => isRecord(item) && item.remoteJid === remoteJid);
+        return isRecord(contact) ? httpsUrl(contact.profilePicUrl) : null;
+      } catch {
+        if (liveError) throw liveError;
+        return null;
+      }
     },
     async fetchMedia(input) {
-      const data = await post(`/chat/getBase64FromMediaMessage/${encodeURIComponent(input.instanceName)}`, { message: { key: { id: input.id } }, convertToMp4: false }, 15000);
+      if (input.key) {
+        if (input.id !== input.key.nativeId) throw new Error('MEDIA_IDENTITY_INCOMPLETE');
+        const found = await createEvolutionHistorySource(options).mediaExact({ instanceName: input.instanceName, key: input.key, purpose: 'serve' }).catch(error => {
+          if (error instanceof Error && ['HISTORY_RESPONSE_LIMIT', 'HISTORY_MEDIA_LIMIT'].includes(error.message)) throw new AgentMediaError('MEDIA_TOO_LARGE', 'Provider media exceeds the response size limit.');
+          throw error;
+        });
+        if (found.kind !== 'resolved') throw new Error(`MEDIA_IDENTITY_${found.kind.toUpperCase()}`);
+        return found.mediaUrl;
+      }
+      const data = await post(`/chat/getBase64FromMediaMessage/${encodeURIComponent(input.instanceName)}`, { message: { key: { id: input.id } }, convertToMp4: false }, 15000).catch(error => {
+        // An explicit non-media response cannot improve through repeated downloads.
+        // Keep the original message and source, and close only the media obligation.
+        if (error instanceof EvolutionClientError && error.statusCode === 400 &&
+          collectStrings(error.responseBody).some(message => message.trim() === 'The message is not of the media type')) {
+          throw new AgentMediaError('NOT_AN_ATTACHMENT', 'Provider identifies this source as a non-media message.');
+        }
+        // This endpoint embeds the attachment as base64. Repeating a download cannot shrink it;
+        // preserve the bounded response and let the media service stop permanent size failures.
+        if (error instanceof Error && error.message === 'EVOLUTION_RESPONSE_LIMIT') {
+          throw new AgentMediaError('MEDIA_TOO_LARGE', 'Provider media exceeds the response size limit.');
+        }
+        throw error;
+      });
       const base64 = getString(data, 'base64');
       const mime = getString(data, 'mimetype')?.split(';')[0].trim().toLowerCase();
-      if (!base64 || !mime || base64.length > 36 * 1024 * 1024) throw new Error('MEDIA_UNAVAILABLE');
+      if (!base64 || !mime) throw new Error('MEDIA_UNAVAILABLE');
+      if (base64.length > 36 * 1024 * 1024) throw new AgentMediaError('MEDIA_TOO_LARGE', 'Provider media exceeds the response size limit.');
       return `data:${mime};base64,${base64.replace(/^data:[^,]+,/, '').replace(/\s/g, '')}`;
     },
     async createInstance(input) {
+      identities.delete(input.instanceName);
       const responseBody = await post("/instance/create", {
         instanceName: input.instanceName,
         integration: "WHATSAPP-BAILEYS",
@@ -523,6 +674,7 @@ export function createEvolutionClient(options: CreateEvolutionClientOptions): Ev
     },
 
     async connectInstance(input) {
+      identities.delete(input.instanceName);
       const responseBody = await get(`/instance/connect/${encodeURIComponent(input.instanceName)}`);
 
       return {
@@ -530,6 +682,22 @@ export function createEvolutionClient(options: CreateEvolutionClientOptions): Ev
         qrCode: extractQrCode(responseBody),
         raw: responseBody
       };
+    },
+
+    async logoutInstance(input) {
+      identities.delete(input.instanceName);
+      await remove(`/instance/logout/${encodeURIComponent(input.instanceName)}`);
+    },
+
+    async getConnectionState(input) {
+      const responseBody = await get(`/instance/connectionState/${encodeURIComponent(input.instanceName)}`);
+      const state = getString(getRecord(responseBody, "instance"), "state") ?? getString(responseBody, "state");
+      if (state !== "open") identities.delete(input.instanceName);
+      return state === "open" || state === "connecting" || state === "close" ? state : null;
+    },
+
+    async getWebhook(input) {
+      return get(`/webhook/find/${encodeURIComponent(input.instanceName)}`);
     },
 
     async setWebhook(input) {
@@ -545,13 +713,33 @@ export function createEvolutionClient(options: CreateEvolutionClientOptions): Ev
       const responseBody = await post(`/message/sendText/${encodeURIComponent(input.instanceName)}`, {
         number: input.number,
         text: input.text,
-        linkPreview: input.linkPreview ?? false
+        linkPreview: input.linkPreview ?? false,
+        ...(input.delay ? { delay: input.delay } : {}),
+        // Evolution 2.x: the quoted message's key, and its text for the preview WhatsApp shows above the reply.
+        ...(input.quoted ? { quoted: { key: { id: input.quoted.id, fromMe: input.quoted.fromMe, ...(input.quoted.participant ? { participant: input.quoted.participant } : {}) },
+          message: { conversation: input.quoted.body ?? '' } } } : {})
       });
 
       return {
         providerMessageId: extractProviderMessageId(responseBody),
         raw: responseBody
       };
+    },
+
+    async getGroupInfo(input) {
+      const responseBody = await get(`/group/findGroupInfos/${encodeURIComponent(input.instanceName)}?groupJid=${encodeURIComponent(input.groupJid)}&getParticipants=false`, 5_000);
+      const value = isRecord(responseBody) ? responseBody : {};
+      const subject = [value.subject, value.name, value.groupName, value.title]
+        .find((candidate): candidate is string => typeof candidate === 'string' && candidate.trim().length > 0);
+      return { subject: subject?.trim() ?? null };
+    },
+
+    async sendContact(input) {
+      const responseBody = await post(`/message/sendContact/${encodeURIComponent(input.instanceName)}`, {
+        number: input.number,
+        contact: input.contact
+      });
+      return { providerMessageId: extractProviderMessageId(responseBody), raw: responseBody };
     },
 
     async sendAudio(input) {

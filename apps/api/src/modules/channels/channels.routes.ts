@@ -1,12 +1,22 @@
 import type { FastifyPluginAsync, FastifyReply } from "fastify";
 import { z } from "zod";
+import type { ChannelHealthDto, ChannelWatchdogStatusDto } from "@prymeira-talk/shared";
 import type { EvolutionRuntime } from "../evolution/evolution-runtime.js";
 import { resolveMetaRuntime } from "../meta/meta-runtime.js";
 import { ChannelsServiceError, createChannelsService } from "./channels.service.js";
 import type { PrismaLike } from "./channels.service.js";
+import { ConnectionServiceError, createChannelConnectionsService } from './channel-connections.js';
+import type { WahaRuntime } from '../waha/waha.client.js';
 
 interface ChannelsRoutesOptions {
   evolution?: EvolutionRuntime;
+  waha?: WahaRuntime;
+  channelHealth?: {
+    getHealth(workspaceId: string): ChannelHealthDto[];
+    status(): Omit<ChannelWatchdogStatusDto, "enabled">;
+    markManualDisconnect(channelId: string): void;
+    clearManualDisconnect(channelId: string): void;
+  };
 }
 
 const uuidParamSchema = z.string().uuid();
@@ -14,6 +24,10 @@ const uuidParamSchema = z.string().uuid();
 const channelParamsSchema = z.object({
   channelId: uuidParamSchema
 });
+
+const channelListQuerySchema = z.object({ includeArchived: z.enum(["true", "false"]).optional() });
+
+const deleteChannelBodySchema = z.object({ confirmationName: z.string().max(200).optional() }).optional();
 
 const createChannelBodySchema = z.object({
   provider: z.enum(["evolution", "meta_cloud"]).default("evolution"),
@@ -39,7 +53,7 @@ function isPrismaKnownRequestErrorCode(error: unknown, code: string) {
 }
 
 function handleChannelsError(reply: FastifyReply, error: unknown) {
-  if (error instanceof ChannelsServiceError) {
+  if (error instanceof ChannelsServiceError || error instanceof ConnectionServiceError) {
     return reply.code(error.statusCode).send({ code: error.code, error: error.message });
   }
 
@@ -62,12 +76,60 @@ function handleChannelsError(reply: FastifyReply, error: unknown) {
 
 export const channelsRoutes: FastifyPluginAsync<ChannelsRoutesOptions> = async (app, options) => {
   const service = createChannelsService(app.prisma as unknown as PrismaLike, {
-    evolution: options.evolution
+    evolution: options.evolution,
+    waha: options.waha
+  });
+  const physical = createChannelConnectionsService(app.prisma, options);
+  const physicalParams = channelParamsSchema.extend({ connectionId: uuidParamSchema });
+  app.patch('/channels/:channelId/redundancy', async (request, reply) => {
+    const params = channelParamsSchema.safeParse(request.params);
+    const body = z.object({ enabled: z.boolean() }).safeParse(request.body);
+    if (!params.success || !body.success) return reply.code(400).send({ error: 'Invalid redundancy request.' });
+    try {
+      const result = await physical.setRedundancy({ workspaceId: request.talk.workspaceId, channelId: params.data.channelId, enabled: body.data.enabled });
+      app.realtime.publish({ type: 'channel.updated', workspaceId: request.talk.workspaceId, payload: result.channel });
+      return result;
+    } catch (error) { return handleChannelsError(reply, error); }
+  });
+  app.get('/channels/:channelId/connections/:connectionId/state', async (request, reply) => {
+    const params = physicalParams.safeParse(request.params);
+    if (!params.success) return reply.code(400).send({ error: 'Invalid connection request.' });
+    try {
+      const result = await physical.refresh({ workspaceId: request.talk.workspaceId, ...params.data });
+      app.realtime.publish({ type: 'channel.updated', workspaceId: request.talk.workspaceId, payload: result.channel });
+      return result;
+    } catch (error) { return handleChannelsError(reply, error); }
+  });
+  for (const action of ['qr', 'reconnect', 'disconnect'] as const) {
+    app.post(`/channels/:channelId/connections/:connectionId/${action}`, async (request, reply) => {
+      const params = physicalParams.safeParse(request.params);
+      if (!params.success) return reply.code(400).send({ error: 'Invalid connection request.' });
+      const scope = { workspaceId: request.talk.workspaceId, ...params.data };
+      try {
+        const { connection } = await physical.getConnection(scope);
+        const result = connection.provider === 'evolution'
+          ? action === 'disconnect' ? await service.disconnectChannel(scope) : await service.startQrSession(scope)
+          : action === 'disconnect' ? await physical.disconnect(scope) : await physical.startQr(scope);
+        app.realtime.publish({ type: 'channel.updated', workspaceId: request.talk.workspaceId, payload: result.channel });
+        return result;
+      } catch (error) { return handleChannelsError(reply, error); }
+    });
+  }
+
+  app.get("/channels", async (request) => {
+    const query = channelListQuerySchema.safeParse(request.query);
+    return service.listChannels({
+      workspaceId: request.talk.workspaceId,
+      includeArchived: query.success && query.data.includeArchived === "true"
+    });
   });
 
-  app.get("/channels", async (request) =>
-    service.listChannels({ workspaceId: request.talk.workspaceId })
-  );
+  app.get("/channels/health", async (request) => ({
+    health: options.channelHealth?.getHealth(request.talk.workspaceId) ?? [],
+    watchdog: options.channelHealth
+      ? { enabled: true, ...options.channelHealth.status() }
+      : { enabled: false, lastTickAt: null, lastTickOk: true, lastError: null, unreachable: false }
+  }));
 
   app.post("/channels", async (request, reply) => {
     const body = createChannelBodySchema.safeParse(request.body);
@@ -78,13 +140,15 @@ export const channelsRoutes: FastifyPluginAsync<ChannelsRoutesOptions> = async (
 
     try {
       const metaRuntime = body.data.provider === "meta_cloud"
-        ? await resolveMetaRuntime(app.prisma, { workspaceId: request.talk.workspaceId })
+        ? await resolveMetaRuntime(app.prisma, { workspaceId: request.talk.workspaceId,
+            expectedEvolutionWebhook: options.evolution ? { webhookUrl: options.evolution.publicWebhookUrl(request.talk.workspaceId), webhookSecret: options.evolution.webhookSecret } : undefined })
         : null;
       const channelService = metaRuntime?.active && metaRuntime.connectionMode === "evolution_official"
         && metaRuntime.evolutionClient && options.evolution
         ? createChannelsService(app.prisma as unknown as PrismaLike, {
             evolution: options.evolution,
             metaEvolutionWebhook: {
+              attestInstance: metaRuntime.attestEvolutionInstance,
               client: {
                 setWebhook: metaRuntime.evolutionClient.setWebhook.bind(metaRuntime.evolutionClient)
               },
@@ -129,6 +193,8 @@ export const channelsRoutes: FastifyPluginAsync<ChannelsRoutesOptions> = async (
         payload: result.channel
       });
 
+      options.channelHealth?.clearManualDisconnect(params.data.channelId);
+
       return result;
     } catch (error) {
       return handleChannelsError(reply, error);
@@ -153,6 +219,8 @@ export const channelsRoutes: FastifyPluginAsync<ChannelsRoutesOptions> = async (
         workspaceId: request.talk.workspaceId,
         payload: result.channel
       });
+
+      options.channelHealth?.clearManualDisconnect(params.data.channelId);
 
       return result;
     } catch (error) {
@@ -179,13 +247,36 @@ export const channelsRoutes: FastifyPluginAsync<ChannelsRoutesOptions> = async (
         payload: result.channel
       });
 
+      options.channelHealth?.markManualDisconnect(params.data.channelId);
+
       return result;
     } catch (error) {
       return handleChannelsError(reply, error);
     }
   });
 
-  app.delete("/channels/:channelId", async (request, reply) => {
+  for (const action of ["archive", "unarchive"] as const) {
+    app.post(`/channels/:channelId/${action}`, async (request, reply) => {
+      const params = channelParamsSchema.safeParse(request.params);
+
+      if (!params.success) {
+        return reply.code(400).send({ error: "Invalid channel request." });
+      }
+
+      try {
+        const input = { workspaceId: request.talk.workspaceId, channelId: params.data.channelId };
+        const result = action === "archive" ? await service.archiveChannel(input) : await service.unarchiveChannel(input);
+        // Archiving is a deliberate stop: the watchdog must not try to reconnect the channel.
+        if (action === "archive") options.channelHealth?.markManualDisconnect(params.data.channelId);
+        app.realtime.publish({ type: "channel.updated", workspaceId: request.talk.workspaceId, payload: result.channel });
+        return result;
+      } catch (error) {
+        return handleChannelsError(reply, error);
+      }
+    });
+  }
+
+  app.get("/channels/:channelId/deletion-impact", async (request, reply) => {
     const params = channelParamsSchema.safeParse(request.params);
 
     if (!params.success) {
@@ -193,9 +284,25 @@ export const channelsRoutes: FastifyPluginAsync<ChannelsRoutesOptions> = async (
     }
 
     try {
+      return await service.getDeletionImpact({ workspaceId: request.talk.workspaceId, channelId: params.data.channelId });
+    } catch (error) {
+      return handleChannelsError(reply, error);
+    }
+  });
+
+  app.delete("/channels/:channelId", async (request, reply) => {
+    const params = channelParamsSchema.safeParse(request.params);
+    const body = deleteChannelBodySchema.safeParse(request.body);
+
+    if (!params.success || !body.success) {
+      return reply.code(400).send({ error: "Invalid channel request." });
+    }
+
+    try {
       const result = await service.deleteChannel({
         workspaceId: request.talk.workspaceId,
-        channelId: params.data.channelId
+        channelId: params.data.channelId,
+        confirmationName: body.data?.confirmationName
       });
 
       app.realtime.publish({

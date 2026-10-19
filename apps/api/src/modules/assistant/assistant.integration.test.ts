@@ -25,7 +25,7 @@ describe.skipIf(!url)('assistant PostgreSQL integration', () => {
     channelId = (await db.channel.create({ data: { workspaceId, provider: 'evolution', providerKey: 'test', encryptedConfig: { assistant: { mode: 'automatic', agentId } } } })).id;
     const contact = await db.contact.create({ data: { workspaceId, phone: '5500000000000' } });
     conversationId = (await db.conversation.create({ data: { workspaceId, channelId, contactId: contact.id, assignedUserId: userId } })).id;
-    await db.message.create({ data: { workspaceId, conversationId, direction: 'inbound', type: 'text', body: 'Preciso de 10 chapas 2 mm.' } });
+    await db.message.create({ data: { workspaceId, conversationId, direction: 'inbound', type: 'text', status: 'delivered', body: 'Preciso de 10 chapas 2 mm.' } });
   });
   afterAll(async () => {
     await db.assistantConversationState.updateMany({ where: { workspaceId }, data: { status: 'paused', scheduledAt: null, leaseToken: null, leaseUntil: null } });
@@ -57,6 +57,39 @@ describe.skipIf(!url)('assistant PostgreSQL integration', () => {
     expect(await db.assistantSuggestion.count({ where: { workspaceId } })).toBe(0);
     expect(await db.message.count({ where: { workspaceId, direction: 'outbound' } })).toBe(0);
     await db.conversation.update({ where: { id: conversationId }, data: { aiControlStatus: 'agent_allowed' } });
+  });
+  it('writes the suggestion again, without an error, when the customer writes while it is being prepared', async () => {
+    await db.assistantConversationState.updateMany({ where: { workspaceId }, data: { lastMessageId: null } });
+    await repository.schedule({ workspaceId, conversationId, trigger: 'inbound' });
+    await db.assistantConversationState.updateMany({ where: { workspaceId }, data: { scheduledAt: new Date(0) } });
+    let release!: () => void; let started!: () => void;
+    const ready = new Promise<void>(resolve => { started = resolve; });
+    const hold = new Promise<void>(resolve => { release = resolve; });
+    const seen: number[] = [];
+    const scheduler = createAssistantScheduler(db, { generate: async context => {
+      seen.push(context.messages.length);
+      if (seen.length === 1) { started(); await hold; }
+      return { body: `Sugestão com ${context.messages.length} mensagens`, agentId, agentHash: context.agentHash, contextKey: context.contextKey, warnings: [], proposedActions: {} };
+    } });
+    const tick = scheduler.tick(); await ready;
+    // The second message lands before its own hook runs (or with no hook at all).
+    await db.message.create({ data: { workspaceId, conversationId, direction: 'inbound', type: 'text', status: 'delivered', body: 'E também 4 tubos.' } });
+    release(); await tick;
+    const waiting = await db.assistantConversationState.findFirstOrThrow({ where: { workspaceId } });
+    expect(waiting).toMatchObject({ status: 'pending', lastError: null });
+    await db.assistantConversationState.updateMany({ where: { workspaceId }, data: { scheduledAt: new Date(0) } });
+    await scheduler.tick();
+    expect(await db.assistantConversationState.findFirstOrThrow({ where: { workspaceId } })).toMatchObject({ status: 'ready', lastError: null });
+    const latest = await db.assistantSuggestion.findFirstOrThrow({ where: { workspaceId }, orderBy: { revision: 'desc' } });
+    expect(latest.body).toBe(`Sugestão com ${seen.at(-1)} mensagens`);
+    expect(seen.at(-1)).toBe(seen[0]! + 1);
+  });
+  it('refreshes a ready suggestion that the customer has outdated', async () => {
+    const state = await db.assistantConversationState.findFirstOrThrow({ where: { workspaceId } });
+    const last = await db.message.findFirstOrThrow({ where: { workspaceId, conversationId }, orderBy: { createdAt: 'desc' } });
+    expect(await repository.refresh(state, last.id)).toBe(true);
+    expect(await repository.refresh(state, last.id)).toBe(false);
+    expect(await db.assistantConversationState.findFirstOrThrow({ where: { workspaceId } })).toMatchObject({ status: 'pending', lastError: null });
   });
   it('recovers an expired lease and enforces the retry cap', async () => {
     await db.assistantConversationState.updateMany({ where: { workspaceId }, data: { status: 'generating', attempts: 1, leaseUntil: new Date(0) } });
@@ -112,8 +145,8 @@ describe.skipIf(!url)('assistant PostgreSQL integration', () => {
     await expect(db.assistantSuggestion.create({ data: { workspaceId: 'other-workspace', conversationId, agentId, revision: 999, contextKey: 'x', agentHash: 'x', body: 'Forbidden' } })).rejects.toMatchObject({ code: 'P2003' });
   });
   it('uses arrival order when inbound provider timestamps precede a same-second human reply', async () => {
-    const outbound = await db.message.create({ data: { workspaceId, conversationId, direction: 'outbound', type: 'text', body: 'Resposta humana', createdAt: new Date('2026-09-06T20:00:00.900Z'), ingestedAt: new Date('2026-09-06T20:00:01.000Z') } });
-    const inbound = await db.message.create({ data: { workspaceId, conversationId, direction: 'inbound', type: 'text', body: 'Nova pergunta', createdAt: new Date('2026-09-06T20:00:00.000Z'), ingestedAt: new Date('2099-09-06T20:00:01.100Z') } });
+    const outbound = await db.message.create({ data: { workspaceId, conversationId, direction: 'outbound', type: 'text', status: 'sent', body: 'Resposta humana', createdAt: new Date('2026-09-06T20:00:00.900Z'), ingestedAt: new Date('2026-09-06T20:00:01.000Z') } });
+    const inbound = await db.message.create({ data: { workspaceId, conversationId, direction: 'inbound', type: 'text', status: 'delivered', body: 'Nova pergunta', createdAt: new Date('2026-09-06T20:00:00.000Z'), ingestedAt: new Date('2099-09-06T20:00:01.100Z') } });
     expect(inbound.createdAt.getTime()).toBeLessThan(outbound.createdAt.getTime());
     expect(await repository.schedule({ workspaceId, conversationId, trigger: 'inbound', messageId: inbound.id })).toBe(true);
     const context = await loadAssistantContext(db, workspaceId, conversationId);
@@ -144,7 +177,7 @@ describe.skipIf(!url)('assistant PostgreSQL integration', () => {
       expect((await app.inject({ method: 'POST', url: `/assistant/conversations/${conversationId}/send`, payload: { userId, body: 'spoof' } })).statusCode).toBe(400);
     } finally { await app.close(); }
   });
-  it('explicit conversation reset removes FK-bound followups before their anchor messages and sessions', async () => {
+  it('explicit conversation reset preserves hidden message facts while removing followups and sessions', async () => {
     const session = await db.aiAgentSession.create({
       data: { workspaceId, agentId, conversationId, status: 'active' }
     });
@@ -177,11 +210,14 @@ describe.skipIf(!url)('assistant PostgreSQL integration', () => {
       }
     });
 
+    const preservedMessages = await db.message.findMany({ where: { workspaceId, conversationId }, select: { id: true, body: true, providerMessageId: true, providerEventId: true }, orderBy: { id: "asc" } });
     await createConversationsService(db as unknown as PrismaLike).resetConversation({ workspaceId, conversationId, actorUserId: userId });
     expect(await db.assistantSuggestion.count({ where: { workspaceId, conversationId } })).toBe(0);
     expect(await db.assistantConversationState.count({ where: { workspaceId, conversationId } })).toBe(0);
     expect(await db.conversationFollowup.count({ where: { workspaceId, conversationId } })).toBe(0);
-    expect(await db.message.count({ where: { workspaceId, conversationId } })).toBe(0);
+    expect(preservedMessages.length).toBeGreaterThan(0);
+    expect(await db.message.findMany({ where: { workspaceId, conversationId, hiddenByReset: true }, select: { id: true, body: true, providerMessageId: true, providerEventId: true }, orderBy: { id: "asc" } })).toEqual(preservedMessages);
+    expect(await db.message.count({ where: { workspaceId, conversationId, hiddenByReset: false } })).toBe(0);
     expect(await db.aiAgentSession.count({ where: { workspaceId, conversationId } })).toBe(0);
   });
 });

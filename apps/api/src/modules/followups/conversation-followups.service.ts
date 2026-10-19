@@ -1,5 +1,11 @@
-import { addBusinessMinutes } from "./business-time.js";
-import { resolveEffectiveFollowupConfig } from "../agents/effective-followup-config.js";
+import type { Prisma } from "@prisma/client";
+import { enterCanonicalWorkspaceTransaction } from "../messaging/canonical-boundary.js";
+import { autonomousAgentAllowed, findProspectingReservation, lockProspectingObservation } from "../prospecting/prospecting-policy.js";
+import { calculateFollowupDueAt, resolveFollowupPlan } from "./channel-followup-plan.js";
+import { buildConversationContext } from "../agents/conversation-context-builder.js";
+import { readAssistantSettings } from "../assistant/assistant-policy.js";
+import { channelFollowupConfigSchema } from "@prymeira-talk/shared";
+import type { FollowupEligibility } from "./jev-followup-eligibility.js";
 import {
   publishPersistedConversationFollowup,
   type ConversationFollowupPublisher
@@ -7,7 +13,7 @@ import {
 
 type FollowupActivityDirection = "inbound" | "outbound";
 export type FollowupActivitySource = "customer" | "human" | "agent";
-type ActiveFollowupStatus = "scheduled" | "processing" | "review";
+type ActiveFollowupStatus = "evaluating" | "scheduled" | "processing" | "review";
 
 type AgentRecord = {
   id: string;
@@ -29,6 +35,7 @@ type AgentSessionRecord = {
 type ConversationRecord = {
   id: string;
   workspaceId: string;
+  channelId?: string;
   status: string;
   aiControlStatus: string;
   activeAgentSessionId?: string | null;
@@ -40,6 +47,7 @@ type MessageRecord = {
   workspaceId: string;
   conversationId: string;
   direction: FollowupActivityDirection;
+  body?: string | null;
   status?: string;
   metadata?: unknown;
   createdAt: Date | string;
@@ -52,7 +60,7 @@ export type ConversationFollowupRecord = {
   conversationId: string;
   agentId: string;
   sessionId: string | null;
-  kind: "qualification" | "human_commercial";
+  kind: "qualification" | "human_commercial" | "seller_reminder";
   status: string;
   activeKey: string | null;
   stepIndex: number;
@@ -61,6 +69,7 @@ export type ConversationFollowupRecord = {
   anchorIngestedAt: Date | string;
   scheduledAt: Date | string;
   lockedAt?: Date | string | null;
+  attempts?: number;
   decision: unknown;
   draftBody?: string | null;
   finalBody?: string | null;
@@ -81,6 +90,8 @@ type ConversationFollowupStore = {
 };
 
 type ConversationFollowupsTransaction = {
+  $queryRaw?: Prisma.TransactionClient["$queryRaw"];
+  $executeRaw?: Prisma.TransactionClient["$executeRaw"];
   conversationFollowup: ConversationFollowupStore;
   message: ConversationFollowupsPrismaLike["message"];
 };
@@ -92,8 +103,15 @@ export type ConversationFollowupsPrismaLike = {
   conversation: {
     findUnique(args: unknown): Promise<ConversationRecord | null>;
   };
+  channel?: {
+    findUnique(args: unknown): Promise<{ followupConfig?: unknown; encryptedConfig?: unknown } | null>;
+  };
+  aiAgent?: {
+    findFirst(args: unknown): Promise<AgentRecord | null>;
+  };
   message: {
     findFirst(args: unknown): Promise<MessageRecord | null>;
+    findMany?(args: unknown): Promise<MessageRecord[]>;
   };
   aiAgentSession: {
     findFirst(args: unknown): Promise<AgentSessionRecord | null>;
@@ -110,14 +128,14 @@ export type ObserveConversationActivityInput = {
 };
 
 export type ObserveConversationActivityResult = {
-  status: "scheduled" | "cancelled" | "ignored";
+  status: "evaluating" | "scheduled" | "cancelled" | "ignored";
   followupId?: string;
 };
 
 export type ActiveFollowupContext = {
   followup: ConversationFollowupRecord;
   conversation: ConversationRecord;
-  session: AgentSessionRecord;
+  session: AgentSessionRecord | null;
   agent: AgentRecord;
 };
 
@@ -129,6 +147,7 @@ export type RevalidateActiveFollowupResult =
         | "not_active"
         | "conversation_missing"
         | "conversation_closed"
+        | "channel_paused"
         | "human_controlled"
         | "customer_replied"
         | "outbound_replaced"
@@ -156,15 +175,22 @@ export type ClaimedFollowupRecoveryResult =
   | { status: "recovered" }
   | { status: "not_active" };
 
-export const MAX_AUTOMATIC_FOLLOWUP_STEPS = 3;
+export const MAX_AUTOMATIC_FOLLOWUP_STEPS = 10;
 export const DEFAULT_FOLLOWUP_PROCESSING_LEASE_MS = 10 * 60 * 1_000;
+export const FOLLOWUP_TRANSIENT_RETRY_DELAYS_MS = [1, 5, 30].map((minutes) => minutes * 60_000);
 
-const ACTIVE_FOLLOWUP_STATUSES: ActiveFollowupStatus[] = ["scheduled", "processing", "review"];
+const ACTIVE_FOLLOWUP_STATUSES: ActiveFollowupStatus[] = ["evaluating", "scheduled", "processing", "review"];
 const MAX_UNIQUE_CONFLICT_RETRIES = 3;
 
 export function createConversationFollowupsService(
   prisma: ConversationFollowupsPrismaLike,
-  options: { publisher?: ConversationFollowupPublisher } = {}
+  options: {
+    publisher?: ConversationFollowupPublisher;
+    eligibility?: FollowupEligibility;
+    screeningRequired?: boolean;
+    /** Workspaces where any message restarts a quiet wait and the follow-up brain decides after it. */
+    brain?: { appliesTo(workspaceId: string): boolean; quietMinutes?: number };
+  } = {}
 ) {
   const publish = (workspaceId: string, followupId: string) =>
     publishPersistedConversationFollowup({
@@ -177,6 +203,10 @@ export function createConversationFollowupsService(
   async function observeConversationActivity(
     input: ObserveConversationActivityInput
   ): Promise<ObserveConversationActivityResult> {
+    if (input.source !== "agent" && options.brain?.appliesTo(input.workspaceId)) {
+      const observed = await observeForBrain(input);
+      if (observed) return observed;
+    }
     if (input.direction === "inbound" && input.source === "customer") {
       const customerMessage = await findPersistedCustomerInboundMessage(prisma, input);
       if (!customerMessage?.ingestedAt) {
@@ -192,11 +222,20 @@ export function createConversationFollowupsService(
     ) {
       return { status: "ignored" };
     }
-
     const kind = input.source === "agent" ? "qualification" : "human_commercial";
     const candidate = await resolveCandidate(prisma, input, kind);
     if (!candidate || !candidate.message.ingestedAt) {
       return { status: "ignored" };
+    }
+    if (isManagedFollowupDelivery(candidate.message)) {
+      return { status: "ignored" };
+    }
+    if (options.screeningRequired && !options.eligibility) {
+      return cancelForCustomerReply(prisma, input, candidate.message.ingestedAt, options.publisher, "outbound_replaced");
+    }
+
+    if (input.source === "human" && await isCourtesyClosure(prisma, input, candidate.message)) {
+      return cancelForCustomerReply(prisma, input, candidate.message.ingestedAt, options.publisher, "outbound_replaced");
     }
 
     const newerCustomerMessage = await findNewerCustomerReply(
@@ -208,7 +247,7 @@ export function createConversationFollowupsService(
       return cancelForCustomerReply(prisma, input, newerCustomerMessage.ingestedAt, options.publisher);
     }
 
-    const scheduledAt = calculateFirstScheduledAt(candidate.message.createdAt, candidate.agent);
+    const scheduledAt = await calculateFirstScheduledAt(prisma, candidate.message.createdAt, candidate.conversation, candidate.agent);
     if (!scheduledAt) {
       return { status: "ignored" };
     }
@@ -218,9 +257,9 @@ export function createConversationFollowupsService(
       workspaceId: input.workspaceId,
       conversationId: input.conversationId,
       agentId: candidate.agent.id,
-      sessionId: candidate.session.id,
+      sessionId: candidate.session?.id ?? null,
       kind,
-      status: "scheduled",
+      status: options.eligibility ? "evaluating" : "scheduled",
       activeKey: "active",
       stepIndex: 1,
       anchorMessageId: candidate.message.id,
@@ -234,6 +273,22 @@ export function createConversationFollowupsService(
     for (let attempt = 0; attempt < MAX_UNIQUE_CONFLICT_RETRIES; attempt += 1) {
       try {
         const mutation = await prisma.$transaction(async (tx) => {
+          if (!await visibleSourceInTransaction(tx, input)) return { ignored: true };
+          if (input.source === "agent" && asRecord(candidate.message.metadata)?.prospectingDispatch === "confirmed") {
+            const metadata = asRecord(candidate.message.metadata);
+            if (!await lockProspectingObservation(tx, { workspaceId: input.workspaceId, conversationId: input.conversationId,
+              agentId: candidate.agent.id, expectedGeneration: typeof metadata?.prospectingGeneration === "string" ? metadata.prospectingGeneration : undefined })) {
+              return { ignored: true };
+            }
+            // Observation may have committed before the reply worker crashed.
+            // Any first step for this anchor, including sent/cancelled/completed,
+            // proves observation happened; never restart an exhausted sequence.
+            const observed = await tx.conversationFollowup.findFirst({ where: {
+              workspaceId: input.workspaceId, conversationId: input.conversationId,
+              anchorMessageId: candidate.message.id, kind: "qualification", stepIndex: 1
+            } });
+            if (observed) return { ignored: true };
+          }
           const current = await tx.conversationFollowup.findFirst({
             where: {
               workspaceId: input.workspaceId,
@@ -268,9 +323,13 @@ export function createConversationFollowupsService(
           return { followup, created: true, replacedId };
         });
 
+        if ("ignored" in mutation) return { status: "ignored" };
         if (mutation.replacedId) await publish(input.workspaceId, mutation.replacedId);
         if (mutation.created) await publish(input.workspaceId, mutation.followup.id);
-        return finishOutboundScheduling(prisma, input, mutation.followup, options.publisher);
+        const result = await finishOutboundScheduling(prisma, input, mutation.followup, options.publisher);
+        return result.status === "scheduled" && options.eligibility
+          ? { ...result, status: "evaluating" as const }
+          : result;
       } catch (error) {
         if (!isUniqueConstraintError(error)) {
           throw error;
@@ -284,12 +343,147 @@ export function createConversationFollowupsService(
           }
         });
         if (active && toDate(active.anchorIngestedAt) >= candidateData.anchorIngestedAt) {
-          return finishOutboundScheduling(prisma, input, active, options.publisher);
+          const result = await finishOutboundScheduling(prisma, input, active, options.publisher);
+          return result.status === "scheduled" && active.status === "evaluating"
+            ? { ...result, status: "evaluating" as const }
+            : result;
         }
       }
     }
 
     return { status: "ignored" };
+  }
+
+  /**
+   * Brain mode: every customer or seller message restarts the clock. The newest message becomes
+   * the anchor of a short quiet wait; the runtime analyzes the conversation once it stays quiet.
+   * Returns null when the conversation keeps the regular flow (an AI agent runs it, no agent set).
+   */
+  async function observeForBrain(input: ObserveConversationActivityInput): Promise<ObserveConversationActivityResult | null> {
+    const [conversation, message] = await Promise.all([
+      prisma.conversation.findUnique({ where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.conversationId } } }),
+      prisma.message.findFirst({ where: { workspaceId: input.workspaceId, conversationId: input.conversationId, id: input.messageId, hiddenByReset: false } })
+    ]);
+    if (!conversation || !message?.ingestedAt || conversation.status === "closed") return null;
+    if (conversation.activeAgentSessionId || await findProspectingReservation(prisma, input.workspaceId, conversation.id)) return null;
+    // Our own follow-up deliveries continue the cadence; they do not restart it.
+    if (isManagedFollowupDelivery(message)) return { status: "ignored" };
+    const now = new Date();
+    // History imports and late webhooks are not fresh activity.
+    if (now.getTime() - toDate(message.createdAt).getTime() > BRAIN_FRESH_MESSAGE_MS) return null;
+    const agent = await resolveConfiguredHumanAgent(prisma, conversation);
+    if (!agent) return null;
+    const plan = await loadPlan(prisma, input.workspaceId, conversation.channelId, agent.behaviorConfig, conversation.id);
+    if (!plan?.steps.length) return null;
+    const scheduledAt = calculateFollowupDueAt(now, options.brain?.quietMinutes ?? BRAIN_QUIET_MINUTES, plan);
+    const anchorIngestedAt = toDate(message.ingestedAt);
+    try {
+      const mutation = await prisma.$transaction(async (tx) => {
+        if (!await visibleSourceInTransaction(tx, input)) return null;
+        const current = await tx.conversationFollowup.findFirst({
+          where: { workspaceId: input.workspaceId, conversationId: input.conversationId, activeKey: "active" }
+        });
+        if (current && toDate(current.anchorIngestedAt) >= anchorIngestedAt) return { followup: current, replacedId: null, created: false };
+        let replacedId: string | null = null;
+        if (current) {
+          const replaced = await tx.conversationFollowup.updateMany({
+            where: { id: current.id, workspaceId: input.workspaceId, activeKey: "active" },
+            data: { status: "cancelled", activeKey: null, lockedAt: null, cancelledAt: now,
+              reason: message.direction === "inbound" ? "customer_replied" : "outbound_replaced" }
+          });
+          if (replaced.count === 1) replacedId = current.id;
+        }
+        const followup = await tx.conversationFollowup.create({
+          data: {
+            workspaceId: input.workspaceId,
+            conversationId: input.conversationId,
+            agentId: agent.id,
+            sessionId: null,
+            kind: "human_commercial",
+            status: "scheduled",
+            activeKey: "active",
+            stepIndex: 1,
+            anchorMessageId: message.id,
+            anchorMessageAt: toDate(message.createdAt),
+            anchorIngestedAt,
+            scheduledAt,
+            decision: { mode: "brain" },
+            reason: BRAIN_QUIET_REASON
+          }
+        });
+        return { followup, replacedId, created: true };
+      });
+      if (!mutation) return { status: "ignored" };
+      if (mutation.replacedId) await publish(input.workspaceId, mutation.replacedId);
+      if (mutation.created) await publish(input.workspaceId, mutation.followup.id);
+      return { status: "scheduled", followupId: mutation.followup.id };
+    } catch (error) {
+      // Another message of the same conversation won the race; its wait covers this one.
+      if (isUniqueConstraintError(error)) return { status: "ignored" };
+      throw error;
+    }
+  }
+
+  async function evaluateCandidate(input: { workspaceId: string; followupId: string }): Promise<{ status: string }> {
+    const lockedAt = new Date();
+    const claim = await prisma.conversationFollowup.updateMany({
+      where: { id: input.followupId, workspaceId: input.workspaceId, status: "evaluating", activeKey: "active", lockedAt: null },
+      data: { lockedAt, attempts: { increment: 1 } }
+    });
+    if (claim.count !== 1) return { status: "ignored" };
+
+    try {
+      const validated = await revalidateActiveFollowup({ ...input, claim: { lockedAt } });
+      if (validated.status !== "valid") return { status: validated.status };
+      const { followup } = validated.context;
+      if (!options.eligibility || !prisma.message.findMany) {
+        throw new Error("FOLLOWUP_ELIGIBILITY_UNAVAILABLE");
+      }
+      const context = await buildConversationContext(
+        prisma as Parameters<typeof buildConversationContext>[0],
+        { workspaceId: input.workspaceId, conversationId: followup.conversationId, complete: true }
+      );
+      const decision = await options.eligibility.evaluate({
+        workspaceId: input.workspaceId,
+        kind: followup.kind === "seller_reminder" ? "human_commercial" : followup.kind,
+        anchorMessageId: followup.anchorMessageId,
+        conversationMessages: context.messages
+      });
+      // The conversation can change while the classifier is running.
+      const current = await revalidateActiveFollowup({ ...input, claim: { lockedAt } });
+      if (current.status !== "valid") return { status: current.status };
+      const status = decision.eligibility === "schedule" ? "scheduled" : "skipped";
+      const purpose = decision.reason === "proposal_response_pending"
+        ? "proposal_checkin"
+        : decision.reason === "customer_answer_pending"
+          ? (followup.kind === "qualification" ? "missing_qualification" : "confirm_active")
+          : "none";
+      const updated = await prisma.conversationFollowup.updateMany({
+        where: { id: input.followupId, workspaceId: input.workspaceId, status: "evaluating", activeKey: "active", lockedAt },
+        data: {
+          status,
+          activeKey: status === "scheduled" ? "active" : null,
+          lockedAt: null,
+          decision: { ...decision, purpose },
+          reason: `eligibility_${decision.reason}`
+        }
+      });
+      if (updated.count === 1) await publish(input.workspaceId, input.followupId);
+      return { status: updated.count === 1 ? status : "ignored" };
+    } catch (error) {
+      const current = await prisma.conversationFollowup.findFirst({
+        where: { id: input.followupId, workspaceId: input.workspaceId }
+      });
+      const retry = current?.status === "evaluating" && (current.attempts ?? 3) < 3;
+      const updated = await prisma.conversationFollowup.updateMany({
+        where: { id: input.followupId, workspaceId: input.workspaceId, status: "evaluating", activeKey: "active", lockedAt },
+        data: retry
+          ? { lockedAt: null, reason: "eligibility_retry" }
+          : { status: "failed", activeKey: null, lockedAt: null, reason: "eligibility_unavailable" }
+      });
+      if (updated.count === 1 && !retry) await publish(input.workspaceId, input.followupId);
+      throw error;
+    }
   }
 
   async function revalidateActiveFollowup(input: {
@@ -323,6 +517,11 @@ export function createConversationFollowupsService(
     if (conversation.status === "closed") {
       return cancelActiveFollowup(prisma, followup, "conversation_closed", input.now, conversation, options.publisher, input.claim);
     }
+    const prospecting = await findProspectingReservation(prisma, input.workspaceId, conversation.id);
+    if (prospecting && !await autonomousAgentAllowed(prisma, { workspaceId: input.workspaceId, conversationId: conversation.id, agentId: followup.agentId, sessionId: followup.sessionId })) return cancelActiveFollowup(prisma, followup, "human_controlled", input.now, conversation, options.publisher, input.claim);
+    if (!prospecting && await isChannelFollowupsPaused(prisma, conversation)) {
+      return cancelActiveFollowup(prisma, followup, "channel_paused", input.now, conversation, options.publisher, input.claim);
+    }
     if (
       conversation.aiControlStatus === "human_controlled" &&
       followup.kind === "qualification"
@@ -335,6 +534,7 @@ export function createConversationFollowupsService(
       where: {
         workspaceId: input.workspaceId,
         conversationId: followup.conversationId,
+        hiddenByReset: false,
         direction: "inbound",
         ingestedAt: { gt: anchorIngestedAt }
       },
@@ -359,11 +559,14 @@ export function createConversationFollowupsService(
           include: { agent: true }
         })
       : null;
-    if (
-      !isCompatibleSession(session, input.workspaceId, followup.conversationId, followup.kind) ||
-      session.agentId !== followup.agentId ||
-      (conversation.activeAgentSessionId != null && conversation.activeAgentSessionId !== session.id)
-    ) {
+    const sessionAgent = isCompatibleSession(session, input.workspaceId, followup.conversationId, followup.kind) &&
+      session.agentId === followup.agentId &&
+      (conversation.activeAgentSessionId == null || conversation.activeAgentSessionId === session.id)
+      ? session.agent : null;
+    const configuredAgent = isSellerOwnedKind(followup.kind) && !followup.sessionId && !conversation.activeAgentSessionId
+      ? await resolveConfiguredHumanAgent(prisma, conversation) : null;
+    const agent = sessionAgent ?? (configuredAgent?.id === followup.agentId ? configuredAgent : null);
+    if (!agent) {
       return cancelActiveFollowup(prisma, followup, "session_context_changed", input.now, conversation, options.publisher, input.claim);
     }
 
@@ -372,8 +575,8 @@ export function createConversationFollowupsService(
       context: {
         followup,
         conversation,
-        session,
-        agent: session.agent
+        session: sessionAgent ? session : null,
+        agent
       }
     };
   }
@@ -409,7 +612,34 @@ export function createConversationFollowupsService(
     claim: { lockedAt: Date };
     outcome: "retry" | "failed";
     reason: string;
+    scheduledAt?: Date;
+    now?: Date;
   }): Promise<ClaimedFollowupRecoveryResult> {
+    const failed = (reason: string) => ({ status: "failed", activeKey: null, lockedAt: null, reason });
+    let data: Record<string, unknown>;
+    if (input.outcome === "failed") {
+      data = failed(input.reason);
+    } else if (input.scheduledAt) {
+      data = { status: "scheduled", lockedAt: null, reason: input.reason, scheduledAt: input.scheduledAt };
+    } else {
+      // A transient failure without an explicit time must not be picked up
+      // again by the next poll: back off, and stop after a bounded number.
+      const current = await prisma.conversationFollowup.findFirst({
+        where: { workspaceId: input.workspaceId, id: input.followupId }
+      });
+      const decision = asRecord(current?.decision) ?? {};
+      const retries = typeof decision.transientRetries === "number" ? decision.transientRetries : 0;
+      const delayMs = FOLLOWUP_TRANSIENT_RETRY_DELAYS_MS[retries];
+      data = delayMs === undefined
+        ? { ...failed("retry_exhausted"), decision: { ...decision, lastError: input.reason } }
+        : {
+            status: "scheduled",
+            lockedAt: null,
+            reason: input.reason,
+            scheduledAt: new Date((input.now ?? new Date()).getTime() + delayMs),
+            decision: { ...decision, transientRetries: retries + 1 }
+          };
+    }
     const recovery = await prisma.conversationFollowup.updateMany({
       where: {
         workspaceId: input.workspaceId,
@@ -418,18 +648,7 @@ export function createConversationFollowupsService(
         status: "processing",
         lockedAt: input.claim.lockedAt
       },
-      data: input.outcome === "retry"
-        ? {
-            status: "scheduled",
-            lockedAt: null,
-            reason: input.reason
-          }
-        : {
-            status: "failed",
-            activeKey: null,
-            lockedAt: null,
-            reason: input.reason
-          }
+      data
     });
     if (recovery.count !== 1) return { status: "not_active" };
     await publish(input.workspaceId, input.followupId);
@@ -444,6 +663,17 @@ export function createConversationFollowupsService(
     const now = input.now ?? new Date();
     const staleBefore = new Date(now.getTime() - (input.leaseMs ?? DEFAULT_FOLLOWUP_PROCESSING_LEASE_MS));
     if (!prisma.conversationFollowup.findMany) return { reconciled: 0 };
+    const staleEvaluations = await prisma.conversationFollowup.findMany({
+      where: { status: "evaluating", activeKey: "active", lockedAt: { lte: staleBefore } },
+      orderBy: [{ lockedAt: "asc" }],
+      take: input.batchSize ?? 100
+    });
+    for (const candidate of staleEvaluations) {
+      await prisma.conversationFollowup.updateMany({
+        where: { id: candidate.id, workspaceId: candidate.workspaceId, status: "evaluating", lockedAt: candidate.lockedAt },
+        data: { lockedAt: null }
+      });
+    }
     const stale = await prisma.conversationFollowup.findMany({
       where: {
         status: "processing",
@@ -486,6 +716,8 @@ export function createConversationFollowupsService(
     agentBehaviorConfig: unknown;
     finalBody: string;
     decision: unknown;
+    sentMessageId?: string;
+    sentMessageAt?: Date | string;
     now?: Date;
   }): Promise<CompleteAutomaticFollowupResult> {
     if (
@@ -499,13 +731,16 @@ export function createConversationFollowupsService(
     }
 
     const sentAt = input.now ?? new Date();
-    const followupConfig = resolveEffectiveFollowupConfig(input.agentBehaviorConfig);
+    const conversation = await prisma.conversation.findUnique({
+      where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.followup.conversationId } }
+    });
+    const followupConfig = await loadPlan(prisma, input.workspaceId, conversation?.channelId, input.agentBehaviorConfig, conversation?.id);
     const nextStep =
-      followupConfig && input.followup.stepIndex < MAX_AUTOMATIC_FOLLOWUP_STEPS
+      followupConfig && input.followup.stepIndex < Math.min(MAX_AUTOMATIC_FOLLOWUP_STEPS, followupConfig.steps.length)
         ? followupConfig.steps[input.followup.stepIndex]
         : undefined;
     const nextScheduledAt = nextStep && followupConfig
-      ? calculateScheduledAt(input.followup.anchorMessageAt, nextStep, followupConfig)
+      ? calculateNextScheduledAt(input.followup, sentAt, nextStep.afterMinutes, followupConfig)
       : null;
 
     const result = await prisma.$transaction(async (tx) => {
@@ -536,6 +771,7 @@ export function createConversationFollowupsService(
         where: {
           workspaceId: input.workspaceId,
           conversationId: input.followup.conversationId,
+          hiddenByReset: false,
           direction: "inbound",
           ingestedAt: { gt: toDate(input.followup.anchorIngestedAt) }
         },
@@ -552,11 +788,11 @@ export function createConversationFollowupsService(
           status: "scheduled",
           activeKey: "active",
           stepIndex: input.followup.stepIndex + 1,
-          anchorMessageId: input.followup.anchorMessageId,
-          anchorMessageAt: toDate(input.followup.anchorMessageAt),
-          anchorIngestedAt: toDate(input.followup.anchorIngestedAt),
+          anchorMessageId: input.sentMessageId ?? input.followup.anchorMessageId,
+          anchorMessageAt: input.sentMessageAt ? toDate(input.sentMessageAt) : sentAt,
+          anchorIngestedAt: sentAt,
           scheduledAt: nextScheduledAt,
-          decision: {},
+          decision: nextStepDecision(input.followup.decision),
           reason: "agent_followup_step"
         }
       });
@@ -569,14 +805,96 @@ export function createConversationFollowupsService(
     return result;
   }
 
+  async function scheduleNextAfterManualSend(input: {
+    workspaceId: string;
+    followup: ConversationFollowupRecord;
+    sentAt: Date;
+  }): Promise<string | null> {
+    const conversation = await prisma.conversation.findUnique({
+      where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.followup.conversationId } }
+    });
+    if (!conversation || conversation.status === "closed") return null;
+    const session = input.followup.sessionId
+      ? await prisma.aiAgentSession.findFirst({
+          where: { workspaceId: input.workspaceId, id: input.followup.sessionId },
+          include: { agent: true }
+        })
+      : null;
+    const sessionAgent = isCompatibleSession(session, input.workspaceId, input.followup.conversationId, input.followup.kind)
+      ? session.agent : null;
+    const configuredAgent = input.followup.kind === "human_commercial" && !input.followup.sessionId && !conversation.activeAgentSessionId
+      ? await resolveConfiguredHumanAgent(prisma, conversation) : null;
+    const agent = sessionAgent ?? (configuredAgent?.id === input.followup.agentId ? configuredAgent : null);
+    if (!agent) return null;
+    const plan = await loadPlan(prisma, input.workspaceId, conversation.channelId, agent.behaviorConfig, conversation.id);
+    const nextStep = plan?.steps[input.followup.stepIndex];
+    if (!plan || !nextStep || input.followup.stepIndex >= MAX_AUTOMATIC_FOLLOWUP_STEPS) return null;
+    const scheduledAt = calculateNextScheduledAt(input.followup, input.sentAt, nextStep.afterMinutes, plan);
+    if (!scheduledAt) return null;
+
+    const next = await prisma.$transaction(async (tx) => {
+      const customerReplied = await tx.message.findFirst({
+        where: {
+          workspaceId: input.workspaceId,
+          conversationId: input.followup.conversationId,
+          hiddenByReset: false,
+          direction: "inbound",
+          ingestedAt: { gt: toDate(input.followup.anchorIngestedAt) }
+        },
+        orderBy: { ingestedAt: "desc" }
+      });
+      if (customerReplied) return null;
+      const active = await tx.conversationFollowup.findFirst({
+        where: { workspaceId: input.workspaceId, conversationId: input.followup.conversationId, activeKey: "active" }
+      });
+      if (active) return null;
+      return tx.conversationFollowup.create({
+        data: {
+          workspaceId: input.workspaceId,
+          conversationId: input.followup.conversationId,
+          agentId: input.followup.agentId,
+          sessionId: input.followup.sessionId,
+          kind: input.followup.kind,
+          status: "scheduled",
+          activeKey: "active",
+          stepIndex: input.followup.stepIndex + 1,
+          anchorMessageId: input.followup.id,
+          anchorMessageAt: input.sentAt,
+          anchorIngestedAt: input.sentAt,
+          scheduledAt,
+          decision: nextStepDecision(input.followup.decision),
+          reason: "manual_followup_step"
+        }
+      });
+    });
+    if (next) await publish(input.workspaceId, next.id);
+    return next?.id ?? null;
+  }
+
   return {
     observeConversationActivity,
+    evaluateCandidate,
     revalidateActiveFollowup,
     claimScheduledFollowup,
     recoverClaimedFollowup,
     reconcileStaleProcessingFollowups,
-    completeAutomaticFollowup
+    completeAutomaticFollowup,
+    scheduleNextAfterManualSend
   };
+}
+
+const BRAIN_QUIET_MINUTES = 5;
+const BRAIN_QUIET_REASON = "brain_quiet_wait";
+const BRAIN_FRESH_MESSAGE_MS = 24 * 60 * 60_000;
+
+/** A step after a brain follow-up is analyzed again, with the previous attempts in view. */
+function nextStepDecision(decision: unknown) {
+  return asRecord(decision)?.mode === "brain" ? { mode: "brain" } : {};
+}
+
+/** Reminders belong to the same seller-owned flow as commercial follow-ups. */
+function isSellerOwnedKind(kind: ConversationFollowupRecord["kind"]) {
+  return kind === "human_commercial" || kind === "seller_reminder";
 }
 
 async function findNewerCompanyMessage(
@@ -591,7 +909,7 @@ async function findNewerCompanyMessage(
     ingestedAt: { gt: anchorIngestedAt }
   };
   const newest = await prisma.message.findFirst({
-    where: { ...where, id: { not: followup.anchorMessageId } },
+    where: { ...where, hiddenByReset: false, id: { not: followup.anchorMessageId } },
     orderBy: { ingestedAt: "desc" }
   });
   if (!isOwnPendingDeliveryReservation(newest, followup)) return newest;
@@ -600,7 +918,7 @@ async function findNewerCompanyMessage(
   // only that exact pending row, then look again so any other outbound still
   // invalidates the follow-up.
   return prisma.message.findFirst({
-    where: { ...where, id: { notIn: [followup.anchorMessageId, followup.id] } },
+    where: { ...where, hiddenByReset: false, id: { notIn: [followup.anchorMessageId, followup.id] } },
     orderBy: { ingestedAt: "desc" }
   });
 }
@@ -614,6 +932,12 @@ function isOwnPendingDeliveryReservation(
   return metadata?.source === "followup_review" && metadata.followupId === followup.id;
 }
 
+function isManagedFollowupDelivery(message: MessageRecord) {
+  const metadata = asRecord(message.metadata);
+  return typeof metadata?.followupId === "string" &&
+    (metadata.source === "followup_review" || metadata.source === "ai_agent");
+}
+
 async function findPersistedCustomerInboundMessage(
   prisma: Pick<ConversationFollowupsPrismaLike, "message">,
   input: ObserveConversationActivityInput
@@ -623,6 +947,7 @@ async function findPersistedCustomerInboundMessage(
       workspaceId: input.workspaceId,
       conversationId: input.conversationId,
       id: input.messageId,
+      hiddenByReset: false,
       direction: "inbound"
     }
   });
@@ -632,13 +957,14 @@ async function cancelForCustomerReply(
   prisma: Pick<ConversationFollowupsPrismaLike, "conversationFollowup">,
   input: Pick<ObserveConversationActivityInput, "workspaceId" | "conversationId">,
   customerMessageIngestedAt?: Date | string | null,
-  publisher?: ConversationFollowupPublisher
+  publisher?: ConversationFollowupPublisher,
+  reason: "customer_replied" | "outbound_replaced" = "customer_replied"
 ): Promise<ObserveConversationActivityResult> {
   const where = {
     workspaceId: input.workspaceId,
     conversationId: input.conversationId,
     activeKey: "active",
-    status: { in: ["scheduled", "review"] },
+    status: { in: ["evaluating", "scheduled", "review"] },
     ...(customerMessageIngestedAt
       ? { anchorIngestedAt: { lt: toDate(customerMessageIngestedAt) } }
       : {})
@@ -650,7 +976,7 @@ async function cancelForCustomerReply(
     data: {
       status: "cancelled",
       activeKey: null,
-      reason: "customer_replied",
+      reason,
       cancelledAt: new Date()
     }
   });
@@ -667,6 +993,27 @@ async function cancelForCustomerReply(
   return { status: "cancelled" };
 }
 
+async function isCourtesyClosure(
+  prisma: Pick<ConversationFollowupsPrismaLike, "message">,
+  input: Pick<ObserveConversationActivityInput, "workspaceId" | "conversationId">,
+  sellerMessage: MessageRecord
+): Promise<boolean> {
+  const sellerText = sellerMessage.body?.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z\s]/g, " ").replace(/\s+/g, " ").trim();
+  if (!sellerText || !/^(imagina|de nada|por nada|disponha|as ordens|obrigado|obrigada)$/.test(sellerText) || !sellerMessage.ingestedAt) return false;
+  const previousCustomer = await prisma.message.findFirst({
+    where: {
+      workspaceId: input.workspaceId,
+      conversationId: input.conversationId,
+      hiddenByReset: false,
+      direction: "inbound",
+      ingestedAt: { lte: toDate(sellerMessage.ingestedAt) }
+    },
+    orderBy: { ingestedAt: "desc" }
+  });
+  const customerText = previousCustomer?.body?.toLowerCase() ?? "";
+  return !customerText.includes("?") && /\b(obrigad[oa]|agradec|valeu)\b/u.test(customerText);
+}
+
 async function findNewerCustomerReply(
   prisma: Pick<ConversationFollowupsPrismaLike, "message">,
   input: Pick<ObserveConversationActivityInput, "workspaceId" | "conversationId">,
@@ -676,6 +1023,7 @@ async function findNewerCustomerReply(
     where: {
       workspaceId: input.workspaceId,
       conversationId: input.conversationId,
+      hiddenByReset: false,
       direction: "inbound",
       ingestedAt: { gt: toDate(anchorIngestedAt) }
     },
@@ -706,7 +1054,7 @@ async function resolveCandidate(
   input: ObserveConversationActivityInput,
   kind: ConversationFollowupRecord["kind"]
 ): Promise<
-  | { conversation: ConversationRecord; message: MessageRecord; session: AgentSessionRecord; agent: AgentRecord }
+  | { conversation: ConversationRecord; message: MessageRecord; session: AgentSessionRecord | null; agent: AgentRecord }
   | null
 > {
   const [conversation, message] = await Promise.all([
@@ -724,6 +1072,7 @@ async function resolveCandidate(
         workspaceId: input.workspaceId,
         id: input.messageId,
         conversationId: input.conversationId,
+        hiddenByReset: false,
         direction: "outbound"
       }
     })
@@ -751,7 +1100,7 @@ async function resolveCandidate(
           conversationId: input.conversationId,
           status:
             kind === "human_commercial"
-              ? { in: ["active", "paused_by_human"] }
+              ? { in: ["active", "paused_by_human", "handoff_requested"] }
               : "active",
           agent: { status: "active" }
         },
@@ -759,40 +1108,81 @@ async function resolveCandidate(
         orderBy: { updatedAt: "desc" }
       });
 
-  if (!isCompatibleSession(session, input.workspaceId, input.conversationId, kind)) {
-    return null;
+  const prospecting = await findProspectingReservation(prisma, input.workspaceId, input.conversationId);
+  if (prospecting && !await autonomousAgentAllowed(prisma, { workspaceId: input.workspaceId, conversationId: input.conversationId, sessionId: session?.id, agentId: session?.agentId })) return null;
+  if (isCompatibleSession(session, input.workspaceId, input.conversationId, kind)) {
+    return { conversation, message, session, agent: session.agent };
   }
-
-  return { conversation, message, session, agent: session.agent };
+  if (kind !== "human_commercial" || conversation.activeAgentSessionId) return null;
+  const agent = await resolveConfiguredHumanAgent(prisma, conversation);
+  return agent ? { conversation, message, session: null, agent } : null;
 }
 
-function calculateFirstScheduledAt(anchorMessageAt: Date | string, agent: AgentRecord): Date | null {
-  const followupConfig = resolveEffectiveFollowupConfig(agent.behaviorConfig);
+async function resolveConfiguredHumanAgent(
+  prisma: ConversationFollowupsPrismaLike,
+  conversation: ConversationRecord
+): Promise<AgentRecord | null> {
+  if (!conversation.channelId || !prisma.channel || !prisma.aiAgent) return null;
+  const channel = await prisma.channel.findUnique({
+    where: { workspaceId_id: { workspaceId: conversation.workspaceId, id: conversation.channelId } }
+  });
+  const settings = readAssistantSettings(channel?.encryptedConfig);
+  if (settings.mode === "disabled" || !settings.agentId) return null;
+  return prisma.aiAgent.findFirst({
+    where: { workspaceId: conversation.workspaceId, id: settings.agentId, status: "active" }
+  });
+}
+
+async function loadPlan(
+  prisma: ConversationFollowupsPrismaLike,
+  workspaceId: string,
+  channelId: string | undefined,
+  agentBehaviorConfig: unknown,
+  conversationId?: string
+) {
+  const channel = channelId && prisma.channel
+    ? await prisma.channel.findUnique({ where: { workspaceId_id: { workspaceId, id: channelId } } })
+    : null;
+  const prospecting = conversationId ? await findProspectingReservation(prisma, workspaceId, conversationId) : null;
+  return resolveFollowupPlan(agentBehaviorConfig, channel?.followupConfig, !!prospecting);
+}
+
+async function isChannelFollowupsPaused(prisma: ConversationFollowupsPrismaLike, conversation: ConversationRecord) {
+  if (!conversation.channelId || !prisma.channel) return false;
+  const channel = await prisma.channel.findUnique({
+    where: { workspaceId_id: { workspaceId: conversation.workspaceId, id: conversation.channelId } }
+  });
+  const parsed = channelFollowupConfigSchema.safeParse(channel?.followupConfig);
+  return parsed.success && !parsed.data.enabled;
+}
+
+async function calculateFirstScheduledAt(
+  prisma: ConversationFollowupsPrismaLike,
+  anchorMessageAt: Date | string,
+  conversation: ConversationRecord,
+  agent: AgentRecord
+): Promise<Date | null> {
+  const followupConfig = await loadPlan(prisma, conversation.workspaceId, conversation.channelId, agent.behaviorConfig, conversation.id);
   if (!followupConfig) {
     return null;
   }
 
   const firstStep = followupConfig.steps[0];
-  return firstStep ? calculateScheduledAt(anchorMessageAt, firstStep, followupConfig) : null;
+  return firstStep ? calculateFollowupDueAt(toDate(anchorMessageAt), firstStep.afterMinutes, followupConfig) : null;
 }
 
-function calculateScheduledAt(
-  anchorMessageAt: Date | string,
-  step: { afterBusinessMinutes: number },
-  config: {
-    timeZone: string;
-    businessDays: number[];
-    businessHours: { start: string; end: string };
-  }
+function calculateNextScheduledAt(
+  followup: ConversationFollowupRecord,
+  sentAt: Date,
+  nextMinutes: number,
+  plan: NonNullable<ReturnType<typeof resolveFollowupPlan>>
 ): Date | null {
   try {
-    return addBusinessMinutes({
-      from: toDate(anchorMessageAt),
-      minutes: step.afterBusinessMinutes,
-      timeZone: config.timeZone,
-      businessDays: config.businessDays,
-      businessHours: config.businessHours
-    });
+    const previousMinutes = plan.steps[followup.stepIndex - 1]?.afterMinutes ?? 0;
+    const delay = plan.mode === "business_cumulative"
+      ? Math.max(1, nextMinutes - previousMinutes)
+      : nextMinutes;
+    return calculateFollowupDueAt(sentAt, delay, plan);
   } catch {
     return null;
   }
@@ -846,7 +1236,7 @@ function isCompatibleSession(
       session.workspaceId === workspaceId &&
       session.conversationId === conversationId &&
       (session.status === "active" ||
-        (kind === "human_commercial" && session.status === "paused_by_human")) &&
+        (isSellerOwnedKind(kind) && (session.status === "paused_by_human" || session.status === "handoff_requested"))) &&
       session.agent?.workspaceId === workspaceId &&
       session.agent.status === "active"
   );
@@ -889,4 +1279,11 @@ function isUniqueConstraintError(error: unknown): error is { code: string } {
     "code" in error &&
     (error as { code?: unknown }).code === "P2002"
   );
+}
+
+/** Serialize observation with reset before resurrecting an operational follow-up. */
+async function visibleSourceInTransaction(tx: ConversationFollowupsTransaction, input: ObserveConversationActivityInput) {
+  if (tx.$queryRaw && tx.$executeRaw) await enterCanonicalWorkspaceTransaction(tx as never, input.workspaceId);
+  const source = await tx.message.findFirst({ where: { workspaceId: input.workspaceId, conversationId: input.conversationId, id: input.messageId, hiddenByReset: false } });
+  return Boolean(source);
 }

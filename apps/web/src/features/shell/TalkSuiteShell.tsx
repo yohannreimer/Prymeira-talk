@@ -1,10 +1,15 @@
+import { useOptionalTalkSession } from '../../app/session/TalkSessionProvider';
+import { ChannelHealthAlerts } from "../channels/ChannelHealthAlerts";
+import { TalkAlerts } from "../alerts/TalkAlerts";
 import { Bot } from "lucide-react";
 import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
-import { isTalkModuleKey, talkModules, type TalkModuleKey } from "./moduleRegistry";
+import { useFollowupReviewCount } from "../followups/useFollowupReviewCount";
+import { availableTalkModules, isTalkModuleKey, type TalkModuleKey } from "./moduleRegistry";
 
 type TalkSuiteShellProps = {
   renderModule: (moduleKey: TalkModuleKey) => ReactNode;
+  prefetchModule?: (moduleKey: TalkModuleKey) => void;
 };
 
 const defaultModule: TalkModuleKey = "atendimento";
@@ -23,8 +28,13 @@ function buildModuleUrl(moduleKey: TalkModuleKey) {
   return `${url.pathname}${url.search}${url.hash}`;
 }
 
-export function TalkSuiteShell({ renderModule }: TalkSuiteShellProps) {
-  const [activeModule, setActiveModule] = useState<TalkModuleKey>(readModuleFromUrl);
+export function TalkSuiteShell({ renderModule, prefetchModule }: TalkSuiteShellProps) {
+  const context = useOptionalTalkSession();
+  const modules = availableTalkModules(context?.currentUser.addons);
+  const [requestedModule, setActiveModule] = useState<TalkModuleKey>(readModuleFromUrl);
+  // A link to an add-on the workspace does not have falls back to the default module.
+  const activeModule = modules.some((module) => module.key === requestedModule) ? requestedModule : defaultModule;
+  const followupsToReview = useFollowupReviewCount();
 
   const [sidebarExpanded, setSidebarExpanded] = useState<boolean>(() => {
     return localStorage.getItem("sidebar-expanded") === "true";
@@ -57,8 +67,19 @@ export function TalkSuiteShell({ renderModule }: TalkSuiteShellProps) {
   }, [activeModule]);
 
   function handleModuleClick(moduleKey: TalkModuleKey) {
+    if (moduleKey === 'atendimento' && activeModule !== moduleKey && new URLSearchParams(window.location.search).get('talkPerf') === '1') {
+      context?.session.writeUI('performance:returnStart', performance.now(), null);
+    }
     window.history.pushState({ module: moduleKey }, "", buildModuleUrl(moduleKey));
     setActiveModule(moduleKey);
+  }
+
+  function openConversation(conversationId: string) {
+    const url = new URL(window.location.href);
+    url.searchParams.set(moduleParamName, "atendimento");
+    url.searchParams.set("conversation", conversationId);
+    window.history.pushState({ module: "atendimento", conversation: conversationId }, "", `${url.pathname}${url.search}${url.hash}`);
+    window.dispatchEvent(new PopStateEvent("popstate"));
   }
 
   return (
@@ -77,9 +98,12 @@ export function TalkSuiteShell({ renderModule }: TalkSuiteShellProps) {
           {sidebarExpanded ? "←" : "→"}
         </button>
         <nav className="rail-nav" aria-label="Modulos">
-          {talkModules.map(({ key, label, Icon }) => (
+          {modules.map(({ key, label, Icon }) => {
+            const badge = key === "followups" && followupsToReview > 0 ? followupsToReview : 0;
+            const fullLabel = badge ? `${label} (${badge} para revisar)` : label;
+            return (
             <button
-              aria-label={label}
+              aria-label={fullLabel}
               aria-pressed={activeModule === key}
               className={[
                 "rail-button",
@@ -90,17 +114,25 @@ export function TalkSuiteShell({ renderModule }: TalkSuiteShellProps) {
                 .join(" ")}
               key={key}
               onClick={() => handleModuleClick(key)}
-              title={sidebarExpanded ? undefined : label}
+              onPointerEnter={() => prefetchModule?.(key)}
+              onFocus={() => prefetchModule?.(key)}
+              title={sidebarExpanded ? undefined : fullLabel}
               type="button"
             >
-              <Icon size={20} aria-hidden="true" />
+              <span className="rail-icon">
+                <Icon size={20} aria-hidden="true" />
+                {badge ? <span className="rail-badge" aria-hidden="true">{badge > 99 ? "99+" : badge}</span> : null}
+              </span>
               <span className="rail-label">{label}</span>
             </button>
-          ))}
+            );
+          })}
         </nav>
+        <TalkAlerts activeModule={activeModule} onOpenConversation={openConversation} />
       </aside>
 
       {renderModule(activeModule)}
+      <ChannelHealthAlerts onOpenChannels={() => handleModuleClick("canais")} />
     </main>
   );
 }

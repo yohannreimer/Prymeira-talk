@@ -4,9 +4,10 @@ import { z } from 'zod';
 import { assistantChannelSettingsSchema, assistantInstructionSchema, assistantSendSchema, assistantDraftStatusSchema, type AssistantConversationDto } from '@prymeira-talk/shared';
 import { AssistantError, requireAssistantConversation, requireAssistantManager, resolveAssistantActor } from './assistant-access.js';
 import { loadAssistantContext } from './assistant-generation.js';
-import { readAssistantSettings } from './assistant-policy.js';
+import { readAssistantSettings, resolveConversationAssistant } from './assistant-policy.js';
 import { createAssistantSendService } from './assistant-send.service.js';
 import type { AssistantScheduler } from './assistant-scheduler.js';
+import type { createHandoffBriefService } from './handoff-brief-service.js';
 import { createConversationsService, type PrismaLike } from '../conversations/conversations.service.js';
 import type { EvolutionRuntime } from '../evolution/evolution-runtime.js';
 import { resolveMetaRuntime } from '../meta/meta-runtime.js';
@@ -15,7 +16,7 @@ const params = z.object({ conversationId: z.string().uuid() });
 const channelParams = z.object({ channelId: z.string().uuid() });
 const object = (value: unknown) => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, Prisma.InputJsonValue> : {};
 
-export const assistantInboxRoutes: FastifyPluginAsync<{ scheduler?: AssistantScheduler; evolution: EvolutionRuntime }> = async (app, options) => {
+export const assistantInboxRoutes: FastifyPluginAsync<{ scheduler?: AssistantScheduler; evolution: EvolutionRuntime; handoffBriefService?: ReturnType<typeof createHandoffBriefService> }> = async (app, options) => {
   app.setErrorHandler((error, _request, reply) => {
     if (error instanceof AssistantError) return reply.code(error.statusCode).send({ code: error.code, error: error.message });
     if (error instanceof z.ZodError) return reply.code(400).send({ code: 'ASSISTANT_INVALID_REQUEST', error: 'Revise os campos informados.' });
@@ -46,7 +47,7 @@ export const assistantInboxRoutes: FastifyPluginAsync<{ scheduler?: AssistantSch
     const { conversationId } = params.parse(request.params);
     const actor = await resolveAssistantActor(app.prisma, request.talk);
     const conversation = await requireAssistantConversation(app.prisma, actor, conversationId);
-    const settings = readAssistantSettings(conversation.channel.encryptedConfig);
+    const {settings,humanSupport}=resolveConversationAssistant(conversation);
     const [state, revisions] = await Promise.all([
       app.prisma.assistantConversationState.findUnique({ where: { workspaceId_conversationId: { workspaceId: actor.workspaceId, conversationId } } }),
       app.prisma.assistantSuggestion.findMany({ where: { workspaceId: actor.workspaceId, conversationId }, orderBy: { revision: 'desc' }, take: 20, include: { actor: { select: { displayName: true } }, send: { include: { actor: { select: { displayName: true } }, message: { select: { status: true } } } } } })
@@ -55,17 +56,36 @@ export const assistantInboxRoutes: FastifyPluginAsync<{ scheduler?: AssistantSch
     if (settings.mode !== 'disabled') context = await loadAssistantContext(app.prisma, actor.workspaceId, conversationId);
     const history = revisions.map(s => ({ id: s.id, conversationId, agentId: s.agentId, revision: s.revision, contextKey: s.contextKey, body: s.body, instruction: s.instruction, createdAt: s.createdAt.toISOString(), warnings: Array.isArray(s.warnings) ? s.warnings.filter((w): w is string => typeof w === 'string') : [], actorName: s.send?.actor.displayName ?? s.actor?.displayName ?? null, finalBody: s.send?.finalBody ?? null, messageId: s.send?.messageId ?? null, sendStatus: s.send?.status === 'uncertain' ? 'uncertain' : s.send?.message?.status ?? s.send?.status ?? null }));
     const humanControlled = conversation.aiControlStatus === 'human_controlled';
+    const awaitingCustomer = Boolean(context && context.messages.at(-1)?.direction !== 'inbound');
     let status = assistantDraftStatusSchema.catch('stale').parse(state?.status ?? 'stale');
-    if (humanControlled) status = 'paused';
+    if (humanControlled && !humanSupport) status = 'paused';
     if (status === 'ready' && history[0]?.contextKey !== context?.contextKey) status = 'stale';
-    return { settings, status, humanControlled, suggestion: history[0] ?? null, history, agentName: context?.agent.name ?? null, error: state?.lastError ?? null, currentContextKey: context?.contextKey ?? null } satisfies AssistantConversationDto;
+    // The customer spoke after the suggestion (or it gave up because the conversation changed mid-way): write a new one
+    // by itself, as the panel promises, instead of asking the seller to request it.
+    const lastMessage = context?.messages.at(-1);
+    const outdated = status === 'stale' && state?.status === 'ready' || state?.status === 'failed' && state.lastError?.startsWith('A conversa mudou');
+    if (state && outdated && lastMessage?.direction === 'inbound' && status !== 'paused' && options.scheduler
+      && await options.scheduler.repository.refresh(state, lastMessage.id)) status = 'pending';
+    // After our own last message only a follow-up the seller asked for is shown as in progress (or failed); a leftover
+    // automatic suggestion is not, so the panel never says "preparing" or "failed" for something nobody requested.
+    const requested = Boolean(state?.requestedById);
+    if (awaitingCustomer && !requested && (status === 'pending' || status === 'generating' || status === 'failed')) status = 'stale';
+    const error = awaitingCustomer && !requested ? null : state?.lastError ?? null;
+    return { settings, status, humanControlled, humanSupport, awaitingCustomer, suggestion: history[0] ?? null, history, agentName: context?.agent.name ?? null, error, currentContextKey: context?.contextKey ?? null } satisfies AssistantConversationDto;
+  });
+  app.get('/assistant/conversations/:conversationId/handoff-brief', async request => {
+    const { conversationId } = params.parse(request.params);
+    const actor = await resolveAssistantActor(app.prisma, request.talk);
+    await requireAssistantConversation(app.prisma, actor, conversationId);
+    return options.handoffBriefService?.get({ workspaceId: actor.workspaceId, conversationId })
+      ?? { status: 'failed', nextAction: null, summary: null, contextKey: null, updatedAt: null, error: 'Apoio indisponível.' };
   });
   app.post('/assistant/conversations/:conversationId/suggestions', { config: { rateLimit: { max: 12, timeWindow: '1 minute' } } }, async (request, reply) => {
     const { conversationId } = params.parse(request.params);
     const body = assistantInstructionSchema.parse(request.body ?? {});
     const actor = await resolveAssistantActor(app.prisma, request.talk);
     await requireAssistantConversation(app.prisma, actor, conversationId);
-    if (!options.scheduler || !await options.scheduler.repository.schedule({ workspaceId: actor.workspaceId, conversationId, trigger: 'manual', actorUserId: actor.userId, instruction: body.instruction })) throw new AssistantError('ASSISTANT_UNAVAILABLE', 'Libere o controle humano e configure a IA de apoio para gerar uma sugestão.');
+    if (!options.scheduler || !await options.scheduler.repository.schedule({ workspaceId: actor.workspaceId, conversationId, trigger: 'manual', actorUserId: actor.userId, instruction: body.instruction })) throw new AssistantError('ASSISTANT_UNAVAILABLE', 'Associe um agente a esta conversa para gerar uma sugestão.');
     return reply.code(202).send({ status: 'pending' });
   });
   app.post('/assistant/conversations/:conversationId/send', async request => {
@@ -73,7 +93,8 @@ export const assistantInboxRoutes: FastifyPluginAsync<{ scheduler?: AssistantSch
     const input = assistantSendSchema.parse(request.body);
     const actor = await resolveAssistantActor(app.prisma, request.talk);
     const conversation = await requireAssistantConversation(app.prisma, actor, conversationId);
-    const meta = await resolveMetaRuntime(app.prisma, { workspaceId: actor.workspaceId });
+    const meta = await resolveMetaRuntime(app.prisma, { workspaceId: actor.workspaceId,
+      expectedEvolutionWebhook: { webhookUrl: options.evolution.publicWebhookUrl(actor.workspaceId), webhookSecret: options.evolution.webhookSecret } });
     if (conversation.channel.provider === 'evolution' && (options.evolution.mode !== 'real' || !options.evolution.client)) throw new AssistantError('ASSISTANT_TRANSPORT_REQUIRED', 'Conecte o canal real antes de enviar.', 422);
     if (conversation.channel.provider === 'meta_cloud' && !meta.client && !meta.evolutionClient) throw new AssistantError('ASSISTANT_TRANSPORT_REQUIRED', 'Configure o canal Meta antes de enviar.', 422);
     const service = createConversationsService(app.prisma as unknown as PrismaLike, { evolution: options.evolution, meta: { client: meta.client, phoneNumberId: meta.phoneNumberId }, metaEvolution: { client: meta.evolutionClient } });

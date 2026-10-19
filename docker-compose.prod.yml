@@ -1,6 +1,11 @@
 services:
   prymeira_talk_postgres:
     image: postgres:16-alpine
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "10"
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-prymeira_talk}
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
@@ -32,10 +37,17 @@ services:
         condition: on-failure
 
   prymeira_talk_api:
-    image: ghcr.io/${GHCR_OWNER:-yohannreimer}/prymeira-talk-api:${IMAGE_TAG:-latest}
+    image: ghcr.io/${GHCR_OWNER:-yohannreimer}/prymeira-talk-api:${API_IMAGE_TAG:-${IMAGE_TAG:-latest}}
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "10"
     environment:
       NODE_ENV: production
       API_HOST: 0.0.0.0
+      GLITCHTIP_DSN: ${GLITCHTIP_DSN:-}
+      GLITCHTIP_RELEASE: ${API_IMAGE_TAG:-${IMAGE_TAG:-}}
       API_PORT: 3002
       DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${PRYMEIRA_TALK_POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-prymeira_talk}
       CORS_ORIGINS: https://talk.prymeiradigital.com.br
@@ -53,7 +65,47 @@ services:
       EVOLUTION_API_BASE_URL: https://wsapi.yrdnegocios.com.br
       EVOLUTION_API_KEY: ${EVOLUTION_API_KEY}
       EVOLUTION_WEBHOOK_SECRET: ${EVOLUTION_WEBHOOK_SECRET}
+      JEV_API_KEY: ${JEV_API_KEY:-}
+      JEV_MODEL: ${JEV_MODEL:-jev-latest}
+      INBOX_TRIAGE_ENABLED: ${INBOX_TRIAGE_ENABLED:-false}
+      # Google Calendar for the agents' "Marcar call" action; empty keeps it off.
+      GOOGLE_CALENDAR_CLIENT_ID: ${GOOGLE_CALENDAR_CLIENT_ID:-}
+      GOOGLE_CALENDAR_CLIENT_SECRET: ${GOOGLE_CALENDAR_CLIENT_SECRET:-}
+      GOOGLE_CALENDAR_REFRESH_TOKEN: ${GOOGLE_CALENDAR_REFRESH_TOKEN:-}
+      GOOGLE_CALENDAR_ID: ${GOOGLE_CALENDAR_ID:-primary}
+      MEETING_TIMEZONE: ${MEETING_TIMEZONE:-America/Sao_Paulo}
+      MEETING_DURATION_MINUTES: ${MEETING_DURATION_MINUTES:-15}
+      MEETING_HOURS: ${MEETING_HOURS:-09:00-18:00}
+      MEETING_WEEKDAYS: ${MEETING_WEEKDAYS:-1-5}
+      MEETING_MIN_NOTICE_MINUTES: ${MEETING_MIN_NOTICE_MINUTES:-120}
+      MEETING_DAYS_AHEAD: ${MEETING_DAYS_AHEAD:-7}
+      MEETING_TITLE: ${MEETING_TITLE:-Call Prymeira}
+      INBOX_TRIAGE_PRIMARY: ${INBOX_TRIAGE_PRIMARY:-jev}
+      CONTACT_NAME_RECOVERY_ENABLED: ${CONTACT_NAME_RECOVERY_ENABLED:-true}
+      CHANNEL_WATCHDOG_ENABLED: ${CHANNEL_WATCHDOG_ENABLED:-true}
+      CHANNEL_WATCHDOG_INTERVAL_SECONDS: ${CHANNEL_WATCHDOG_INTERVAL_SECONDS:-120}
+      # true = reads and logs only; set false to let the watchdog act
+      CHANNEL_WATCHDOG_DRY_RUN: ${CHANNEL_WATCHDOG_DRY_RUN:-true}
       VINCULA_CRM_API_URL: ${VINCULA_CRM_API_URL:-https://vincula.prymeiradigital.com.br/api}
+      # Evolution + WAHA + RabbitMQ integration. Every switch is off (or empty) by default: deploying this file
+      # changes nothing until the values are set. See docs/operations/waha-rabbit-rollout.md for the order.
+      # Only these workspaces (comma-separated ids, or *) get the new integration; everyone else stays as today.
+      WAHA_ROLLOUT_WORKSPACES: ${WAHA_ROLLOUT_WORKSPACES:-}
+      WAHA_ENABLED: ${WAHA_ENABLED:-false}
+      WAHA_API_BASE_URL: ${WAHA_API_BASE_URL:-}
+      WAHA_API_KEY: ${WAHA_API_KEY:-}
+      WAHA_WEBHOOK_BASE_URL: ${WAHA_WEBHOOK_BASE_URL:-}
+      WAHA_WEBHOOK_HMAC_KEY: ${WAHA_WEBHOOK_HMAC_KEY:-}
+      OUTBOUND_ROUTER_ENABLED: ${OUTBOUND_ROUTER_ENABLED:-false}
+      CHANNEL_HEALTH_MONITOR_ENABLED: ${CHANNEL_HEALTH_MONITOR_ENABLED:-false}
+      CANONICAL_HISTORY_IMPORT_ENABLED: ${CANONICAL_HISTORY_IMPORT_ENABLED:-false}
+      LEGACY_WEBHOOK_DELEGATED_WORKSPACES: ${LEGACY_WEBHOOK_DELEGATED_WORKSPACES:-}
+      EFFECTS_ENABLED: ${EFFECTS_ENABLED:-false}
+      EFFECTS_WORKSPACE_ALLOWLIST: ${EFFECTS_WORKSPACE_ALLOWLIST:-}
+      REALTIME_BRIDGE_ENABLED: ${REALTIME_BRIDGE_ENABLED:-false}
+      TALK_MEDIA_STORE_PATH: ${TALK_MEDIA_STORE_PATH:-}
+    volumes:
+      - prymeira_talk_media:/data/media
     networks:
       prymeira_talk_internal:
         aliases:
@@ -81,10 +133,16 @@ services:
 
   prymeira_talk_web:
     image: ghcr.io/${GHCR_OWNER:-yohannreimer}/prymeira-talk-web:${IMAGE_TAG:-latest}
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "10"
     environment:
       VITE_API_URL: https://talk.prymeiradigital.com.br/api
       VITE_LOCAL_AUTH_BYPASS: "false"
       VITE_CLERK_PUBLISHABLE_KEY: ${VITE_CLERK_PUBLISHABLE_KEY}
+      VITE_PRYMEIRA_HUB_URL: ${VITE_PRYMEIRA_HUB_URL:-https://account.prymeira.com}
     networks:
       - network_swarm_public
       - prymeira_talk_internal
@@ -112,6 +170,8 @@ services:
 
 volumes:
   prymeira_talk_postgres:
+  # Durable private media (API, ingress worker). Shared with docker-compose.waha-rabbit.prod.yml as an external volume.
+  prymeira_talk_media:
 
 networks:
   network_swarm_public:
