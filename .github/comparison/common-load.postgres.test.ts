@@ -128,6 +128,11 @@ describe.skipIf(!databaseUrl || !brokerUrl)('isolated matched VPS comparison (di
       const channel = await db.channel.create({ data: { workspaceId, provider: 'evolution', providerKey: randomUUID(), historyImportStatus: 'completed', verifiedMessagingPhoneNumber: '15550008888' } });
       recoveryConnections.push(await db.channelConnection.create({ data: { workspaceId, channelId: channel.id, provider: 'waha', sessionName: randomUUID(), status: 'connected', eligible: true, health: 'healthy', verifiedPhoneNumber: '15550008888', lastHealthyAt: new Date(), recoveredThroughAt: new Date(Date.now() - 600_000) } }));
     }
+    const recoveryTrace: unknown[] = [];
+    const captureRecovery = async (stage:string) => {const rows=await db.channelConnection.findMany({where:{workspaceId},select:{id:true,provider:true,recoveredThroughAt:true,historyRecoveryFailures:true,historyRecoveryNextAttemptAt:true,historyRecoveryLeaseToken:true,historyRecoveryLeaseUntil:true,historyRecoveryCursor:true}});recoveryTrace.push({at:Date.now(),stage,rows});};
+    await captureRecovery('before-worker');
+    let traceStopped=false;
+    const tracing=(async()=>{while(!traceStopped){await captureRecovery('sample');await new Promise(r=>setTimeout(r,1000));}})();
     const recoveryAt = Math.floor((Date.now() - 500_000) / 1000);
     let versionRequests = 0, firstSweepFinishedAt = 0;
     const counts = new Map<string, number>(), recoveredIds = recoveryConnections.map((c, i) => `${prefix}recovery-${i}`);
@@ -147,7 +152,7 @@ describe.skipIf(!databaseUrl || !brokerUrl)('isolated matched VPS comparison (di
       setTimeout(() => response.end(JSON.stringify(rows)), 100);
     });
     await new Promise<void>(resolve => provider.listen(0, '127.0.0.1', resolve));
-    await db.channelConnection.updateMany({ where: { workspaceId, provider: 'evolution' }, data: { historyRecoveryNextAttemptAt: new Date(Date.now() + 120_000) } });
+    await db.channelConnection.updateMany({ where: { workspaceId, provider: 'evolution' }, data: { historyRecoveryNextAttemptAt: new Date(Date.now() + 3600_000) } });
     const previousWorker = children[1]!; previousWorker.kill('SIGTERM'); await until(async () => previousWorker.exitCode, value => value !== null);
     runtimeEnv = { ...runtimeEnv, INGRESS_WORKSPACE_ALLOWLIST: workspaceId, INGRESS_RECOVERY_ENABLED: diagnosticControl ? 'false' : 'true',
       WAHA_API_BASE_URL: `http://127.0.0.1:${(provider.address() as { port: number }).port}`, WAHA_API_KEY: 'synthetic-only' };
@@ -271,7 +276,9 @@ describe.skipIf(!databaseUrl || !brokerUrl)('isolated matched VPS comparison (di
         const resumeStartedAt = new Date().toISOString();
         const freshConnections = await db.channelConnection.findMany({ where: { id: { in: recoveryConnections.map(c=>c.id) } } });
         const toResume = freshConnections.filter(c=>c.recoveredThroughAt!.getTime() <= recoveryConnections.find(original=>original.id===c.id)!.recoveredThroughAt!.getTime());
+        await captureRecovery('before-fixture-reschedule');
         if (toResume.length) await db.channelConnection.updateMany({ where: { id: { in: toResume.map(c=>c.id) } }, data: { historyRecoveryNextAttemptAt: null } });
+        await captureRecovery('after-fixture-reschedule');
         await until(() => db.channelConnection.count({ where: { OR: recoveryConnections.map(c=>({ id: c.id, recoveredThroughAt: { gt: c.recoveredThroughAt! }, historyRecoveryLeaseToken: null })) } }), n=>n===3, 90_000);
         const finalRows = await db.canonicalMessageIdentity.findMany({ where: { workspaceId, rawId: { in: recoveredIds } } });
         expect(finalRows.map(r=>r.rawId).sort()).toEqual([...recoveredIds].sort());
@@ -303,7 +310,7 @@ describe.skipIf(!databaseUrl || !brokerUrl)('isolated matched VPS comparison (di
         totalProviderCalls: [...counts.values()].reduce((a,b)=>a+b,0)+versionRequests, completedLiveIdentities: expectedLive.size,
         boundary: 'Common observational harness, not release qualification. Recovery callbacks/cursor guarantees differ by version and are observed rather than presumed.' };
       await writeFile(diagnosticPath, JSON.stringify(finalResult,null,2));
-    } finally { observingStopped = true; await observing; clearInterval(sampler); await recovery; await new Promise<void>(resolve => provider.close(() => resolve())); }
+    } finally { traceStopped=true;await tracing;await captureRecovery('finally');await writeFile(join(process.cwd(),'../../validation-artifacts',`recovery-trace-${Date.now()}.json`),JSON.stringify(recoveryTrace,null,2)); observingStopped = true; await observing; clearInterval(sampler); await recovery; await new Promise<void>(resolve => provider.close(() => resolve())); }
   }, 300_000);
 
 });

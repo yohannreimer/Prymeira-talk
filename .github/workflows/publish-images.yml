@@ -1,4 +1,4 @@
-name: Matched VPS message-flow comparison (isolated only)
+name: Isolated admission and recovery diagnosis
 on:
   workflow_dispatch:
 permissions:
@@ -67,18 +67,23 @@ jobs:
           set -eu
           docker pull node:22-alpine
           docker image inspect node:22-alpine --format '{{json .}}' > validation-artifacts/common-node-base.json
-          for pair in A_ingress:99f65ed54a2ca729434b39786bdcb6394d8f9388 A_worker:51b1fdd75341013b613737e61d3e89b787cec8be B:1d7aa19ed9c4a48532937408b9ece782c53d5cd6 C:4c718f6f8b3450e1633697bef5e45381ab813dcb; do
+          for pair in A_ingress:99f65ed54a2ca729434b39786bdcb6394d8f9388 A_worker:51b1fdd75341013b613737e61d3e89b787cec8be B:1d7aa19ed9c4a48532937408b9ece782c53d5cd6 C:4c718f6f8b3450e1633697bef5e45381ab813dcb D:diagnostic; do
             name=${pair%%:*}
             sha=${pair#*:}
+            if [ "$name" = D ]; then
+              cp -a .validation/variants/4c718f6f8b3450e1633697bef5e45381ab813dcb .validation/variants/diagnostic
+              node .github/comparison/instrument.mjs "$PWD/.validation/variants/diagnostic"
+              cp .validation/variants/diagnostic/diagnostic-patches.json validation-artifacts/
+            fi
             docker build --platform linux/amd64 --label "org.opencontainers.image.revision=$sha" -f ".validation/variants/$sha/apps/api/Dockerfile" -t "talk-compare-${name,,}" ".validation/variants/$sha"
             docker image inspect "talk-compare-${name,,}" --format '{{json .}}' > "validation-artifacts/image-$name.json"
           done
           node --input-type=module <<'JS'
           import fs from 'node:fs';
-          const images=Object.fromEntries(['A_ingress','A_worker','B','C'].map(n=>[n,JSON.parse(fs.readFileSync(`validation-artifacts/image-${n}.json`)).Id]));
+          const images=Object.fromEntries(['A_ingress','A_worker','B','C','D'].map(n=>[n,JSON.parse(fs.readFileSync(`validation-artifacts/image-${n}.json`)).Id]));
           fs.writeFileSync('validation-artifacts/images.json',JSON.stringify(images,null,2));
           JS
-      - name: Execute fixed twelve slots, preserving slow and failed outcomes
+      - name: Diagnose C enabled, instrumented C enabled and disabled
         env:
           TALK_COMPARE_PG_ID: ${{ job.services.postgres.id }}
           TALK_COMPARE_RABBIT_ID: ${{ job.services.rabbitmq.id }}
