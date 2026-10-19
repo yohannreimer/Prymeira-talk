@@ -33,6 +33,14 @@ import {
   GoogleMapsScraperError,
   type GoogleMapsScraperClient
 } from "./google-maps-scraper.client.js";
+import {
+  GOOGLE_EXPANSION_ZOOM,
+  buildExpansionKeywords,
+  primarySearchKeyword,
+  remoteKeywordLine,
+  similarNicheTerms
+} from "./google-search-expansion.js";
+import type { NearbyCitiesLookup } from "./nearby-cities.js";
 
 export const MAX_RECEITA_LEADS = 5_000;
 export const MAX_CSV_BYTES = 5 * 1024 * 1024;
@@ -42,6 +50,7 @@ const CSV_LOOKUP_BATCH_SIZE = 25;
 const GOOGLE_LEASE_MS = 300_000;
 const GOOGLE_MAX_CSV_ROWS = 5_000;
 const GOOGLE_UPSERT_BATCH_SIZE = 100;
+const GOOGLE_EXPANSION_MAX_TIME_SECONDS = 900;
 
 export type CsvUpload = Buffer | Uint8Array | string | AsyncIterable<Uint8Array | Buffer | string>;
 
@@ -88,8 +97,23 @@ const googleJobInputSchema = z.object({
   state: z.string().regex(/^[A-Z]{2}$/),
   latitude: z.number().min(-90).max(90),
   longitude: z.number().min(-180).max(180),
-  maxTimeSeconds: z.number().int().min(180).max(900)
+  maxTimeSeconds: z.number().int().min(180).max(900),
+  minResults: z.number().int().min(0).max(200).default(0)
 });
+
+const expansionKeywordsSchema = z.array(z.object({
+  id: z.string().min(1).max(20),
+  keyword: z.string().min(1).max(300),
+  term: z.string().min(1).max(160),
+  city: z.string().min(1).max(120).nullable()
+})).min(1).max(20);
+
+interface GoogleSearchOriginContext {
+  term: string;
+  city: string | null;
+  expanded: boolean;
+  byInputId?: Record<string, { term: string; city: string | null }>;
+}
 
 function requiredText(value: string, field: string, max = 160) {
   const normalized = value.trim();
@@ -382,7 +406,7 @@ function completeAddress(value: string | null) {
 
 export function parseGoogleMapsCsv(
   csv: string,
-  context: { workspaceId: string; listId: string; city: string; state: string }
+  context: { workspaceId: string; listId: string; city: string; state: string; search?: GoogleSearchOriginContext }
 ) {
   let rows: Record<string, string>[];
   try {
@@ -422,6 +446,10 @@ export function parseGoogleMapsCsv(
     const detailedState = typeof detailedAddress.state === "string" ? detailedAddress.state.trim().toUpperCase() : "";
     const state = /^[A-Z]{2}$/.test(detailedState) ? detailedState : context.state;
     const normalizedPhone = phone?.replace(/\D/g, "") || null;
+    const inputId = optionalCsvText(row, "input_id");
+    const origin = context.search
+      ? (inputId ? context.search.byInputId?.[inputId] : undefined) ?? context.search
+      : undefined;
     const canonicalUrl = canonicalSourceUrl(sourceUrl);
     const sourceDedupeKey = placeId
       ? `maps:place_id:${normalizeSourceIdentity(placeId)}`
@@ -455,7 +483,10 @@ export function parseGoogleMapsCsv(
       sourceSnapshot: {
         ...(placeIdentity ? { placeIdentity } : {}),
         queryCity: context.city,
-        queryState: context.state
+        queryState: context.state,
+        ...(origin && context.search
+          ? { searchTerm: origin.term, searchCity: origin.city, searchExpanded: context.search.expanded }
+          : {})
       }
     });
   }
@@ -491,6 +522,7 @@ export interface LeadsServiceOptions {
   sleep?: (milliseconds: number) => Promise<void>;
   googleMapsClient?: GoogleMapsScraperClient;
   cityGeocoder?: CityGeocoder;
+  nearbyCities?: NearbyCitiesLookup;
   googlePollIntervalMs?: number;
   evolutionClient?: {
     checkWhatsappNumbersAvailability(input: { instanceName: string; numbers: string[] }): Promise<CheckWhatsappNumbersAvailabilityResult>;
@@ -741,42 +773,49 @@ export function createLeadsService(options: LeadsServiceOptions) {
       startedAt: job.startedAt ?? now(),
       completedAt: null
     });
-    try {
-      const remoteGeneration = typeof checkpoint.remoteGeneration === "number" &&
-        Number.isInteger(checkpoint.remoteGeneration) && checkpoint.remoteGeneration > 0
-        ? checkpoint.remoteGeneration
-        : 0;
-      const remoteName = `prymeira-${job.id}-g${remoteGeneration}`;
-      let remoteJobId = typeof checkpoint.remoteJobId === "string" ? checkpoint.remoteJobId : null;
-      let submittedAt = typeof checkpoint.remoteSubmittedAt === "string" ? new Date(checkpoint.remoteSubmittedAt) : null;
+    const client = options.googleMapsClient;
+    const search = input.data;
+
+    async function runRemoteSearch(stage: {
+      prefix: "remote" | "expansion";
+      name: string;
+      keywords: string[];
+      zoom?: number;
+      maxTimeSeconds: number;
+    }) {
+      const jobIdKey = `${stage.prefix}JobId`;
+      const submittedAtKey = `${stage.prefix}SubmittedAt`;
+      let remoteJobId = typeof checkpoint[jobIdKey] === "string" ? checkpoint[jobIdKey] : null;
+      let submittedAt = typeof checkpoint[submittedAtKey] === "string" ? new Date(checkpoint[submittedAtKey]) : null;
       if (!remoteJobId) {
-        const recovered = await options.googleMapsClient.findJobByName(remoteName);
-        const remote = recovered ?? await options.googleMapsClient.createJob({
-          name: remoteName,
-          keywords: [`${input.data.niche} em ${input.data.city}, ${input.data.state}`],
-          latitude: input.data.latitude,
-          longitude: input.data.longitude,
-          maxTimeSeconds: input.data.maxTimeSeconds
+        const recovered = await client.findJobByName(stage.name);
+        const remote = recovered ?? await client.createJob({
+          name: stage.name,
+          keywords: stage.keywords,
+          latitude: search.latitude,
+          longitude: search.longitude,
+          maxTimeSeconds: stage.maxTimeSeconds,
+          ...(stage.zoom === undefined ? {} : { zoom: stage.zoom })
         });
         remoteJobId = remote.id;
         submittedAt = now();
         checkpoint = {
           ...checkpoint,
-          remoteJobId,
-          remoteStatus: "status" in remote ? remote.status : "queued",
-          remoteSubmittedAt: submittedAt.toISOString()
+          [jobIdKey]: remoteJobId,
+          [`${stage.prefix}Status`]: "status" in remote ? remote.status : "queued",
+          [submittedAtKey]: submittedAt.toISOString()
         };
         activeJob = await repository.fencedCheckpointJob(activeJob, { output: checkpoint as Prisma.InputJsonObject }, now(), GOOGLE_LEASE_MS);
         publishJob({ ...toPublishedJob(activeJob), status: "running" });
       }
       if (!submittedAt || Number.isNaN(submittedAt.getTime())) submittedAt = now();
-      const deadline = submittedAt.getTime() + input.data.maxTimeSeconds * 1_000 + 30_000;
+      const deadline = submittedAt.getTime() + stage.maxTimeSeconds * 1_000 + 30_000;
       while (true) {
         if (now().getTime() >= deadline) {
           throw new GoogleMapsScraperError("TIMEOUT", "Google Maps scrape exceeded its overall timeout.", true);
         }
-        const remote = await options.googleMapsClient.getJob(remoteJobId);
-        checkpoint = { ...checkpoint, remoteStatus: remote.status, remotePolledAt: now().toISOString() };
+        const remote = await client.getJob(remoteJobId);
+        checkpoint = { ...checkpoint, [`${stage.prefix}Status`]: remote.status, [`${stage.prefix}PolledAt`]: now().toISOString() };
         activeJob = await repository.fencedCheckpointJob(activeJob, { output: checkpoint as Prisma.InputJsonObject }, now(), GOOGLE_LEASE_MS);
         if (remote.status === "failed") {
           throw new GoogleMapsScraperError("REMOTE_FAILED", "Google Maps scraper reported a failed job.", true);
@@ -784,17 +823,15 @@ export function createLeadsService(options: LeadsServiceOptions) {
         if (remote.status === "succeeded") break;
         await sleep(Math.min(googlePollIntervalMs, Math.max(1, deadline - now().getTime())));
       }
+      return client.download(remoteJobId);
+    }
 
-      const parsed = parseGoogleMapsCsv(await options.googleMapsClient.download(remoteJobId), {
-        workspaceId: job.workspaceId,
-        listId: job.listId,
-        city: input.data.city,
-        state: input.data.state
-      });
-      let processedCount = 0;
-      const expectedTotal = parsed.leads.length + parsed.failedCount;
-      for (let offset = 0; offset < parsed.leads.length; offset += GOOGLE_UPSERT_BATCH_SIZE) {
-        const batch = parsed.leads.slice(offset, offset + GOOGLE_UPSERT_BATCH_SIZE);
+    let processedCount = 0;
+    let failedCount = 0;
+    let expectedTotal = 0;
+    async function persistLeads(leads: LeadUpsertInput[]) {
+      for (let offset = 0; offset < leads.length; offset += GOOGLE_UPSERT_BATCH_SIZE) {
+        const batch = leads.slice(offset, offset + GOOGLE_UPSERT_BATCH_SIZE);
         await repository.fencedUpsertLeads(activeJob, batch, now(), GOOGLE_LEASE_MS);
         processedCount += batch.length;
         await updateProgress(activeJob, {
@@ -802,17 +839,107 @@ export function createLeadsService(options: LeadsServiceOptions) {
           listId: job.listId,
           totalCount: expectedTotal,
           processedCount,
-          failedCount: parsed.failedCount
+          failedCount
         });
       }
-      const failedCount = processedCount === 0 ? Math.max(parsed.failedCount, 1) : parsed.failedCount;
+    }
+
+    try {
+      const remoteGeneration = typeof checkpoint.remoteGeneration === "number" &&
+        Number.isInteger(checkpoint.remoteGeneration) && checkpoint.remoteGeneration > 0
+        ? checkpoint.remoteGeneration
+        : 0;
+      const remoteName = `prymeira-${job.id}-g${remoteGeneration}`;
+      const parsed = parseGoogleMapsCsv(await runRemoteSearch({
+        prefix: "remote",
+        name: remoteName,
+        keywords: [primarySearchKeyword(search).keyword],
+        maxTimeSeconds: search.maxTimeSeconds
+      }), {
+        workspaceId: job.workspaceId,
+        listId: job.listId,
+        city: search.city,
+        state: search.state,
+        search: { term: search.niche, city: search.city, expanded: false }
+      });
+      let downloadedRows = parsed.totalCount;
+      failedCount = parsed.failedCount;
+      expectedTotal = parsed.leads.length + parsed.failedCount;
+      await persistLeads(parsed.leads);
+      const primaryCount = processedCount;
+
+      if (search.minResults > 0 && primaryCount < search.minResults) {
+        try {
+          const persistedKeywords = expansionKeywordsSchema.safeParse(checkpoint.expansionKeywords);
+          let keywords = persistedKeywords.success ? persistedKeywords.data : null;
+          if (!keywords) {
+            let nearbyCities: string[] = [];
+            let nearbyUnavailable = false;
+            try {
+              nearbyCities = await options.nearbyCities?.nearby(search.city, search.state) ?? [];
+            } catch {
+              nearbyUnavailable = true;
+            }
+            keywords = buildExpansionKeywords({
+              niche: search.niche,
+              city: search.city,
+              state: search.state,
+              nearbyCities,
+              similarTerms: similarNicheTerms(search.niche, parsed.leads.map((lead) => lead.category))
+            });
+            checkpoint = {
+              ...checkpoint,
+              expansionKeywords: keywords,
+              ...(nearbyUnavailable ? { expansionNearbyUnavailable: true } : {})
+            };
+            activeJob = await repository.fencedCheckpointJob(activeJob, { output: checkpoint as Prisma.InputJsonObject }, now(), GOOGLE_LEASE_MS);
+          }
+          const expanded = parseGoogleMapsCsv(await runRemoteSearch({
+            prefix: "expansion",
+            name: `${remoteName}-x`,
+            keywords: keywords.map(remoteKeywordLine),
+            zoom: GOOGLE_EXPANSION_ZOOM,
+            maxTimeSeconds: GOOGLE_EXPANSION_MAX_TIME_SECONDS
+          }), {
+            workspaceId: job.workspaceId,
+            listId: job.listId,
+            city: search.city,
+            state: search.state,
+            search: {
+              term: search.niche,
+              city: null,
+              expanded: true,
+              byInputId: Object.fromEntries(keywords.map((keyword) => [keyword.id, { term: keyword.term, city: keyword.city }]))
+            }
+          });
+          const primaryKeys = new Set(parsed.leads.map((lead) => lead.sourceDedupeKey));
+          const fresh = expanded.leads.filter((lead) => !primaryKeys.has(lead.sourceDedupeKey));
+          downloadedRows += expanded.totalCount;
+          failedCount += expanded.failedCount;
+          expectedTotal += fresh.length + expanded.failedCount;
+          await persistLeads(fresh);
+          checkpoint = { ...checkpoint, expansionAddedCount: fresh.length };
+        } catch (error) {
+          if (error instanceof LeadLeaseLostError) throw error;
+          if (!(error instanceof GoogleMapsScraperError) && !(error instanceof LeadsDomainError)) throw error;
+          if (primaryCount === 0) throw error;
+          // A busca original já trouxe resultados; uma falha na ampliação não derruba a lista.
+          checkpoint = {
+            ...checkpoint,
+            expansionError: error instanceof GoogleMapsScraperError ? googleFailure(error) : "LEAD_GOOGLE_INVALID_RESPONSE"
+          };
+        }
+      }
+
+      if (processedCount === 0) failedCount = Math.max(failedCount, 1);
       const totalCount = processedCount + failedCount;
       const status = processedCount === 0 ? "failed" : failedCount > 0 ? "partial" : "completed";
       return finishJob(activeJob, {
         status,
         output: {
           ...checkpoint,
-          downloadedRows: parsed.totalCount,
+          downloadedRows,
+          primaryCount,
           totalCount,
           processedCount,
           failedCount,
@@ -991,7 +1118,8 @@ export function createLeadsService(options: LeadsServiceOptions) {
         niche: request.data.niche,
         city: normalizeTextForDedupe(request.data.city),
         state: request.data.state,
-        maxTimeSeconds: request.data.maxTimeSeconds
+        maxTimeSeconds: request.data.maxTimeSeconds,
+        minResults: request.data.minResults
       }));
       const replay = await repository.findJobByIdempotency(
         workspaceId,
@@ -1024,7 +1152,8 @@ export function createLeadsService(options: LeadsServiceOptions) {
           state: place.state,
           latitude: place.latitude,
           longitude: place.longitude,
-          maxTimeSeconds: request.data.maxTimeSeconds
+          maxTimeSeconds: request.data.maxTimeSeconds,
+          minResults: request.data.minResults
         },
         idempotencyKey: request.data.idempotencyKey
       });

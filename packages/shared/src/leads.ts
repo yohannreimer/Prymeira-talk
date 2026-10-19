@@ -77,13 +77,17 @@ export const leadSearchFiltersSchema = z
   });
 export type LeadSearchFilters = z.infer<typeof leadSearchFiltersSchema>;
 
+export const DEFAULT_GOOGLE_MIN_RESULTS = 30;
+
 export const leadGoogleSearchRequestSchema = z.object({
   name: z.string().trim().min(1).max(160),
   niche: z.string().trim().min(1).max(160),
   city: z.string().trim().min(1).max(120),
   state: z.string().trim().toUpperCase().regex(/^[A-Z]{2}$/),
   idempotencyKey: z.string().trim().min(1).max(200),
-  maxTimeSeconds: z.coerce.number().int().min(180).max(900).default(600)
+  maxTimeSeconds: z.coerce.number().int().min(180).max(900).default(600),
+  // Abaixo deste número de empresas a busca é ampliada para termos parecidos e cidades vizinhas; 0 desliga.
+  minResults: z.coerce.number().int().min(0).max(200).default(DEFAULT_GOOGLE_MIN_RESULTS)
 });
 export type LeadGoogleSearchRequest = z.infer<typeof leadGoogleSearchRequestSchema>;
 
@@ -180,6 +184,11 @@ export const leadResultSchema = z.object({
   latitude: z.number().finite().nullable(),
   longitude: z.number().finite().nullable(),
   sourceUrl: z.string().url().nullable(),
+  searchOrigin: z.object({
+    term: z.string(),
+    city: z.string().nullable(),
+    expanded: z.boolean()
+  }).nullish(),
   whatsappStatus: leadWhatsappStatusSchema,
   whatsappVerifications: z.array(z.object({
     normalizedPhone: z.string().min(1),

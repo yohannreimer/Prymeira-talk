@@ -75,6 +75,16 @@ describe("GoogleMapsScraperClient", () => {
     expect(JSON.parse(String(calls[1]?.[1]?.body))).not.toHaveProperty("concurrency");
   });
 
+  it("forwards a bounded zoom for widened searches", async () => {
+    const fetch = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => response({ id: "job-x" }));
+    const client = createGoogleMapsScraperClient({ baseUrl: "http://scraper.internal:8080", fetch });
+    const job = { name: "prymeira-job-x", keywords: ["caldeiraria #!#x-r"], latitude: -26.47, longitude: -49, maxTimeSeconds: 900 };
+
+    await client.createJob({ ...job, zoom: 12 });
+    expect(JSON.parse(String(fetch.mock.calls[0]?.[1]?.body))).toMatchObject({ zoom: 12, keywords: ["caldeiraria #!#x-r"] });
+    await expect(client.createJob({ ...job, zoom: 3 })).rejects.toMatchObject({ code: "INVALID_RESPONSE" });
+  });
+
   it("moves URL credentials to a server-only Authorization header and never exposes them in errors", async () => {
     const fetch = vi.fn(async () => response({ message: "secret upstream body apiKey=top-secret" }, { status: 500 }));
     const client = createGoogleMapsScraperClient({

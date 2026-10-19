@@ -47,7 +47,16 @@ describe("LeadsPage", () => {
     expect(api.apiImportLeadContacts).not.toHaveBeenCalled();
   });
 
-  it("disables bulk actions when nothing is selected", async () => {
+  it("offers a search minimum and shows where each widened Maps lead came from", async () => {
+    api.apiGetLeadResults.mockResolvedValue({ items: [{ ...lead, source: "google_maps", cnpj: null, companyName: "Caldeiraria Jaraguá", searchOrigin: { term: "caldeiraria", city: "Jaraguá do Sul", expanded: true } }], page: 1, pageSize: 25, total: 1 });
+    await render();
+    const minimum = [...container.querySelectorAll("label")].find(item => item.textContent?.includes("Mínimo de empresas"))?.querySelector("input");
+    expect(minimum?.value).toBe("30");
+    expect(container.textContent).toContain("Busca ampliada");
+    expect(container.textContent).toContain("Termo: caldeiraria · Cidade: Jaraguá do Sul");
+  });
+
+    it("disables bulk actions when nothing is selected", async () => {
     await render();
     const button = [...container.querySelectorAll("button")].find(item => item.textContent?.includes("Verificar WhatsApp"))!;
     expect(button.disabled).toBe(true);
