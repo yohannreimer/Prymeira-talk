@@ -36,13 +36,14 @@ try{
   try{
    result=await new Promise(resolve=>{
     const child=cp.spawn('pnpm',['exec','vitest','run','tmp/common-load.postgres.test.ts','--maxWorkers=1','--fileParallelism=false','--reporter=default','--reporter=json','--outputFile.json='+path.join(output,'tests.json')],{cwd:api,env:{...env,NODE_OPTIONS:'--import=file://'+path.join(root,'.github/comparison/image-spawn.mjs'),TALK_COMPARE_INGRESS_IMAGE:variant.ingress,TALK_COMPARE_WORKER_IMAGE:variant.worker,TALK_COMPARE_LABEL:label,TALK_LOAD_DIAGNOSTIC_RECOVERY:slot.recovery,TALK_COMPARE_VARIANT:slot.variant,TALK_COMPARE_SLOT:num,TALK_COMPARE_RUNTIME_ARTIFACTS:JSON.stringify({variant,fingerprints})},stdio:['ignore',stdout,stderr]});
-    const timer=setTimeout(()=>{child.kill('SIGTERM');setTimeout(()=>child.kill('SIGKILL'),5000).unref();},310000);child.once('error',e=>{clearTimeout(timer);resolve({exit:null,error:e.name});});child.once('close',(exit,signal)=>{clearTimeout(timer);resolve({exit,signal});});
+    const timer=setTimeout(()=>{child.kill('SIGTERM');setTimeout(()=>child.kill('SIGKILL'),5000).unref();},370000);child.once('error',e=>{clearTimeout(timer);resolve({exit:null,error:e.name});});child.once('close',(exit,signal)=>{clearTimeout(timer);resolve({exit,signal});});
    });
   }finally{stop=true;await sampler;fs.closeSync(stdout);fs.closeSync(stderr);cleanup();}
   write(path.join(output,'docker-samples.json'),samples);
   for(const file of fs.readdirSync(art))if(/^load-observations-\d+\.json$/.test(file)||file==='runtime.log')fs.renameSync(path.join(art,file),path.join(output,file));
   const obsFile=fs.readdirSync(output).find(n=>/^load-observations-/.test(n));const obs=obsFile?JSON.parse(fs.readFileSync(path.join(output,obsFile))):null;
-  const item={...slot,slot:num,...result,elapsedMs:Date.now()-start,executionCompleted:obs?.executionCompleted??false,applicationP95Ms:obs?.applicationMs?.p95??null,ingressP95Ms:obs?.ingressMs?.p95??null,latencyPass:obs?.latencyPass??false,artifact:name};summary.slots.push(item);write(path.join(art,'comparison-summary.json'),summary);console.log('MATCHED_SLOT '+JSON.stringify(item));
+  let failures;try{const tests=JSON.parse(fs.readFileSync(path.join(output,'tests.json')));failures=tests.testResults.flatMap(s=>s.assertionResults.flatMap(t=>t.failureMessages.map(message=>({test:t.title,message}))));}catch(e){failures=[{test:'report',message:e.name}];}
+  const item={...slot,slot:num,failures,...result,elapsedMs:Date.now()-start,executionCompleted:obs?.executionCompleted??false,applicationP95Ms:obs?.applicationMs?.p95??null,ingressP95Ms:obs?.ingressMs?.p95??null,latencyPass:obs?.latencyPass??false,artifact:name};summary.slots.push(item);write(path.join(art,'comparison-summary.json'),summary);console.log('MATCHED_SLOT '+JSON.stringify(item));
  }
 }finally{cleanup();await admin.end();summary.completedAt=new Date().toISOString();summary.allSlotsExecuted=summary.slots.length===12;summary.allObservationsComplete=summary.allSlotsExecuted&&summary.slots.every(s=>s.executionCompleted&&s.exit===0);write(path.join(art,'comparison-summary.json'),summary);}
 if(!summary.allObservationsComplete)process.exitCode=1;

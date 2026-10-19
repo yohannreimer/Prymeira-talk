@@ -190,18 +190,20 @@ describe.skipIf(!databaseUrl || !brokerUrl)('isolated matched VPS comparison (di
       sweepMs = Number(summary![1]); firstTurnRuntimeRecovered = Number(logs.join('').match(/gaps:\s*\{[\s\S]*?counts:\s*\{\s*recovered:\s*(\d+)/)?.[1] ?? -1); expect(firstTurnRuntimeRecovered).toBeGreaterThanOrEqual(0); overlapEndMs = firstSweepFinishedAt - began;
     })();
     try {
+      const offered: Array<Promise<unknown>> = [];
       for (let i = 0; i < 80; i++) {
         const scheduled = began + i * 125; if (Date.now() < scheduled) await new Promise(resolve => setTimeout(resolve, scheduled - Date.now()));
         const id = `${prefix}${i}`, timestamp = Math.floor(Date.now() / 1000); sentAt.set(id, Date.now());
         const evo = upsert(id, { conversation: 'synthetic controlled load' });
         const wa = { event: 'message.any', session: wahaSession, payload: { id: `false_15550001111@c.us_${id}`, from: '15550001111@c.us', fromMe: false, body: 'synthetic controlled load', timestamp } };
-        await Promise.all([
+        offered.push(Promise.all([
           (async () => { const at = Date.now(); const response = await post(`/webhooks/evolution/${workspaceId}`, evo); expect(response.status).toBe(202); const receiptId = (await response.json() as { receiptId: string }).receiptId, acceptedAt = Date.now(); receiptSentAt.set(receiptId, at); envelopeDetails.set(receiptId, { sequence: i, provider: 'evolution', sentAt: at, acceptedAt }); acceptMs.push(acceptedAt - at); })(),
           (async () => { const at = Date.now(); const bytes = JSON.stringify(wa); const response = await post(`/webhooks/waha/${workspaceId}`, wa, { 'x-webhook-hmac-algorithm': 'sha512', 'x-webhook-hmac': createHmac('sha512', 'rehearsal-waha-secret-1234567').update(bytes).digest('hex') }); expect(response.status).toBe(202); const receiptId = (await response.json() as { receiptId: string }).receiptId, acceptedAt = Date.now(); receiptSentAt.set(receiptId, at); envelopeDetails.set(receiptId, { sequence: i, provider: 'waha', sentAt: at, acceptedAt }); acceptMs.push(acceptedAt - at); })()
-        ]);
+        ]));
       }
       if (Date.now() < began + 10_000) await new Promise(resolve => setTimeout(resolve, began + 10_000 - Date.now()));
       const trafficDurationMs = Date.now() - began;
+      await Promise.all(offered);
       await recovery;
       const firstTurnCounts = new Map(counts);
       const yielded = await db.channelConnection.findMany({ where: { id: { in: recoveryConnections.map(c => c.id) } }, select: { id: true, historyRecoveryFailures: true, recoveredThroughAt: true, historyRecoveryNextAttemptAt: true, historyRecoveryLeaseToken: true, historyRecoveryLeaseUntil: true, historyRecoveryCursor: true } });
@@ -253,10 +255,24 @@ describe.skipIf(!databaseUrl || !brokerUrl)('isolated matched VPS comparison (di
       await writeFile(diagnosticPath, JSON.stringify(observations, null, 2));
       console.info('SYNTHETIC_LOAD_OBSERVATIONS', JSON.stringify({ file: diagnosticPath, ingressMs: observations.ingressMs, applicationMs: observations.applicationMs, overlapApplicationMs: observations.overlapApplicationMs, visibilityDelayMs: observations.visibilityDelayMs, pollQueryMs: observations.pollQueryMs, pollGapMs: observations.pollGapMs, sweep: observations.sweep }));
       expect(acceptMs).toHaveLength(160);
-      const historical = await db.ingressEffect.findMany({ where: { workspaceId, messageId: { in: identities.filter(i => recoveredIds.includes(i.rawId)).map(i => i.messageId) } } });
+      let recoveryCompletion: unknown = { enabled: false };
+      if (!diagnosticControl) {
+        const resumeStartedAt = new Date().toISOString();
+        const freshConnections = await db.channelConnection.findMany({ where: { id: { in: recoveryConnections.map(c=>c.id) } } });
+        const toResume = freshConnections.filter(c=>c.recoveredThroughAt!.getTime() <= recoveryConnections.find(original=>original.id===c.id)!.recoveredThroughAt!.getTime());
+        if (toResume.length) await db.channelConnection.updateMany({ where: { id: { in: toResume.map(c=>c.id) } }, data: { historyRecoveryNextAttemptAt: null } });
+        await until(() => db.channelConnection.count({ where: { OR: recoveryConnections.map(c=>({ id: c.id, recoveredThroughAt: { gt: c.recoveredThroughAt! }, historyRecoveryLeaseToken: null })) } }), n=>n===3, 90_000);
+        const finalRows = await db.canonicalMessageIdentity.findMany({ where: { workspaceId, rawId: { in: recoveredIds } } });
+        expect(finalRows.map(r=>r.rawId).sort()).toEqual([...recoveredIds].sort());
+        recoveryCompletion = { enabled: true, resumeStartedAt, completedAt: new Date().toISOString(), fixtureRescheduledConnectionCount: toResume.length,
+          recoveredIdentities: finalRows.length, state: await db.channelConnection.findMany({ where: { id: { in: recoveryConnections.map(c=>c.id) } } }) };
+      }
+      const allIdentities = await db.canonicalMessageIdentity.findMany({ where: { workspaceId, rawId: { startsWith: prefix } } });
+      expect(allIdentities.length).toBe(diagnosticControl ? 80 : 83);
+      const historical = await db.ingressEffect.findMany({ where: { workspaceId, messageId: { in: allIdentities.filter(i => recoveredIds.includes(i.rawId)).map(i => i.messageId) } } });
       const historicalByKind = Object.fromEntries([...new Set(historical.map(e=>e.kind))].map(kind=>[kind,historical.filter(e=>e.kind===kind).length]));
       expect(historical.every(e => ['realtime.message','realtime.conversation','media.prepare'].includes(e.kind) && e.receiptId === null)).toBe(true);
-      const beforeIdentities = identities.length;
+      const beforeIdentities = allIdentities.length;
       const before = await db.ingressEffect.count({ where: { workspaceId } });
       const worker = recoveryWorker; worker.kill('SIGTERM'); await until(async () => worker.exitCode, value => value !== null);
       const restarted = spawn(process.execPath, ['dist/ingress-worker.js'], { cwd: process.cwd(), env: { ...runtimeEnv, INGRESS_RECOVERY_ENABLED: 'false' }, stdio: 'pipe' }); children.push(restarted);
@@ -271,11 +287,11 @@ describe.skipIf(!databaseUrl || !brokerUrl)('isolated matched VPS comparison (di
       const cpuWindowSeconds = resources.at(-1)!.cpuPercent - resources[0]!.cpuPercent;
       const resourceDurationMs = resources.at(-1)!.elapsedMs - resources[0]!.elapsedMs;
       const finalResult = { ...observations, executionCompleted: true, latencyPass: ingressP95Ms < 500 && applicationP95Ms < 2000,
-        recoveryState: yielded, historicalEffects: historicalByKind, autonomousHistoricalEffects: 0, restartDuplicatePreserved: true,
+        recoveryState: yielded, recoveryCompletion, finalOracleIdentities: allIdentities.length, offeredLoad: { mode: 'open-loop', pairs: 80, envelopes: 160, intervalMs: 125, offerWindowMs: trafficDurationMs }, historicalEffects: historicalByKind, autonomousHistoricalEffects: 0, restartDuplicatePreserved: true,
         totalProviderCalls: [...counts.values()].reduce((a,b)=>a+b,0)+versionRequests, completedLiveIdentities: 80,
         boundary: 'Common observational harness, not release qualification. Recovery callbacks/cursor guarantees differ by version and are observed rather than presumed.' };
       await writeFile(diagnosticPath, JSON.stringify(finalResult,null,2));
     } finally { observingStopped = true; await observing; clearInterval(sampler); await recovery; await new Promise<void>(resolve => provider.close(() => resolve())); }
-  }, 240_000);
+  }, 300_000);
 
 });
