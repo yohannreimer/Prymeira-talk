@@ -112,6 +112,7 @@ import { createBuyerAgent, createBuyerAgentPoller, type BuyerAgent } from "./mod
 import { createPurchasingService } from "./modules/purchasing/purchasing.service.js";
 import { modeloDoHarness } from "./modules/harness/agentes/atendimento/producao.js";
 import { createCityGeocoder } from "./modules/leads/city-geocoder.js";
+import { createNearbyCitiesLookup } from "./modules/leads/nearby-cities.js";
 import { createGoogleMapsScraperClient } from "./modules/leads/google-maps-scraper.client.js";
 
 export interface CreateAppOptions {
@@ -291,6 +292,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
             })
           : undefined,
         cityGeocoder: createCityGeocoder(),
+        nearbyCities: createNearbyCitiesLookup(),
         evolutionClient: evolutionRuntime.client?.checkWhatsappNumbersAvailability
           ? {
               checkWhatsappNumbersAvailability: evolutionRuntime.client.checkWhatsappNumbersAvailability.bind(evolutionRuntime.client)

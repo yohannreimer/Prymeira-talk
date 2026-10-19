@@ -8680,6 +8680,7 @@ select:disabled {
 .leads-results-table td span:has(svg) { display: flex; align-items: center; gap: 4px; }
 .leads-results-table input[type="checkbox"], .leads-similar-item input[type="checkbox"] { accent-color: #276b4c; }
 .leads-chip { display: inline-block !important; width: fit-content; border-radius: 99px; background: #e8f0ea; color: #476351; padding: 3px 7px; white-space: nowrap; font-size: 10px; font-weight: 750; }
+.leads-chip.is-expanded { background: #fff4d6; color: #8a6116; margin-left: 4px; }
 .leads-chip.whatsapp-available { background: #ddf4e3; color: #18713d; }
 .leads-chip.whatsapp-unavailable, .leads-chip.whatsapp-failed { background: #fff0e4; color: #996027; }
 .leads-row-actions a, .leads-row-actions button { display: inline-flex; align-items: center; gap: 4px; border: 0; background: none; padding: 2px 0; color: #256c4b; text-decoration: none; font-size: 11px; font-weight: 650; }

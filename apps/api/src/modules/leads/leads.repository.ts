@@ -198,6 +198,17 @@ export function toLeadJobDto(record: LeadJob): LeadJobDto {
   };
 }
 
+function searchOriginFromSnapshot(value: Prisma.JsonValue | null | undefined): LeadResultDto["searchOrigin"] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const snapshot = value as Record<string, unknown>;
+  if (typeof snapshot.searchTerm !== "string" || !snapshot.searchTerm.trim()) return null;
+  return {
+    term: snapshot.searchTerm,
+    city: typeof snapshot.searchCity === "string" && snapshot.searchCity.trim() ? snapshot.searchCity : null,
+    expanded: snapshot.searchExpanded === true
+  };
+}
+
 export function toLeadResultDto(
   record: Lead,
   whatsappVerifications: LeadResultDto["whatsappVerifications"] = []
@@ -230,6 +241,7 @@ export function toLeadResultDto(
     latitude: record.latitude,
     longitude: record.longitude,
     sourceUrl: record.sourceUrl,
+    searchOrigin: searchOriginFromSnapshot(record.sourceSnapshot),
     whatsappStatus: aggregateLeadWhatsappStatus(phones.size, whatsappVerifications.map((item) => item.status)),
     whatsappVerifications,
     createdAt: toIso(record.createdAt),
@@ -867,7 +879,11 @@ export class LeadsRepository {
         "LEAD_GOOGLE_TIMEOUT",
         "LEAD_GOOGLE_PARTIAL_ROWS"
       ].includes(current.errorMessage ?? "")) {
-        for (const key of ["remoteJobId", "remoteStatus", "remoteSubmittedAt", "remotePolledAt"]) delete output[key];
+        for (const key of [
+          "remoteJobId", "remoteStatus", "remoteSubmittedAt", "remotePolledAt",
+          "expansionJobId", "expansionStatus", "expansionSubmittedAt", "expansionPolledAt",
+          "expansionKeywords", "expansionNearbyUnavailable", "expansionAddedCount", "expansionError"
+        ]) delete output[key];
         output.remoteGeneration = previousGeneration + 1;
       }
       output.retryRequestedAt = now.toISOString();

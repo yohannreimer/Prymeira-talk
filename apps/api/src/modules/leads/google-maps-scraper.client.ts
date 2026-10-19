@@ -24,6 +24,7 @@ export interface GoogleMapsScraperJobInput {
   latitude: number;
   longitude: number;
   maxTimeSeconds: number;
+  zoom?: number;
 }
 
 export interface GoogleMapsScraperJob {
@@ -191,6 +192,10 @@ export function createGoogleMapsScraperClient(options: GoogleMapsScraperClientOp
           !Number.isFinite(input.longitude) || input.longitude < -180 || input.longitude > 180) {
         throw invalidResponse("Google Maps scraper coordinates are invalid.");
       }
+      const zoom = input.zoom ?? 15;
+      if (!Number.isInteger(zoom) || zoom < 10 || zoom > 18) {
+        throw invalidResponse("Google Maps scraper zoom must be between 10 and 18.");
+      }
       const payload = await json("/api/v1/jobs", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -198,7 +203,7 @@ export function createGoogleMapsScraperClient(options: GoogleMapsScraperClientOp
           name: input.name.trim(),
           keywords: input.keywords.map((keyword) => keyword.trim()),
           lang: "pt",
-          zoom: 15,
+          zoom,
           lat: String(input.latitude),
           lon: String(input.longitude),
           fast_mode: false,
