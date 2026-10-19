@@ -1,4 +1,4 @@
-name: Isolated admission and recovery diagnosis
+name: Isolated visible message comparison
 on:
   workflow_dispatch:
 permissions:
@@ -6,7 +6,7 @@ permissions:
 jobs:
   compare:
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 65
     services:
       postgres:
         image: postgres:16.13-alpine@sha256:4e6e670bb069649261c9c18031f0aded7bb249a5b6664ddec29c013a89310d50
@@ -49,13 +49,22 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @prymeira-talk/api exec prisma generate --schema prisma/schema.prisma
+      - name: Python browser tooling
+        run: |
+          python3 -m pip install playwright==1.64.0
+          python3 -m playwright install --with-deps chromium
       - name: Verify owned comparison tooling
         run: node --test .github/comparison/isolation.test.mjs .github/comparison/deadline.test.mjs
+      - name: Verify composed current API candidate
+        run: |
+          pnpm --filter @prymeira-talk/api typecheck
+          pnpm --filter @prymeira-talk/api exec vitest run src/modules/channels/outbound-router.test.ts src/modules/followups/contextual-followup-policy.test.ts src/modules/followups/contextual-followup-engine.test.ts src/modules/followups/contextual-followup-context.test.ts src/modules/followups/contextual-followup-profiles.test.ts src/modules/harness/agentes/followup/followup.test.ts --maxWorkers=1 --fileParallelism=false
+          pnpm --filter @prymeira-talk/api harness:replay-contextual-followups
       - name: Fetch immutable source revisions, without production access
         run: |
           set -eu
           mkdir -p validation-artifacts .validation/variants
-          for sha in 99f65ed54a2ca729434b39786bdcb6394d8f9388 51b1fdd75341013b613737e61d3e89b787cec8be 1d7aa19ed9c4a48532937408b9ece782c53d5cd6 4c718f6f8b3450e1633697bef5e45381ab813dcb da7a017ad53d3265396ec41e8fde8c49e360215f; do
+          for sha in 99f65ed54a2ca729434b39786bdcb6394d8f9388 51b1fdd75341013b613737e61d3e89b787cec8be 1d7aa19ed9c4a48532937408b9ece782c53d5cd6 c9d49c82d6d64131921588dbf79166ee254f067e f2ff10305183d0a866d2564067f82f520dc7258b; do
             git fetch --no-tags origin "$sha"
             mkdir -p ".validation/variants/$sha"
             git archive "$sha" | tar -x -C ".validation/variants/$sha"
@@ -67,22 +76,25 @@ jobs:
           set -eu
           docker pull node:22-alpine
           docker image inspect node:22-alpine --format '{{json .}}' > validation-artifacts/common-node-base.json
-          for pair in A_ingress:99f65ed54a2ca729434b39786bdcb6394d8f9388 A_worker:51b1fdd75341013b613737e61d3e89b787cec8be B:1d7aa19ed9c4a48532937408b9ece782c53d5cd6 C:4c718f6f8b3450e1633697bef5e45381ab813dcb E:da7a017ad53d3265396ec41e8fde8c49e360215f; do
+          for pair in A_ingress:99f65ed54a2ca729434b39786bdcb6394d8f9388 A_worker:51b1fdd75341013b613737e61d3e89b787cec8be A_api:c9d49c82d6d64131921588dbf79166ee254f067e N:f2ff10305183d0a866d2564067f82f520dc7258b; do
             name=${pair%%:*}
             sha=${pair#*:}
             docker build --platform linux/amd64 --label "org.opencontainers.image.revision=$sha" -f ".validation/variants/$sha/apps/api/Dockerfile" -t "talk-compare-${name,,}" ".validation/variants/$sha"
             docker image inspect "talk-compare-${name,,}" --format '{{json .}}' > "validation-artifacts/image-$name.json"
           done
-          node --input-type=module <<'JS'
+          docker build --platform linux/amd64 -f ".validation/variants/1d7aa19ed9c4a48532937408b9ece782c53d5cd6/apps/web/Dockerfile" -t talk-compare-web ".validation/variants/1d7aa19ed9c4a48532937408b9ece782c53d5cd6"
+          docker image inspect talk-compare-web --format '{{json .}}' > validation-artifacts/image-web.json
+          node --input-type=module <<'JS' 
           import fs from 'node:fs';
-          const images=Object.fromEntries(['A_ingress','A_worker','B','C','E'].map(n=>[n,JSON.parse(fs.readFileSync(`validation-artifacts/image-${n}.json`)).Id]));
+          const images=Object.fromEntries(['A_ingress','A_worker','A_api','N','web'].map(n=>[n,JSON.parse(fs.readFileSync(`validation-artifacts/image-${n}.json`)).Id]));
           fs.writeFileSync('validation-artifacts/images.json',JSON.stringify(images,null,2));
           JS
-      - name: Repeat exact offer windows and isolate ingress CPU quota
+      - name: Pilot actual visible UI with current VPS and candidate
         env:
+          UI_COMPARISON_PILOT: true
           TALK_COMPARE_PG_ID: ${{ job.services.postgres.id }}
           TALK_COMPARE_RABBIT_ID: ${{ job.services.rabbitmq.id }}
-        run: node .github/comparison/run.mjs
+        run: node .github/ui-comparison/run.mjs
       - name: Stop only comparison-labelled containers
         if: always()
         run: |
@@ -92,7 +104,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: matched-vps-comparison-${{ github.sha }}
+          name: visible-message-comparison-${{ github.sha }}
           path: validation-artifacts/
           if-no-files-found: error
           retention-days: 3
