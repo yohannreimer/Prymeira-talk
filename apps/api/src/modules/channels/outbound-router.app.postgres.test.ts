@@ -81,12 +81,17 @@ describe.skipIf(!databaseUrl)('human sends travel through the outbound router in
     } finally { await f.app.close(); }
   });
 
-  it('records a provably unsent failure as failed (the session was closed)', async () => {
+  it('holds HTTP500 Connection Closed as unresolved uncertainty because response text does not prove the send phase', async () => {
     mode = 'closed'; requests.length = 0;
     const f = await boot(true);
     try {
       expect((await reply(f, 'Olá!')).statusCode).toBeGreaterThanOrEqual(400);
-      expect(await dispatches(f.workspaceId)).toEqual([expect.objectContaining({ state: 'failed', errorCode: 'HTTP_500' })]);
+      const rows = await dispatches(f.workspaceId);
+      expect(rows).toEqual([expect.objectContaining({ state: 'uncertain', resolvedAt: null, errorCode: 'HTTP_500' })]);
+      const review = await f.app.inject({ method: 'GET', url: '/channels/outbound-review', headers: auth });
+      expect(review.statusCode).toBe(200);
+      expect(review.json().items).toEqual([expect.objectContaining({ id: rows[0]!.id, preview: 'Olá!', errorCode: 'HTTP_500' })]);
+      expect(requests.filter(r => r.startsWith('POST /message/sendText/'))).toHaveLength(1);
     } finally { await f.app.close(); }
   });
 
