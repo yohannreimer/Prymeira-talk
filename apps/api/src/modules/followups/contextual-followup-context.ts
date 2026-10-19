@@ -101,7 +101,7 @@ export function createContextualFollowupContextBuilder(db: ContextualFollowupSto
       if (mediaRows.some(m => m.workspaceId !== input.workspaceId || !allowedConversationIds.includes(m.conversationId) || !visibleIds.has(m.messageId))) return unavailable("invalid_evidence", "media_scope_mismatch");
       if (visibleRaw.some(message => pendingMedia(message, mediaRows.find(m => m.messageId === message.id)?.transcriptionState))) return unavailable("invalid_evidence", "pending_media");
       const messages = history.messages.map(message => {
-        const extractedText = asRecord(asRecord(visibleRaw.find(m => m.id === message.id)?.metadata).media).extractedText;
+        const extractedText = asRecord(asRecord(visibleRaw.find(m => m.id === message.id)?.metadata).inboundMedia).extractedText;
         return typeof extractedText === "string" && extractedText.trim() && !message.body?.includes(extractedText)
           ? { ...message, body: [message.body, extractedText].filter(Boolean).join("\n\n") } : message;
       });
@@ -160,7 +160,7 @@ export function createContextualFollowupContextBuilder(db: ContextualFollowupSto
           followupConfig: conversation.channel.followupConfig }),
         conversation: policyRecord({ workspaceId: conversation.workspaceId, id: conversation.id, channelId: conversation.channelId,
           contactId: conversation.contactId, status: conversation.status, aiControlStatus: conversation.aiControlStatus,
-          assignedUserId: conversation.assignedUserId, activeAgentSessionId: conversation.activeAgentSessionId,
+          aiControlUpdatedAt: conversation.aiControlUpdatedAt, assignedUserId: conversation.assignedUserId, activeAgentSessionId: conversation.activeAgentSessionId,
           historyResetAt: conversation.historyResetAt, retiredIntoConversationId: conversation.retiredIntoConversationId,
           contactIsGroup: conversation.contact.isGroup, contactPhone: conversation.contact.phone }),
         session: session ? policyRecord({ workspaceId: session.workspaceId, id: session.id, agentId: session.agentId,
@@ -187,7 +187,10 @@ export function createContextualFollowupContextBuilder(db: ContextualFollowupSto
   };
 }
 
-function pendingMedia(message: { type: string; body: string | null; metadata: unknown }, transcriptionState?: string | null) {
+function pendingMedia(message: { direction: string; type: string; body: string | null; metadata: unknown }, transcriptionState?: string | null) {
+  // Company files/audio do not run through inbound extraction. Their caption is
+  // history evidence; unseen attachment content remains unknown.
+  if (message.direction !== "inbound") return false;
   const metadata = asRecord(message.metadata);
   if (message.type === "audio") {
     return (transcriptionState != null && transcriptionState !== "completed")
@@ -195,7 +198,7 @@ function pendingMedia(message: { type: string; body: string | null; metadata: un
       || !message.body?.trim() || /^(Áudio recebido|Processando áudio\.{3}|\[áudio sem transcrição\])$/i.test(message.body.trim());
   }
   if (!["image", "document", "video", "file"].includes(message.type)) return false;
-  const media = asRecord(metadata.media);
+  const media = asRecord(metadata.inboundMedia);
   return media.status !== "processed" || typeof media.extractedText !== "string" || !media.extractedText.trim();
 }
 

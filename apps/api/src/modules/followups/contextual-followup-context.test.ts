@@ -7,7 +7,7 @@ function fixture() {
     { id: "seller", workspaceId: "w", conversationId: "c", direction: "outbound", type: "text", body: "Qual horário prefere?", createdAt: new Date("2026-10-19T12:01Z"), metadata: {} }
   ];
   const agent = { id: "a", workspaceId: "w", name: "Any name", type: "attendance", status: "active", systemPrompt: "x".repeat(4500) + " REGRA FINAL", handoffConfig: { prospectingGoal: "Convidar para conversa" }, behaviorConfig: { contextualFollowup: { enabled: true } }, allowedActions: ["request_handoff"], limitsConfig: { max: 4 } };
-  const conversation = { id: "c", channelId: "channel", workspaceId: "w", activeAgentSessionId: "s", status: "open", aiControlStatus: "agent_allowed", assignedUserId: null, channel: { id: "channel", workspaceId: "w", provider: "evolution", status: "connected", encryptedConfig: {} as Record<string, unknown>, followupConfig: { enabled: true, steps: [{ afterMinutes: 120 }] } }, contact: { isGroup: false, phone: "5511999991111" } };
+  const conversation = { id: "c", channelId: "channel", workspaceId: "w", activeAgentSessionId: "s", status: "open", aiControlStatus: "agent_allowed", aiControlUpdatedAt: null as Date | null, assignedUserId: null, channel: { id: "channel", workspaceId: "w", provider: "evolution", status: "connected", encryptedConfig: {} as Record<string, unknown>, followupConfig: { enabled: true, steps: [{ afterMinutes: 120 }] } }, contact: { isGroup: false, phone: "5511999991111" } };
   const session = { id: "s", workspaceId: "w", agentId: "a", conversationId: "c", status: "active", firstResponseMessageId: "anchor", prospectingGeneration: "g", sourceRecipientId: "r", metadata: { harness: { ficha: { secret: "NEVER REUSE" } } } };
   const sources = [
     { id: "fact", workspaceId: "w", agentId: "a", status: "ready", title: "Oferta", content: "Somente o serviço aprovado", metadata: { approvalStatus: "confirmed" } },
@@ -90,7 +90,7 @@ describe("isolated contextual follow-up context", () => {
 
   it("includes verified extracted attachment text and completed audio without performing extraction", async () => {
     const f = fixture(); f.messages[0]!.type = "document";
-    f.messages[0]!.metadata = { media: { status: "processed", extractedText: "Dado técnico efetivamente extraído" } };
+    f.messages[0]!.metadata = { inboundMedia: { kind: "document", status: "processed", extractedText: "Dado técnico efetivamente extraído" } };
     let result = await f.build()(f.request);
     expect(result.status === "ready" && result.context.messages[0]!.body).toContain("Dado técnico efetivamente extraído");
     f.messages[0]!.type = "audio"; f.messages[0]!.metadata = { transcription: { status: "completed" } };
@@ -238,6 +238,48 @@ describe("isolated contextual follow-up context", () => {
     expect(first.status === "ready" && JSON.stringify(first.policyInputs)).toBe(reordered.status === "ready" && JSON.stringify(reordered.policyInputs));
     f.agent.behaviorConfig = { a: 2, b: 2 } as never;
     expect(first.status === "ready" && first.policyInputs.agent.behaviorConfig).toEqual({ a: 1, b: 2 });
+  });
+
+  it.each(["file", "image"])("reads production inboundMedia for a processed %s", async type => {
+    const f = fixture(); f.messages[0]!.type = type;
+    f.messages[0]!.metadata = { inboundMedia: { kind: type === "file" ? "document" : "image", status: "processed", extractedText: "Conteúdo extraído completo" } };
+    const result = await f.build()(f.request);
+    expect(result.status).toBe("ready");
+    expect(result.status === "ready" && result.context.messages[0]!.body).toContain("Conteúdo extraído completo");
+  });
+
+  it.each(["pending", "failed", "missing_text"])("abstains on incomplete production inboundMedia: %s", async state => {
+    const f = fixture(); f.messages[0]!.type = "file";
+    f.messages[0]!.metadata = {
+      inboundMedia: { kind: "document", status: state === "missing_text" ? "processed" : state, ...(state === "missing_text" ? {} : { extractedText: "Texto parcial" }) },
+      media: { status: "processed", extractedText: "Wrong metadata contract must not override actual state" }
+    };
+    expect(await f.build()(f.request)).toMatchObject({ status: "unavailable", reason: "invalid_evidence", detail: "pending_media" });
+  });
+
+  it("fences otherwise identical authority snapshots by aiControlUpdatedAt after takeover and resume", async () => {
+    const f = fixture(); f.conversation.aiControlUpdatedAt = new Date("2026-10-19T12:00Z");
+    const before = await f.build()(f.request);
+    f.conversation.aiControlUpdatedAt = new Date("2026-10-19T14:00Z");
+    const after = await f.build()(f.request);
+    expect(before.status).toBe("ready"); expect(after.status).toBe("ready");
+    if (before.status !== "ready" || after.status !== "ready") return;
+    expect(before.context).toEqual(after.context);
+    expect(before.policyInputs.conversation.aiControlUpdatedAt).toBe("2026-10-19T12:00:00.000Z");
+    expect(after.policyInputs.conversation.aiControlUpdatedAt).toBe("2026-10-19T14:00:00.000Z");
+    expect(JSON.stringify(before.policyInputs)).not.toBe(JSON.stringify(after.policyInputs));
+    expect({ ...before.policyInputs.conversation, aiControlUpdatedAt: null }).toEqual({ ...after.policyInputs.conversation, aiControlUpdatedAt: null });
+  });
+
+  it("preserves a sent company PDF caption without requiring inbound extraction or inventing its content", async () => {
+    const f = fixture();
+    f.messages[1]!.type = "file"; f.messages[1]!.body = "Segue o catálogo para sua avaliação";
+    Object.assign(f.messages[1]!, { status: "sent", metadata: {} });
+    const result = await f.build()(f.request);
+    expect(result.status).toBe("ready");
+    if (result.status !== "ready") return;
+    expect(result.context.messages[1]).toMatchObject({ id: "seller", label: "atendente", type: "file", body: "Segue o catálogo para sua avaliação" });
+    expect(result.context.messages[1]!.body).not.toMatch(/extraído|preço|especificação|conteúdo do PDF/);
   });
 
   it("counts only scoped confirmed sent attempts returned for the lifecycle's sequence", async () => {
