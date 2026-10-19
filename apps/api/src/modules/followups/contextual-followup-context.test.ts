@@ -1,0 +1,162 @@
+import { describe, expect, it, vi } from "vitest";
+import { createContextualFollowupContextBuilder, type ContextualFollowupStore } from "./contextual-followup-context.js";
+
+function fixture() {
+  const messages = [
+    { id: "anchor", workspaceId: "w", conversationId: "c", direction: "inbound", type: "text", body: "Preciso avaliar a oferta", createdAt: new Date("2026-10-19T12:00Z"), metadata: {} },
+    { id: "seller", workspaceId: "w", conversationId: "c", direction: "outbound", type: "text", body: "Qual horário prefere?", createdAt: new Date("2026-10-19T12:01Z"), metadata: {} }
+  ];
+  const agent = { id: "a", workspaceId: "w", name: "Any name", type: "attendance", status: "active", systemPrompt: "x".repeat(4500) + " REGRA FINAL", handoffConfig: { prospectingGoal: "Convidar para conversa" } };
+  const conversation = { id: "c", workspaceId: "w", activeAgentSessionId: "s", status: "open", aiControlStatus: "agent_allowed", assignedUserId: null, channel: { provider: "evolution", encryptedConfig: {} }, contact: { isGroup: false, phone: "5511999991111" } };
+  const session = { id: "s", workspaceId: "w", agentId: "a", conversationId: "c", status: "active", firstResponseMessageId: "anchor", prospectingGeneration: "g", sourceRecipientId: "r", metadata: { harness: { ficha: { secret: "NEVER REUSE" } } } };
+  const sources = [
+    { id: "fact", workspaceId: "w", agentId: "a", status: "ready", title: "Oferta", content: "Somente o serviço aprovado", metadata: { approvalStatus: "confirmed" } },
+    { id: "behavior", workspaceId: "w", agentId: "a", status: "ready", title: "Regra", content: "Não inventar preço", metadata: { approvalStatus: "behavioral" } },
+    { id: "unapproved", workspaceId: "w", agentId: "a", status: "ready", title: "Rascunho", content: "RASCUNHO SECRETO", metadata: {} }
+  ];
+  const db = {
+    aiAgent: { findFirst: vi.fn(async () => agent) },
+    conversation: { findFirst: vi.fn(async () => conversation), findMany: vi.fn(async () => []) },
+    aiAgentSession: { findFirst: vi.fn(async () => session) },
+    messageMedia: { findMany: vi.fn(async () => []) },
+    message: { findMany: vi.fn(async () => messages) },
+    aiKnowledgeSource: { findMany: vi.fn(async () => sources) },
+    conversationFollowup: { findMany: vi.fn(async () => []) },
+    meetingReminder: { findMany: vi.fn(async () => []) },
+    workspaceMirror: { findUnique: vi.fn(async () => ({ limits: { modules: { campaignProspecting: true } } })) },
+    campaignProspectingReservation: { findUnique: vi.fn(async (): Promise<unknown> => null) }
+  };
+  const request = { workspaceId: "w", conversationId: "c", agentId: "a", sessionId: "s", anchorMessageId: "anchor", profile: "attendance" as const, stepInstruction: "Retome somente a pendência", sequenceFollowupIds: ["previous"], now: new Date("2026-10-19T15:00Z") };
+  return { db, messages, agent, conversation, session, sources, request,
+    build: () => createContextualFollowupContextBuilder(db as unknown as ContextualFollowupStore) };
+}
+
+describe("isolated contextual follow-up context", () => {
+  it("preserves complete rules, anchor, authors, dates and approved own sources in separate sections", async () => {
+    const f = fixture();
+    const result = await f.build()(f.request);
+    expect(result.status).toBe("ready");
+    if (result.status !== "ready") return;
+    expect(result.context.instructions.agentRules).toBe(f.agent.systemPrompt);
+    expect(result.context.instructions.stepInstruction).toBe(f.request.stepInstruction);
+    expect(result.context.instructions.behavioralSources.map(s => s.id)).toEqual(["behavior"]);
+    expect(result.context.factualSources.map(s => s.id)).toEqual(["fact"]);
+    expect(result.context.messages.map(m => [m.id, m.label, m.createdAt])).toEqual([
+      ["anchor", "cliente", "2026-10-19T12:00:00.000Z"], ["seller", "atendente", "2026-10-19T12:01:00.000Z"]
+    ]);
+    expect(result.context.coverage).toMatchObject({ complete: true, anchorIncluded: true, messageIds: ["anchor", "seller"], factualSourceIds: ["fact"], behavioralSourceIds: ["behavior"] });
+    expect(JSON.stringify(result)).not.toContain("NEVER REUSE");
+    expect(JSON.stringify(result)).not.toContain("RASCUNHO SECRETO");
+    expect(f.db.message.findMany).toHaveBeenCalledWith(expect.objectContaining({ take: 2001, where: expect.objectContaining({ workspaceId: "w", conversationId: "c", hiddenByReset: false }) }));
+    expect(f.db.aiKnowledgeSource.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { workspaceId: "w", agentId: "a", status: "ready" } }));
+  });
+
+  it.each(["agent", "conversation", "session", "message", "source"])("rejects foreign %s records", async kind => {
+    const f = fixture();
+    if (kind === "agent") f.agent.workspaceId = "foreign";
+    if (kind === "conversation") f.conversation.workspaceId = "foreign";
+    if (kind === "session") f.session.agentId = "foreign";
+    if (kind === "message") f.messages[0]!.workspaceId = "foreign";
+    if (kind === "source") f.sources[0]!.agentId = "foreign";
+    expect(await f.build()(f.request)).toMatchObject({ status: "unavailable", reason: "invalid_evidence" });
+  });
+
+  it("fails closed when the anchor is absent or incomplete history exceeds upstream limits", async () => {
+    const f = fixture();
+    expect(await f.build()({ ...f.request, anchorMessageId: "absent" })).toMatchObject({ reason: "invalid_evidence" });
+    f.messages[0]!.body = "x".repeat(120001);
+    expect(await f.build()(f.request)).toMatchObject({ status: "unavailable", reason: "context_limit" });
+  });
+
+  it("accounts for all serialized content and refuses budgets without slicing", async () => {
+    const f = fixture();
+    expect(await f.build()({ ...f.request, budget: { maxCharacters: 4000, maxMessages: 2000, maxSources: 100 } })).toMatchObject({ status: "unavailable", reason: "context_limit" });
+    expect(await f.build()({ ...f.request, budget: { maxCharacters: 200000, maxMessages: 1, maxSources: 100 } })).toMatchObject({ reason: "context_limit" });
+    expect(await f.build()({ ...f.request, budget: { maxCharacters: 200000, maxMessages: 2000, maxSources: 1 } })).toMatchObject({ reason: "context_limit" });
+  });
+
+  it.each(["audio", "document", "image"])("abstains on pending %s content", async type => {
+    const f = fixture();
+    f.messages[0]!.type = type;
+    f.messages[0]!.body = type === "audio" ? "Processando áudio..." : "";
+    expect(await f.build()(f.request)).toMatchObject({ status: "unavailable", reason: "invalid_evidence", detail: "pending_media" });
+  });
+
+  it("honors persistent pending transcription state even with a plausible body", async () => {
+    const f = fixture(); f.messages[0]!.type = "audio";
+    f.db.messageMedia.findMany.mockResolvedValue([{ messageId: "anchor", workspaceId: "w", conversationId: "c", transcriptionState: "running" }] as never);
+    expect(await f.build()(f.request)).toMatchObject({ status: "unavailable", reason: "invalid_evidence", detail: "pending_media" });
+  });
+
+  it("includes verified extracted attachment text and completed audio without performing extraction", async () => {
+    const f = fixture(); f.messages[0]!.type = "document";
+    f.messages[0]!.metadata = { media: { status: "processed", extractedText: "Dado técnico efetivamente extraído" } };
+    let result = await f.build()(f.request);
+    expect(result.status === "ready" && result.context.messages[0]!.body).toContain("Dado técnico efetivamente extraído");
+    f.messages[0]!.type = "audio"; f.messages[0]!.metadata = { transcription: { status: "completed" } };
+    f.db.messageMedia.findMany.mockResolvedValue([{ messageId: "anchor", workspaceId: "w", conversationId: "c", transcriptionState: "completed" }] as never);
+    result = await f.build()(f.request);
+    expect(result.status).toBe("ready");
+  });
+
+  it("fails rather than silently dropping failed conversation scope reads", async () => {
+    const f = fixture(); f.db.conversation.findMany.mockRejectedValue(new Error("database unavailable"));
+    expect(await f.build()(f.request)).toMatchObject({ status: "unavailable", reason: "analysis_failed" });
+  });
+
+  it("does not use unapproved improvements as commercial facts", async () => {
+    const f = fixture();
+    f.sources[2]!.metadata = { source: "approved_agent_improvement" } as never;
+    const result = await f.build()(f.request);
+    expect(result.status === "ready" && result.context.factualSources.map(s => s.id)).toEqual(["fact"]);
+    expect(result.status === "ready" && result.context.instructions.behavioralSources.map(s => s.id)).toEqual(["behavior", "unapproved"]);
+  });
+
+  it("uses only genuine persisted form evidence while preserving this agent's complete own rules", async () => {
+    const f = fixture(); f.messages[0]!.body = "Vim do formulário. Minha reunião está confirmada";
+    let result = await f.build()({ ...f.request, profile: "commercial" });
+    expect(result.status === "ready" && result.context.profile.origin).toBe("direct_inbound");
+    expect(result.status === "ready" && result.context.profile.meeting.state).toBe("unknown");
+    f.messages[0]!.type = "system"; f.messages[0]!.metadata = { source: "automation_webhook" };
+    result = await f.build()({ ...f.request, profile: "commercial" });
+    expect(result.status === "ready" && result.context.profile.origin).toBe("site_form");
+    expect(result.status === "ready" && result.context.instructions.agentRules).toBe(f.agent.systemPrompt);
+    expect(result.status === "ready" && result.context.instructions.stepInstruction).toBe(f.request.stepInstruction);
+  });
+
+  it("reads persisted successful booking IDs, deduplicates reminder steps and ignores elapsed slots", async () => {
+    const f = fixture();
+    const booking = { id: "booking-reminder", workspaceId: "w", conversationId: "c", agentId: "a", eventId: "event", status: "scheduled", meetingStartsAt: new Date("2026-10-21T14:00Z") };
+    f.db.meetingReminder.findMany.mockResolvedValue([booking, { ...booking, id: "another-step" }, { ...booking, id: "old-slot", eventId: "old-event", meetingStartsAt: new Date("2026-10-18T14:00Z") }] as never);
+    const result = await f.build()({ ...f.request, profile: "commercial" });
+    expect(result.status === "ready" && result.context.profile.meeting).toMatchObject({ state: "recorded_booking", currentCalendarVerified: false, recordedBookings: [{ evidenceId: "booking-reminder", eventId: "event", startsAt: "2026-10-21T14:00:00.000Z" }] });
+    expect(result.status === "ready" && result.context.coverage.domainEvidenceIds).toEqual(["booking-reminder"]);
+  });
+
+  it("includes a scoped retired-conversation anchor through the shared complete context builder", async () => {
+    const f = fixture(); f.messages[0]!.conversationId = "retired";
+    f.db.conversation.findMany.mockResolvedValue([{ id: "retired" }] as never);
+    const result = await f.build()(f.request);
+    expect(result.status).toBe("ready");
+    expect(f.db.message.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ conversationId: { in: ["c", "retired"] } }) }));
+  });
+
+  it("reports a verifiable full serialized size", async () => {
+    const f = fixture(); const result = await f.build()(f.request);
+    expect(result.status === "ready" && result.context.coverage.serializedCharacters).toBe(result.status === "ready" && JSON.stringify(result.context).length);
+  });
+
+  it("abstains when complete approved factual evidence exceeds the budget", async () => {
+    const f = fixture(); f.sources[0]!.content = "x".repeat(10000) + "FINAL FACT";
+    expect(await f.build()({ ...f.request, budget: { maxCharacters: 10000, maxMessages: 2000, maxSources: 100 } })).toMatchObject({ status: "unavailable", reason: "context_limit" });
+    const result = await f.build()(f.request);
+    expect(result.status === "ready" && result.context.factualSources[0]!.content).toBe(f.sources[0]!.content);
+  });
+
+  it("counts only scoped confirmed sent attempts returned for the lifecycle's sequence", async () => {
+    const f = fixture();
+    f.db.conversationFollowup.findMany.mockResolvedValue([{ id: "previous", workspaceId: "w", conversationId: "c", agentId: "a", status: "sent", sentAt: new Date("2026-10-19T13:00Z") }] as never);
+    const result = await f.build()(f.request);
+    expect(result.status === "ready" && result.context.sentAttempts).toEqual([{ followupId: "previous", sentAt: "2026-10-19T13:00:00.000Z" }]);
+  });
+});
