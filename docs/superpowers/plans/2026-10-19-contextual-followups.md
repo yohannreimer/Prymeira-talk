@@ -27,6 +27,7 @@ Não migrar os motores de resposta das Marias/João, alterar ingress/identidade,
 | Análise e decisão | `apps/api/src/modules/harness/agentes/followup/{tipos,instrucoes,ferramentas,jogadas,index,producao}.ts`; testes `followup.test.ts` e `jogadas.test.ts` | reutilizar núcleo `harness/core`; não alterar a definição ao vivo de atendimento/comercial |
 | Política de entrega | `apps/api/src/modules/followups/contextual-followup-policy.ts` e `.test.ts` | usar critérios existentes, sem criar transporte |
 | Lifecycle | `apps/api/src/modules/agents/contextual-followup-runtime.ts` e `.test.ts` | router em `agents/agent-followup-runtime.ts`; candidato/completação em `followups/conversation-followups.service.ts`; wiring em `app.ts` |
+| Entrega contextual (adendo auditado) | `followups/contextual-followup-delivery.ts` e testes PostgreSQL | `followups/conversation-followups.routes.ts`, `conversations/conversations.service.ts`, `messaging/outbound-fences.ts`, `channels/outbound-router.ts`, contrato interno de `evolution.client.ts`; sem schema/fila nova |
 | Regressão | testes existentes de runtime, serviço, rotas, scheduler, calendário, prospecção e harness | nenhuma remoção de guards para fazer testes passarem |
 | Replay/operação | `apps/api/scripts/replay-contextual-followups.ts`, `apps/api/scripts/fixtures/contextual-followups-synthetic.jsonl`, `docs/operations/contextual-followups.md` | reaproveitar convenções de replay/validação existentes |
 
@@ -144,6 +145,8 @@ it.each(["attendance", "commercial", "prospecting"] as const)(
 ## Task 6: Integrar o runtime sem novos poderes de envio
 
 **Files:** `agents/contextual-followup-runtime.ts`, `agents/agent-followup-runtime.ts`, `app.ts` e testes. Dependência: Task 5.
+
+**Adendo de escopo necessário, auditado em 19/10/2026:** incluir os arquivos de entrega da tabela e testes PostgreSQL da fronteira/adaptador. O adendo técnico da spec define a origem `followup` sem wrapper de prospecção aninhado, revisão transacional de política e fontes, congelamento da aprovação, discriminação de entrega contextual sem fallback direto, reserva pré-transporte e correção de timestamps de âncora. A base exige esses hooks para satisfazer as invariantes já aprovadas; não há mudança SQL nem redesenho de ingress/router.
 
 - [ ] Injetar um handler contextual no factory existente. Depois de claim e revalidação, selecionar o handler pelo marcador da sequência; só os itens antigos seguem para `runHarnessFollowup`, `runBrainFollowup` ou legado. A flag de adoção não é reinterpretada no meio de uma sequência.
 - [ ] O handler carrega contexto/perfil, roda análise/escrita/revisão e revalida âncora, sessão, geração e hash de política antes de persistir a saída. Falha de claim/revalidação não chama modelo nem transporte. Persistência usa a mesma condição de posse de claim; eventos saem de registros persistidos.
