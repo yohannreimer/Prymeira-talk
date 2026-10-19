@@ -18,6 +18,11 @@ on:
         description: Diagnostic CPU and PostgreSQL wait profiling; not uninstrumented qualification
         default: false
 
+      compare_prisma:
+        type: boolean
+        description: Fixed-order host versus actual immutable Alpine image query diagnostic; not macro qualification
+        default: false
+
 permissions:
   contents: read
 
@@ -59,6 +64,12 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ inputs.candidate_sha }}
+      - name: Checkout diagnostic drivers from this workflow revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: .validation/orchestrator
+          persist-credentials: false
       - uses: pnpm/action-setup@v4
         with:
           version: 10.0.0
@@ -92,11 +103,24 @@ jobs:
           sudo apt-get install -y ffmpeg poppler-utils
           sudo install -d -m 1777 /private/tmp
       - name: Typecheck, unit, builds, migrations and serial PostgreSQL/RabbitMQ integration
+        id: full_validation
         env:
           TALK_TEST_POSTGRES_DATA_DIRECTORY: /var/lib/postgresql/data/talk_fixture
           TALK_TEST_DATABASE_ADMIN_URL: postgresql://talk_test:talk_test@127.0.0.1:55439/postgres
           INGRESS_TEST_AMQP_URL: amqp://talk_test:talk_test@127.0.0.1:56739/talk_test
         run: GITHUB_SHA="$CANDIDATE_SHA" node apps/api/scripts/validation/run.mjs
+      - name: Diagnose the exact remaining suites after the known load-only failure
+        if: ${{ !cancelled() && steps.full_validation.outcome == 'failure' }}
+        env:
+          TALK_TEST_POSTGRES_DATA_DIRECTORY: /var/lib/postgresql/data/talk_fixture
+          TALK_TEST_DATABASE_ADMIN_URL: postgresql://talk_test:talk_test@127.0.0.1:55439/postgres
+          INGRESS_TEST_AMQP_URL: amqp://talk_test:talk_test@127.0.0.1:56739/talk_test
+        run: |
+          set -eu
+          mkdir -p apps/api/tmp
+          cp .validation/orchestrator/.github/qualification/remaining-suites.mjs apps/api/tmp/remaining-suites.mjs
+          cd apps/api
+          node tmp/remaining-suites.mjs
       - name: Upload validation evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -183,6 +207,7 @@ jobs:
           printf '%s\n' "$CANDIDATE_SHA" > validation-artifacts/image-source.txt
           uname -a > validation-artifacts/linux-kernel.txt
       - name: Build candidate API image without pushing
+        id: api_build
         run: docker build --pull --platform linux/amd64 --label org.opencontainers.image.revision="$CANDIDATE_SHA" -f apps/api/Dockerfile -t talk-qualification-api .
       - name: Inspect exact candidate image and offline runtime tools
         run: |
@@ -213,9 +238,30 @@ jobs:
           fs.writeFileSync(`${process.env.GITHUB_WORKSPACE}/validation-artifacts/image-execution-mode.json`,JSON.stringify({kind:profiled?'diagnostic-profile':'uninstrumented-image-qualification',cpuProfile:profiled,postgresWaitObserver:profiled,harnessRunId:null,sha:process.env.CANDIDATE_SHA,boundary:profiled?'Instrumented diagnostic execution; does not establish uninstrumented qualification.':'No diagnostic profiler or PostgreSQL observer enabled.'},null,2));
           JS
           (
+            deadline=$((SECONDS + 180))
             for i in $(seq 1 180); do
-              ids=$(docker ps -q --filter "label=talk.qual=$TALK_QUAL_CONTAINER_LABEL")
-              if [ -n "$ids" ]; then date -u +%FT%TZ; docker stats --no-stream --format '{{json .}}' $ids $TALK_QUAL_POSTGRES_ID $TALK_QUAL_RABBITMQ_ID; fi
+              if [ "$SECONDS" -ge "$deadline" ]; then break; fi
+              date -u +%FT%TZ
+              if ids=$(timeout 5s docker ps -q --filter "label=talk.qual=$TALK_QUAL_CONTAINER_LABEL" 2>> "$GITHUB_WORKSPACE/validation-artifacts/api-container-stats.stderr.log"); then
+                if [ -n "$ids" ]; then
+                  if sample=$(timeout 5s docker stats --no-stream --format '{{json .}}' $ids $TALK_QUAL_POSTGRES_ID $TALK_QUAL_RABBITMQ_ID 2>> "$GITHUB_WORKSPACE/validation-artifacts/api-container-stats.stderr.log"); then
+                    if [ -n "$sample" ]; then printf 'iteration=%s status=ok\n%s\n' "$i" "$sample"; else printf 'iteration=%s status=empty\n' "$i"; fi
+                  else
+                    status=$?
+                    printf 'iteration=%s status=stats-error exit=%s retry=true\n' "$i" "$status"
+                    printf '%s\n' "$sample" >> "$GITHUB_WORKSPACE/validation-artifacts/api-container-stats.partial.log"
+                  fi
+                  for id in $ids; do
+                    if details=$(timeout 3s docker inspect --format '{"pid":{{.State.Pid}},"cmd":{{json .Config.Cmd}},"label":{{json (index .Config.Labels "talk.qual")}}}' "$id" 2>> "$GITHUB_WORKSPACE/validation-artifacts/api-container-stats.stderr.log"); then
+                      if safe=$(printf '%s' "$details" | node -e 'const fs=require("node:fs"),v=JSON.parse(fs.readFileSync(0,"utf8")),roles=v.cmd?.filter(x=>["dist/ingress.js","dist/ingress-worker.js"].includes(x));if(v.label!==process.env.TALK_QUAL_CONTAINER_LABEL||!Number.isSafeInteger(v.pid)||v.pid<=0||roles?.length!==1)process.exit(1);console.log(v.pid,roles[0]);'); then
+                        read -r pid role <<< "$safe"
+                        printf 'iteration=%s thread-container=%s pid=%s role=%s\n' "$i" "$id" "$pid" "$role"
+                        if timeout 2s ps -L -p "$pid" -o pid=,tid=,comm=,time=; then :; else printf 'iteration=%s status=thread-sample-error exit=%s retry=true\n' "$i" "$?"; fi
+                      else printf 'iteration=%s status=unverified-task-pid retry=true\n' "$i"; fi
+                    else printf 'iteration=%s status=task-inspect-error exit=%s retry=true\n' "$i" "$?"; fi
+                  done
+                else printf 'iteration=%s status=no-task-containers\n' "$i"; fi
+              else printf 'iteration=%s status=container-list-error exit=%s retry=true\n' "$i" "$?"; fi
               sleep 1
             done
           ) > "$GITHUB_WORKSPACE/validation-artifacts/api-container-stats.log" 2>&1 &
@@ -233,7 +279,7 @@ jobs:
             pg_sampler=$!
           fi
           set +e
-          pnpm exec vitest run src/modules/ingress/production-stage.postgres.test.ts -t 'qualifies 80 canonical' --maxWorkers=1 --fileParallelism=false --reporter=default --reporter=json --outputFile.json="$GITHUB_WORKSPACE/validation-artifacts/api-container-flow.tests.json"
+          pnpm exec vitest run src/modules/ingress/production-stage.postgres.test.ts --maxWorkers=1 --fileParallelism=false --reporter=default --reporter=json --outputFile.json="$GITHUB_WORKSPACE/validation-artifacts/api-container-flow.tests.json"
           status=$?
           exit "$status"
       - name: Build and execute pinned real GOWS adapter contract without provider sessions
@@ -266,6 +312,21 @@ jobs:
           export DATABASE_CONNECTION_URI=postgresql://talk_test:talk_test@127.0.0.1:55439/evolution_contract
           docker run --rm --network host --env DATABASE_CONNECTION_URI --entrypoint sh "$image" -ec './node_modules/.bin/prisma db push --schema=./prisma/postgresql-schema.prisma --skip-generate' > validation-artifacts/evolution-schema.log 2>&1
           docker run --rm --network host --read-only --tmpfs /tmp:rw,size=128m --cap-drop=ALL --security-opt=no-new-privileges --env DATABASE_CONNECTION_URI --mount "type=bind,src=$GITHUB_WORKSPACE/.validation/evolution-methods.json,dst=/talk-methods.json,readonly" --mount "type=bind,src=$GITHUB_WORKSPACE/.validation/orchestrator/.github/qualification/evolution-contract.cjs,dst=/evolution/talk-contract.cjs,readonly" --entrypoint node "$image" /evolution/talk-contract.cjs > validation-artifacts/evolution-postgres-contract.log 2>&1
+      - name: Compare the exact graph query on host and actual immutable Alpine API image
+        if: ${{ !cancelled() && inputs.compare_prisma && steps.api_build.outcome == 'success' }}
+        timeout-minutes: 8
+        run: |
+          set -eu
+          ids=$(docker ps -aq --filter "label=talk.qual=talk-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}")
+          if [ -n "$ids" ]; then docker rm -f $ids; fi
+          export TALK_QUAL_API_IMAGE="$(docker image inspect talk-qualification-api --format '{{.Id}}')"
+          export TALK_QUAL_CONTAINER_LABEL="talk-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          export NODE_ENV=production
+          unset NODE_OPTIONS TALK_VALIDATION_RUN_ID TALK_QUAL_PROFILE_API
+          mkdir -p apps/api/tmp
+          cp .validation/orchestrator/.github/qualification/prisma-query-benchmark.cjs apps/api/tmp/prisma-query-benchmark.cjs
+          cd apps/api
+          node tmp/prisma-query-benchmark.cjs compare
       - name: Stop any remaining task-labelled candidate containers
         if: always()
         run: |
