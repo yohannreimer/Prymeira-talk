@@ -256,6 +256,7 @@ function setup(
   const cityGeocoder = {
     geocode: vi.fn(async () => ({ city: "Campinas", state: "SP", latitude: -22.9056, longitude: -47.0608 }))
   };
+  const nearbyCities = { nearby: vi.fn(async (): Promise<string[]> => ["Jaraguá do Sul", "Corupá"]) };
   const service = createLeadsService({
     repository: repository as never,
     cnpjRepository: cnpjRepository as never,
@@ -263,10 +264,11 @@ function setup(
     now: timing.now ?? (() => now),
     googleMapsClient: googleMapsClient as never,
     cityGeocoder: cityGeocoder as never,
+    nearbyCities,
     googlePollIntervalMs: timing.pollIntervalMs ?? 1,
     sleep: timing.sleep ?? vi.fn(async () => undefined)
   });
-  return { service, repository, cnpjRepository, googleMapsClient, cityGeocoder, realtime, stored };
+  return { service, repository, cnpjRepository, googleMapsClient, cityGeocoder, nearbyCities, realtime, stored };
 }
 
 describe("Leads service", () => {
@@ -733,7 +735,8 @@ describe("Leads service", () => {
         state: "SP",
         latitude: -22.9056,
         longitude: -47.0608,
-        maxTimeSeconds: 600
+        maxTimeSeconds: 600,
+        minResults: 30
       })
     }));
     const persisted = (context.repository.createListAndJob.mock.calls[0]?.[0] as any).input;
@@ -902,12 +905,16 @@ describe("Leads service", () => {
         output: expect.objectContaining({ processedCount: 26, searchedAreas: 2 }) }));
 
       const resumed = setup();
+      resumed.repository.listLeads.mockResolvedValue({ total: 29 });
       resumed.googleMapsClient.download.mockResolvedValue([header, ...rows("leste", 3)].join("\n"));
       const job = rawJob("google_maps_search", input);
       job.output = { passIndex: 3, plannedPasses: 5 };
       await resumed.service.runClaimedJob(job);
       expect(resumed.googleMapsClient.createJob.mock.calls.map(([call]: any[]) => call.name))
         .toEqual([`prymeira-${job.id}-g0-p3`, `prymeira-${job.id}-g0-p4`]);
+      expect(resumed.repository.finishJob).toHaveBeenCalledWith(expect.objectContaining({
+        output: expect.objectContaining({ processedCount: 29 })
+      }));
     });
   });
 
@@ -930,6 +937,135 @@ describe("Leads service", () => {
       errorMessage: "LEAD_GOOGLE_PARTIAL_ROWS",
       output: expect.objectContaining({ totalCount: 2, processedCount: 1, failedCount: 1 })
     }));
+  });
+
+  describe("Google search expansion", () => {
+    const header = "input_id,title,link,category,address,phone,place_id,complete_address";
+    const row = (inputId: string, title: string, placeId: string, category: string, city: string) =>
+      `${inputId},${title},https://www.google.com/maps/place/${placeId},${category},Rua 1,(47) 99999-0000,${placeId},"{""city"":""${city}"",""state"":""SC""}"`;
+    const primaryCsv = [header, row("", "Caldeiraria Alfa", "alfa", "Caldeiraria", "Guaramirim"), row("", "Metal Beta", "beta", "Metalúrgica", "Guaramirim")].join("\n");
+    const expansionCsv = [
+      header,
+      row("x-r", "Caldeiraria Alfa", "alfa", "Caldeiraria", "Guaramirim"),
+      row("x-c0", "Caldeiraria Jaraguá", "jgua", "Caldeiraria", "Jaraguá do Sul"),
+      row("x-t0", "Metalúrgica Gama", "gama", "Metalúrgica", "Guaramirim"),
+      row("x-r", "Caldeiraria Schroeder", "schr", "Caldeiraria", "Schroeder")
+    ].join("\n");
+    const input = (minResults?: number) => ({
+      requestFingerprint: "a".repeat(64), niche: "caldeiraria", city: "Guaramirim", state: "SC",
+      latitude: -26.47, longitude: -49.0, maxTimeSeconds: 600,
+      ...(minResults === undefined ? {} : { minResults })
+    });
+
+    function expansionContext() {
+      const context = setup();
+      (context.googleMapsClient.createJob as any).mockImplementation(async (job: any) => ({ id: job.name.endsWith("-x") ? "remote-x" : "remote-p" }));
+      (context.googleMapsClient.getJob as any).mockImplementation(async (id: string) => ({ id, status: "succeeded" as const }));
+      (context.googleMapsClient.download as any).mockImplementation(async (id: string) => id === "remote-x" ? expansionCsv : primaryCsv);
+      return context;
+    }
+
+    it("widens a search below the minimum to nearby cities and similar terms without duplicating leads", async () => {
+      const context = expansionContext();
+      const job = rawJob("google_maps_search", input(30));
+
+      await context.service.runClaimedJob(job);
+
+      expect(context.nearbyCities.nearby).toHaveBeenCalledWith("Guaramirim", "SC");
+      expect(context.googleMapsClient.createJob).toHaveBeenCalledTimes(6);
+      expect(context.googleMapsClient.createJob).toHaveBeenNthCalledWith(6, {
+        name: `prymeira-${job.id}-g0-x`,
+        keywords: [
+          "caldeiraria #!#x-r",
+          "caldeiraria em Jaraguá do Sul, SC #!#x-c0",
+          "caldeiraria em Corupá, SC #!#x-c1",
+          "metalúrgica em Guaramirim, SC #!#x-t0",
+          "estruturas metálicas em Guaramirim, SC #!#x-t1",
+          "usinagem em Guaramirim, SC #!#x-t2"
+        ],
+        latitude: -26.47,
+        longitude: -49.0,
+        maxTimeSeconds: 900,
+        zoom: 12
+      });
+      const upserted = context.repository.upsertLeads.mock.calls.flatMap((call: any[]) => call[0]);
+      expect(upserted.map((lead: any) => lead.companyName)).toEqual([
+        "Caldeiraria Alfa", "Metal Beta", "Caldeiraria Jaraguá", "Metalúrgica Gama", "Caldeiraria Schroeder"
+      ]);
+      expect(upserted.map((lead: any) => [lead.sourceSnapshot.searchTerm, lead.sourceSnapshot.searchCity, lead.sourceSnapshot.searchExpanded])).toEqual([
+        ["caldeiraria", "Guaramirim", false],
+        ["caldeiraria", "Guaramirim", false],
+        ["caldeiraria", "Jaraguá do Sul", true],
+        ["metalúrgica", "Guaramirim", true],
+        ["caldeiraria", null, true]
+      ]);
+      expect(upserted.map((lead: any) => lead.city)).toContain("Schroeder");
+      expect(context.repository.finishJob).toHaveBeenCalledWith(expect.objectContaining({
+        status: "completed",
+        output: expect.objectContaining({ primaryCount: 2, expansionAddedCount: 3, processedCount: 5, downloadedRows: 14 })
+      }));
+    });
+
+    it("does not widen searches that reach the minimum or were created before the minimum existed", async () => {
+      for (const minResults of [2, undefined]) {
+        const context = expansionContext();
+        await context.service.runClaimedJob(rawJob("google_maps_search", input(minResults)));
+        expect(context.googleMapsClient.createJob).toHaveBeenCalledTimes(5);
+        expect(context.nearbyCities.nearby).not.toHaveBeenCalled();
+      }
+    });
+
+    it("keeps the original results when the widened search fails", async () => {
+      const context = expansionContext();
+      (context.googleMapsClient.getJob as any).mockImplementation(async (id: string) => ({ id, status: id === "remote-x" ? "failed" as const : "succeeded" as const }));
+      context.nearbyCities.nearby.mockRejectedValue(new Error("IBGE offline"));
+
+      await context.service.runClaimedJob(rawJob("google_maps_search", input(30)));
+
+      expect(context.repository.finishJob).toHaveBeenCalledWith(expect.objectContaining({
+        status: "completed",
+        errorMessage: null,
+        output: expect.objectContaining({
+          processedCount: 2,
+          expansionError: "LEAD_GOOGLE_REMOTE_FAILED",
+          expansionNearbyUnavailable: true
+        })
+      }));
+    });
+
+    it("finishes with widened results when the original search found nothing", async () => {
+      const context = expansionContext();
+      (context.googleMapsClient.download as any).mockImplementation(async (id: string) => id === "remote-x" ? expansionCsv : header);
+
+      await context.service.runClaimedJob(rawJob("google_maps_search", input(30)));
+
+      expect(context.repository.finishJob).toHaveBeenCalledWith(expect.objectContaining({
+        status: "completed",
+        output: expect.objectContaining({ primaryCount: 0, expansionAddedCount: 4, processedCount: 4 })
+      }));
+    });
+
+    it("resumes a widened search from its persisted remote job and keyword plan", async () => {
+      const context = expansionContext();
+      const job = rawJob("google_maps_search", input(30));
+      job.output = {
+        passIndex: 5, plannedPasses: 5,
+        primaryKeys: parseGoogleMapsCsv(primaryCsv, { workspaceId, listId, city: "Guaramirim", state: "SC" }).leads.map(lead => lead.sourceDedupeKey),
+        primaryCategories: ["Caldeiraria"],
+        expansionJobId: "remote-x", expansionStatus: "running", expansionSubmittedAt: now.toISOString(),
+        expansionKeywords: [{ id: "x-c0", keyword: "caldeiraria em Jaraguá do Sul, SC", term: "caldeiraria", city: "Jaraguá do Sul" }]
+      };
+
+      await context.service.runClaimedJob(job);
+
+      expect(context.googleMapsClient.createJob).not.toHaveBeenCalled();
+      expect(context.repository.upsertLeads.mock.calls.flatMap((call: any[]) => call[0]).some((lead: any) => lead.companyName === "Caldeiraria Alfa")).toBe(false);
+      expect(context.nearbyCities.nearby).not.toHaveBeenCalled();
+      const upserted = context.repository.upsertLeads.mock.calls.flatMap((call: any[]) => call[0]);
+      expect(upserted.find((lead: any) => lead.companyName === "Metalúrgica Gama")?.sourceSnapshot).toMatchObject({
+        searchTerm: "caldeiraria", searchCity: null, searchExpanded: true
+      });
+    });
   });
 
   it("deduplicates Maps rows by stable identity before canonical URL and fallback keys", () => {

@@ -1,4 +1,4 @@
-import type { LeadJobStatus, LeadListDto, LeadWhatsappStatus, SimilarCompanyResult } from "@prymeira-talk/shared";
+import type { LeadJobStatus, LeadListDto, LeadResultDto, LeadWhatsappStatus, SimilarCompanyResult } from "@prymeira-talk/shared";
 
 export function formatCnpj(value: string | null | undefined) {
   if (!value) return "CNPJ não informado";
@@ -21,4 +21,8 @@ export function scoreReasons(item: Pick<SimilarCompanyResult, "reasons">) {
 export function listProgressLabel(list: Pick<LeadListDto, "startedAt" | "completedAt" | "failedCount">) {
   if (list.completedAt) return list.failedCount ? "Parcial" : "Concluída";
   return list.startedAt ? "Em andamento" : "Na fila";
+}
+
+export function searchOriginLabel(origin: NonNullable<LeadResultDto["searchOrigin"]>) {
+  return `Termo: ${origin.term} · ${origin.city ? `Cidade: ${origin.city}` : "Região próxima"}`;
 }

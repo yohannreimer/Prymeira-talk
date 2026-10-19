@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatCnpj, jobLabels, listProgressLabel, scoreReasons, whatsappLabels } from "./lead-display";
+import { formatCnpj, jobLabels, listProgressLabel, scoreReasons, searchOriginLabel, whatsappLabels } from "./lead-display";
 
 describe("lead display", () => {
   it("formats numeric and alphanumeric CNPJs as identifiers", () => {
@@ -13,6 +13,11 @@ describe("lead display", () => {
     expect(whatsappLabels.available).toBe("Disponível");
     expect(jobLabels.partial).toBe("Parcial");
     expect(jobLabels.failed).toBe("Falhou");
+  });
+
+  it("shows the term and city each Maps lead came from", () => {
+    expect(searchOriginLabel({ term: "metalúrgica", city: "Jaraguá do Sul", expanded: true })).toBe("Termo: metalúrgica · Cidade: Jaraguá do Sul");
+    expect(searchOriginLabel({ term: "caldeiraria", city: null, expanded: true })).toBe("Termo: caldeiraria · Região próxima");
   });
 
   it("presents score reasons with individual contribution", () => {
