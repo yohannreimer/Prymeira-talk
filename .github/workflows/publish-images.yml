@@ -84,7 +84,7 @@ jobs:
           done
           docker build --platform linux/amd64 -f ".validation/variants/1d7aa19ed9c4a48532937408b9ece782c53d5cd6/apps/web/Dockerfile" -t talk-compare-web ".validation/variants/1d7aa19ed9c4a48532937408b9ece782c53d5cd6"
           docker image inspect talk-compare-web --format '{{json .}}' > validation-artifacts/image-web.json
-          node --input-type=module <<'JS' 
+          node --input-type=module <<'JS'
           import fs from 'node:fs';
           const images=Object.fromEntries(['A_ingress','A_worker','A_api','N','web'].map(n=>[n,JSON.parse(fs.readFileSync(`validation-artifacts/image-${n}.json`)).Id]));
           fs.writeFileSync('validation-artifacts/images.json',JSON.stringify(images,null,2));

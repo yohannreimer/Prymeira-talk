@@ -58,5 +58,6 @@ try{
 }finally{
  fs.writeFileSync(path.join(output,'stop-browser'),'');if(browser&&browser.exitCode===null)browser.kill('SIGTERM');
  save('boundary.json',boundary);fs.writeFileSync(path.join(output,'runtime.log'),logs.join(''));await db.$disconnect();await new Promise(r=>external.close(r));
- // Container cleanup is done by the controller using this run's exact ownership label.
+ const owned=cp.execFileSync('docker',['ps','-aq','--filter','label=talk.compare='+label],{encoding:'utf8'}).trim().split('\n').filter(Boolean);if(owned.length)cp.execFileSync('docker',['rm','-f',...owned],{stdio:'ignore'});
+ for(const child of children)if(child.exitCode===null)child.kill('SIGTERM');
 }
