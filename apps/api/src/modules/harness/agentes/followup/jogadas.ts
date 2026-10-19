@@ -22,7 +22,7 @@ export function decideContextualFollowup(input: { ficha: FollowupFicha; context:
   if (analysis.customerTiming && Date.parse(context.now) < Date.parse(analysis.customerTiming.notBefore)) return { type: "skip", reason: "customer_timing" };
   const evidenceMessageIds = [...new Set([pending.evidence.messageId, pending.engagement.messageId])];
   if (pending.owner === "company") return { type: "seller_reminder", summary: pending.subject, evidenceMessageIds };
-  if (pending.kind === "time_choice" && context.profile.meeting.recordedBookings.length) return { type: "skip", reason: "closed" };
+  if (pending.kind === "time_choice" && context.profile.meeting.recordedBookings.length) return { type: "skip", reason: "no_pending" };
   if (context.sentAttempts.length >= maxAttempts) return { type: "skip", reason: "max_attempts" };
   return { type: "customer_message", pendingItem: pending, evidenceMessageIds };
 }

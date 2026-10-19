@@ -1,6 +1,10 @@
 import type { FastifyPluginAsync, FastifyReply } from "fastify";
 import { channelFollowupConfigSchema, type RealtimeEvent } from "@prymeira-talk/shared";
 import { z } from "zod";
+import { resolveContextualFollowupEngine } from "./contextual-followup-engine.js";
+import { contextualAnchorCurrent, readContextualSnapshotInTransaction } from "./contextual-followup-snapshot.js";
+import { sha } from "../messaging/canonical-values.js";
+import type { Prisma } from "@prisma/client";
 import { canPerform, type Permission } from "../access/roles.js";
 import { resolveCurrentUserProfileId } from "../conversations/current-user.js";
 import { pauseAgentOnHumanOutbound } from "../conversations/pause-agent-on-human-outbound.js";
@@ -345,6 +349,9 @@ export const conversationFollowupsRoutes: FastifyPluginAsync<ConversationFollowu
     if (current.status !== "review" || current.activeKey !== "active") {
       return stale(reply, current);
     }
+    const contextualEngine = resolveContextualFollowupEngine({ decision: current.decision });
+    if (contextualEngine.status === "contained") return reply.code(409).send({ code: "FOLLOWUP_CONTEXTUAL_VERSION_UNAVAILABLE", error: "Este acompanhamento precisa de uma versão compatível do motor." });
+    const contextual = contextualEngine.status === "contextual";
 
     const channelCalendar = await loadChannelCalendar(request.talk.workspaceId, current.conversationId);
     if (channelCalendar) {
@@ -405,7 +412,7 @@ export const conversationFollowupsRoutes: FastifyPluginAsync<ConversationFollowu
       return stale(reply, latest);
     }
 
-    await prisma.$transaction((tx) => pauseAgentOnHumanOutbound(tx as unknown as Parameters<typeof pauseAgentOnHumanOutbound>[0], {
+    if (!contextual) await prisma.$transaction((tx) => pauseAgentOnHumanOutbound(tx as unknown as Parameters<typeof pauseAgentOnHumanOutbound>[0], {
       workspaceId: request.talk.workspaceId,
       conversationId: current.conversationId,
       actorUserId
@@ -419,7 +426,7 @@ export const conversationFollowupsRoutes: FastifyPluginAsync<ConversationFollowu
         body: body.data.body,
         sentByUserId: actorUserId,
         reservedMessageId: current.id,
-        metadata: { source: "followup_review", followupId: current.id }
+        metadata: { source: "followup_review", followupId: current.id, ...(contextual ? { contextualFollowup: true } : {}) }
       });
     } catch (error) {
       if (error instanceof OutboundDeliveryUncertainError) {
@@ -435,6 +442,12 @@ export const conversationFollowupsRoutes: FastifyPluginAsync<ConversationFollowu
           code: "FOLLOWUP_DELIVERY_UNCERTAIN",
           error: "The provider may have accepted the follow-up. It will not be retried automatically."
         });
+      }
+      if (contextual) {
+        await prisma.conversationFollowup.updateMany({ where: { workspaceId: request.talk.workspaceId, id: current.id, status: "processing", activeKey: "active", lockedAt: claimAt },
+          data: { status: "failed", activeKey: null, lockedAt: null, reason: "contextual_delivery_blocked" } });
+        await publish(request.talk.workspaceId, current.id);
+        return reply.code(409).send({ code: "FOLLOWUP_CONTEXTUAL_STALE", error: "As regras ou a autorização deste acompanhamento mudaram. Nenhuma nova tentativa será enviada automaticamente." });
       }
       const afterRejection = await followups.revalidateActiveFollowup({
         workspaceId: request.talk.workspaceId,
@@ -534,9 +547,10 @@ export const conversationFollowupsRoutes: FastifyPluginAsync<ConversationFollowu
     }
     await publisher.publishUpdated(result);
     try {
+      const nextSource = contextual ? await prisma.conversationFollowup.findFirst({ where: { workspaceId: request.talk.workspaceId, id: current.id } }) : current;
       await followups.scheduleNextAfterManualSend?.({
         workspaceId: request.talk.workspaceId,
-        followup: current as ConversationFollowupRecord,
+        followup: (nextSource ?? result) as ConversationFollowupRecord,
         sentAt
       });
     } catch (error) {
@@ -695,6 +709,20 @@ async function reserveManualDelivery(input: {
   sentByUserId: string | null;
 }) {
   return input.prisma.$transaction(async (tx) => {
+    const engine = resolveContextualFollowupEngine({ decision: input.followup.decision });
+    let contextualDecision: Record<string, unknown> | null = null;
+    if (engine.status === "contained") return false;
+    if (engine.status === "contextual") {
+      const decision = asRecord(input.followup.decision);
+      const generation = asRecord(decision?.contextualFollowup);
+      if (!input.sentByUserId || generation?.reviewApproved !== true || asRecord(generation.output)?.type !== "customer_message") return false;
+      const canonicalTx = tx as unknown as Prisma.TransactionClient;
+      const canonical = await canonicalTx.conversationFollowup.findFirst({ where: { workspaceId: input.followup.workspaceId, id: input.followup.id } });
+      if (!canonical) return false;
+      const snapshot = await readContextualSnapshotInTransaction(canonicalTx, canonical, engine.engine.profile, input.claimAt);
+      if (snapshot.status !== "ready" || snapshot.policyRevision !== engine.engine.policyRevision || !await contextualAnchorCurrent(canonicalTx, canonical, input.followup.id)) return false;
+      contextualDecision = { ...decision, contextualApproval: { actor: { kind: "user", id: input.sentByUserId }, claimAt: input.claimAt.toISOString(), bodyHash: sha(input.body), policyRevision: engine.engine.policyRevision } };
+    }
     const claimed = await tx.conversationFollowup.updateMany({
       where: {
         workspaceId: input.followup.workspaceId,
@@ -706,7 +734,8 @@ async function reserveManualDelivery(input: {
       data: {
         status: "processing",
         lockedAt: input.claimAt,
-        attempts: { increment: 1 }
+        attempts: { increment: 1 },
+        ...(contextualDecision ? { finalBody: input.body, decision: contextualDecision } : {})
       }
     });
     if (claimed.count !== 1) return false;
@@ -719,7 +748,7 @@ async function reserveManualDelivery(input: {
         }
       }
     });
-    const metadata = { source: "followup_review", followupId: input.followup.id };
+    const metadata = { source: "followup_review", followupId: input.followup.id, ...(contextualDecision ? { contextualFollowup: true } : {}) };
     const data = {
       workspaceId: input.followup.workspaceId,
       conversationId: input.followup.conversationId,

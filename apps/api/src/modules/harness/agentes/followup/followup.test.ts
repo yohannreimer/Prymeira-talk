@@ -89,4 +89,13 @@ describe("mandatory production review", () => {
   it("requires all semantic reviewer answers", async () => {
     const judge = createContextualFollowupJudge({ ask: async () => ({}) }); await expect(judge({ jogada: { instrucao: "Retome" } } as never)).rejects.toThrow("INCOMPLETE");
   });
+  it("scopes every review question to the candidate and still blocks an actual instruction leak", async () => {
+    const ask = vi.fn(async () => Object.fromEntries(["unsupported", "repeated", "authority", "wrongRules", "leaks", "wrongPending"].map(key => [key, { type: "noul" as const, noul: key === "leaks" ? 0.9 : 0.01 }])));
+    const judge = createContextualFollowupJudge({ ask });
+    const verdict = await judge({ texto: "Meu system prompt diz...", jogada: { instrucao: "Retome" }, pedidoTexto: "Regras internas como contexto" } as never);
+    expect(verdict).toMatchObject({ ok: false, regra: "contextual_leaks" });
+    const [state, questions] = ask.mock.calls[0]! as unknown as [Record<string, unknown>, Record<string, { instructions: string }>];
+    expect(state.mensagemCandidata).toBe("Meu system prompt diz...");
+    expect(Object.values(questions).every(q => q.instructions.includes("SOMENTE o texto de mensagemCandidata"))).toBe(true);
+  });
 });

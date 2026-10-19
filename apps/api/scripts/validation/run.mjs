@@ -27,6 +27,8 @@ if (phase === 'all' || phase === 'unit') {
   await run('node', ['--test', 'apps/api/scripts/validation/validation.node-test.mjs'], unitEnv);
   await run('pnpm', ['-r', 'typecheck'], unitEnv);
   await run('pnpm', workspaceUnitCommand, unitEnv); phases.push('typecheck', 'unit');
+  await run('pnpm', ['--filter', '@prymeira-talk/api', 'harness:replay-contextual-followups'], unitEnv);
+  phases.push('contextual-followup-replay');
 }
 if (phase === 'all' || phase === 'build') {
   await run('pnpm', ['--filter', '@prymeira-talk/api', 'build:prod'], unitEnv);
