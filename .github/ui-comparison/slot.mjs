@@ -18,6 +18,7 @@ function start(role,entry,env){const image=config.images[role];if(!/^sha256:[a-f
 let browser,pollPromise,polling=false;
 try{
  await new Promise(r=>external.listen(18481,'127.0.0.1',r));
+ await db.userProfile.create({data:{workspaceId,clerkUserId:'demo_agent_marina',role:'owner',displayName:'Operadora Sintética',presenceState:'online'}});
  const channel=await db.channel.create({data:{workspaceId,provider:'evolution',providerKey:instance,displayName:'Canal sintético',status:'connected',historyImportStatus:'completed',verifiedMessagingPhoneNumber:'15550008888'}});
  await db.channelConnection.create({data:{workspaceId,channelId:channel.id,provider:'evolution',sessionName:instance,status:'connected',health:'healthy',eligible:true,verifiedPhoneNumber:'15550008888',historyRecoveryNextAttemptAt:new Date(Date.now()+3600000)}});
  await db.channelConnection.create({data:{workspaceId,channelId:channel.id,provider:'waha',sessionName:session,status:'connected',health:'healthy',eligible:true,verifiedPhoneNumber:'15550008888',lastHealthyAt:new Date(),recoveredThroughAt:new Date(Date.now()-600000)}});
