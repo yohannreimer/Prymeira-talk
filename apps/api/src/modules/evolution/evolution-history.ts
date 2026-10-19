@@ -275,6 +275,49 @@ export function createEvolutionHistorySource(options: { baseUrl: string; apiKey:
   }
   return {
     findMessageExact, recoveryChats, recoveryMessages,
+    /** Raw single-request recovery primitives. The engine owns durable traversal and
+     * two exhausted manifests; no timestamp predicate is assumed on this provider. */
+    async recoveryChatPage(input: { instanceName: string; offset: number; signal: AbortSignal }) {
+      if (!Number.isSafeInteger(input.offset) || input.offset < 0 || input.offset >= 100_000) throw new Error('HISTORY_PAGE_LIMIT');
+      const data = await post(`/chat/findChats/${encodeURIComponent(input.instanceName)}`, { take: 100, skip: input.offset }, undefined, input.signal);
+      const rows = Array.isArray(data) ? data : record(data) && Array.isArray(data.chats) ? data.chats : null;
+      if (!rows || rows.length > 100) throw new Error('HISTORY_CHATS_SHAPE');
+      const chats = rows.map(raw => {
+        if (!record(raw) || !historyAddress(raw.remoteJid)) throw new Error('HISTORY_CHAT_IDENTITY_INCOMPLETE');
+        const last = record(raw.lastMessage) ? raw.lastMessage : null;
+        const alt = last && record(last.key) ? last.key.remoteJidAlt : null;
+        const pn = phoneJid(raw.remoteJid) ? raw.remoteJid : phoneJid(raw.remoteJidAlt) ? raw.remoteJidAlt : phoneJid(alt) ? alt : null;
+        if (!pn && raw.remoteJid.endsWith('@lid')) throw new Error('HISTORY_CHAT_IDENTITY_INCOMPLETE');
+        return { remoteJid: raw.remoteJid, phoneJid: pn ?? raw.remoteJid };
+      });
+      historyDigest(chats);
+      return { chats };
+    },
+    async recoveryMessagePage(input: { instanceName: string; remoteJid: string; page: number; from: Date; to: Date; signal: AbortSignal }) {
+      if (!historyAddress(input.remoteJid) || !Number.isSafeInteger(input.page) || input.page < 1 || input.page > 2
+        || !Number.isFinite(input.from.getTime()) || !Number.isFinite(input.to.getTime()) || input.from > input.to) throw new Error('HISTORY_WINDOW');
+      // Source contract: Evolution 5624bda fetchMessages accepts ISO gte/lte and
+      // orders by timestamp DESC. A single bounded batch avoids offset tie ordering.
+      // Capacity 5000 is also used by exact lookup; the existing 8MiB scan cap remains.
+      const data = await post(`/chat/findMessages/${encodeURIComponent(input.instanceName)}`, {
+        where: { key: { remoteJid: input.remoteJid }, messageTimestamp: { gte: input.from.toISOString(), lte: input.to.toISOString() } },
+        page: input.page, offset: 5000
+      }, undefined, input.signal);
+      if (!record(data) || !record(data.messages) || !Array.isArray(data.messages.records)) throw new Error('HISTORY_SHAPE');
+      const value = data.messages;
+      if (!Array.isArray(value.records)) throw new Error('HISTORY_SHAPE');
+      if (!Number.isSafeInteger(value.total) || Number(value.total) < 0 || Number(value.total) > 5000
+        || value.currentPage !== input.page || value.pages !== Math.ceil(Number(value.total) / 5000)
+        || value.records.length !== Math.min(5000, Math.max(0, Number(value.total) - (input.page - 1) * 5000))) throw new Error('HISTORY_PAGINATION');
+      const records = value.records.map(raw => {
+        const item = parse(raw);
+        if (item.key.remoteJid !== input.remoteJid || exactRecordIdentity(item).kind !== 'consistent') throw new Error('HISTORY_IDENTITY');
+        if (item.messageTimestamp * 1000 < input.from.getTime() || item.messageTimestamp * 1000 > input.to.getTime()) throw new Error('HISTORY_FILTER_IGNORED');
+        return item;
+      });
+      historyDigest(records);
+      return { records, pages: Number(value.pages), total: Number(value.total) };
+    },
     /** Network-only API; use a proven canonical source/key outside the DB transaction. */
     async mediaExact(input: { instanceName: string; key: WhatsAppMessageKey; purpose: MediaPurpose }) {
       const deadline = AbortSignal.timeout(exactLookupTimeoutMs);

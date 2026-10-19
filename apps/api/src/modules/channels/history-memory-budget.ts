@@ -40,6 +40,13 @@ function jsonBytes(value: unknown, max: number) {
 export class HistoryMemoryBudget {
   private used = 0;
   reserve(value: unknown) { this.used += jsonBytes(value, HISTORY_SCAN_MAX_BYTES - this.used); }
+  /** A sorted view shares payload objects; count its reference slots instead of
+   * charging a second serialized copy of the entire provider payload. */
+  reserveReferences(count: number) {
+    if (!Number.isSafeInteger(count) || count < 0) throw new HistoryScanLimitError();
+    this.used += 16 + count * 8;
+    if (this.used > HISTORY_SCAN_MAX_BYTES) throw new HistoryScanLimitError();
+  }
 }
 export function historyDigest(value: unknown) {
   jsonBytes(value, HISTORY_SCAN_MAX_BYTES); // Guard before stable() allocates its canonical string.

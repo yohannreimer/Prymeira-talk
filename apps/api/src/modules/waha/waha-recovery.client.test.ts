@@ -21,3 +21,12 @@ it('refuses to certify a provider without raw exhaustion metadata', async () => 
   const client = createWahaClient({ baseUrl: 'https://waha.example', apiKey: 'fixture', fetch: fetch as never });
   await expect(client.getRecoveryMessages({ session: 'fixture', from: 1, to: 2, offset: 0, limit: 50 })).rejects.toThrow('HISTORY_PAGINATION_UNSUPPORTED');
 });
+
+it('cancels a hanging version response body using the recovery deadline', async () => {
+  let cancelled = false;
+  const client = createWahaClient({ baseUrl: 'https://waha.example', apiKey: 'fixture', fetch: (async () => new Response(new ReadableStream({ cancel() { cancelled = true; } }))) as never });
+  const controller = new AbortController();
+  const running = client.getRecoveryMessages({ session: 'fixture', from: 1, to: 2, offset: 0, limit: 50, signal: controller.signal });
+  setTimeout(() => controller.abort(new Error('synthetic deadline')), 20);
+  await expect(running).rejects.toThrow('synthetic deadline'); expect(cancelled).toBe(true);
+}, 500);

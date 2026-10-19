@@ -15,7 +15,7 @@ import { createEvolutionHistorySource } from '../evolution/evolution-history.js'
 import { createWahaLidResolver } from '../waha/waha-lid-resolver.js';
 import { IngressTransportConsumer } from './consumer.js';
 import { createEffectRunner, startEffectLoop } from './effect-runner.js';
-import { createMediaPrepareHandler, createSourceMediaPreparer } from './media-prepare-handler.js';
+import { createMediaPrepareHandler } from './media-prepare-handler.js';
 import { createCreatedMessagesNotifier } from '../channels/created-messages-notifier.js';
 import { createMessageMediaService } from '../conversations/message-media.js';
 import { MAX_SERVE_MEDIA_BYTES } from '../conversations/media-policy.js';
@@ -144,11 +144,9 @@ export async function createIngressRuntime(config: RuntimeConfig, consume: boole
     if (config.gapRecovery || config.wahaHistoryImport) {
       historyBridge = createRealtimeBridge({ databaseUrl: config.databaseUrl, hub: createRealtimeHub(), logger: { warn: (fields, message) => console.warn(message, fields) } });
       await historyBridge.start();
-      const mediaStore = config.mediaStorePath ? new IngressPrivateStore(config.mediaStorePath, MAX_SERVE_MEDIA_BYTES + 1024 * 1024) : null;
-      await mediaStore?.initialize();
-      history.after = { notify: createCreatedMessagesNotifier(db, event => historyBridge!.publish(event)),
-        prepareMedia: mediaStore ? createSourceMediaPreparer({ media: createMessageMediaService({ db, store: mediaStore }), waha: wahaClient,
-          evolution: config.evolutionApi ? createEvolutionClient(config.evolutionApi) : null, evolutionInstanceOf }) : undefined };
+      // Recovery publishes via durable realtime effects; this bridge is retained
+      // for the existing initial-import notifier. Media always uses its effect runner.
+      history.after = { notify: createCreatedMessagesNotifier(db, event => historyBridge!.publish(event)) };
     }
     const warnFor = (step: 'waha_history' | 'gap_recovery' | 'lid_resolution') => (error: unknown, connectionId: string) => {
       reportFailure(step, error);

@@ -23,15 +23,16 @@ export function lidsIn(input: unknown, max = 5): string[] {
 export function createWahaLidResolver(client: Pick<WahaClient, 'findPnByLid'>, options: { ttlMs?: number; unknownTtlMs?: number; maxEntries?: number; now?: () => number } = {}) {
   const cache = new Map<string, { pn: string | null; until: number }>();
   const now = options.now ?? Date.now, ttl = options.ttlMs ?? 6 * 60 * 60_000, unknownTtl = options.unknownTtlMs ?? 60_000, max = options.maxEntries ?? 10_000;
-  async function lookup(session: string, lid: string): Promise<string | null> {
+  async function lookup(session: string, lid: string, signal?: AbortSignal): Promise<string | null> {
+    signal?.throwIfAborted();
     const key = `${session}\n${lid}`, cached = cache.get(key);
     if (cached && cached.until > now()) return cached.pn;
     let pn: string | null = null;
     try {
-      const answer = await client.findPnByLid({ session, lid });
+      const answer = await client.findPnByLid({ session, lid, signal });
       const answeredLid = normalizeChatAddress(answer?.lid ?? null), phone = normalizeChatAddress(answer?.pn ?? null);
       if (answeredLid === lid && phone?.endsWith('@s.whatsapp.net')) pn = phone;
-    } catch { /* no proof */ }
+    } catch { signal?.throwIfAborted(); /* no proof */ }
     if (cache.size >= max) cache.delete(cache.keys().next().value!);
     cache.set(key, { pn, until: now() + (pn ? ttl : unknownTtl) });
     return pn;

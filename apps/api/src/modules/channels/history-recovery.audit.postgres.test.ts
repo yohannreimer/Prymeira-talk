@@ -16,6 +16,8 @@ import { HistoryNormalizationHoldError, persistProviderMessages } from './channe
 import { recoverConnectionGap } from './provider-history.js';
 import { canonicalEvolutionMediaKey } from '../messaging/canonical-media-source.js';
 import { createMessageMediaService } from '../conversations/message-media.js';
+import { createEffectHandlers } from '../ingress/effect-handlers.js';
+import { createEvolutionHistorySource } from '../evolution/evolution-history.js';
 import { createEffectRunner } from '../ingress/effect-runner.js';
 import { createMediaPrepareHandler } from '../ingress/media-prepare-handler.js';
 const url = process.env.MESSAGING_TEST_DATABASE_URL;
@@ -177,6 +179,37 @@ describe.skipIf(!url)('audit recovery durability on owned PostgreSQL', () => {
     await expect(canonicalEvolutionMediaKey(db, { workspaceId: f.workspaceId, messageId: message.id, instanceName: 'foreign-session' })).rejects.toThrow('MEDIA_IDENTITY_UNAVAILABLE');
     expect((await persistProviderMessages(imports(f, 'media', true))).inserted).toBe(0);
     expect(await db.message.count({ where: { workspaceId: f.workspaceId } })).toBe(1);
+  });
+  it('yields recovery under workspace contention, then commits durable media and UI work without invoking hanging callbacks', async () => {
+    const f=await fixture(),now=1_700_000_610_000;
+    let connection=await db.channelConnection.update({where:{id:f.connection.id},data:{status:'connected',eligible:true,recoveredThroughAt:new Date(now-600_000)}});
+    const value=raw(f,'bounded-media',true).data;
+    const source=createEvolutionHistorySource({baseUrl:'https://evolution.invalid',apiKey:'synthetic',fetch:(async(url,init)=>{
+      const body=JSON.parse(String(init?.body));
+      return String(url).includes('findChats')?Response.json(body.skip===0?[{remoteJid:peer}]:[]):Response.json({messages:{currentPage:body.page,total:1,pages:1,records:body.page===1?[value]:[]}});
+    }) as typeof fetch});
+    const prepareMedia=vi.fn(()=>new Promise(()=>{})),notify=vi.fn(()=>new Promise<void>(()=>{}));
+    const sources={evolution:source,after:{prepareMedia,notify}};
+    let ready!:()=>void,release!:()=>void;const acquired=new Promise<void>(r=>{ready=r;}),gate=new Promise<void>(r=>{release=r;});
+    const blocker=blockerDb.$transaction(async tx=>{await enterCanonicalWorkspaceTransaction(tx,f.workspaceId);ready();await gate;},{timeout:5000});
+    await acquired;const began=Date.now();
+    try {await expect(recoverConnectionGap(db,sources,connection,{now,maxMs:1000})).rejects.toThrow();expect(Date.now()-began).toBeLessThan(1800);}
+    finally {release();await blocker;}
+    expect((await db.channelConnection.findUniqueOrThrow({where:{id:connection.id}})).recoveredThroughAt).toEqual(connection.recoveredThroughAt);
+    let advanced=false;
+    for(let i=0;i<4&&!advanced;i++){
+      connection=await db.channelConnection.update({where:{id:connection.id},data:{historyRecoveryNextAttemptAt:null}});
+      advanced=(await recoverConnectionGap(db,sources,connection,{now,maxPages:8})).advanced;
+    }
+    expect(advanced).toBe(true);expect(prepareMedia).not.toHaveBeenCalled();expect(notify).not.toHaveBeenCalled();
+    const effects=await db.ingressEffect.findMany({where:{workspaceId:f.workspaceId}});
+    expect(effects.map(e=>e.kind).sort()).toEqual(['media.prepare','realtime.conversation','realtime.message']);
+    expect(effects.every(e=>e.state==='pending')).toBe(true);
+    const publish=vi.fn(),handlers=createEffectHandlers({db,realtime:{publish}});
+    const restarted=createEffectRunner({db,workerId:'ui-after-restart',workspaceIds:[f.workspaceId],handlers:{'realtime.message':handlers['realtime.message']!,'realtime.conversation':handlers['realtime.conversation']!}});
+    expect(await restarted.runOnce()).toBe(true);expect(await restarted.runOnce()).toBe(true);expect(await restarted.runOnce()).toBe(false);
+    expect(publish.mock.calls.map(([event])=>event.type).sort()).toEqual(['conversation.updated','message.created']);
+    expect(await db.ingressEffect.count({where:{workspaceId:f.workspaceId,kind:'media.prepare',state:'pending'}})).toBe(1);
   });
   it('keeps reused native ids in distinct channels, chats and directions, deduplicating only equivalent observations', async () => {
     const a = await fixture(), b = await fixture(a.workspaceId);

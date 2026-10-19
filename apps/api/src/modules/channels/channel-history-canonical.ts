@@ -1,5 +1,6 @@
 import { json, sha, stable } from '../messaging/canonical-values.js';
-import type { PrismaClient } from '@prisma/client';
+import { recoveryTransaction, type RecoveryWriteFence } from './history-recovery-budget.js';
+import type { Prisma, PrismaClient } from '@prisma/client';
 import { normalizeWhatsappPhone } from './channel-connections.js';
 import { autoResolveAuthority } from './conversation-authority.js';
 import { usableContactName } from '../contacts/contact-name.js';
@@ -41,9 +42,10 @@ export async function canonicalHistoryConnection(prisma: PrismaClient, channel: 
 export type ProviderMessageItem = { receiptId: string; timestampMs: number; originalType?: string; fingerprint?: string;
   wahaTemplateSnapshot?: CanonicalStoreOptions['wahaTemplateSnapshot'];
   normalize: (context: TrustedMessagingContext) => NormalizationResult };
-/** What happens after the messages are committed: durable media and live updates. Both are best effort: a failure
- * leaves the message visible with its media pending (recoverable), never rolls the message back. */
+/** Initial-import UI callback. Media and bounded-recovery UI work use durable
+ * effects committed with the message, so provider/network callbacks cannot block coverage. */
 export type AfterPersist = {
+  /** @deprecated Ignored: media.prepare is executed by the durable effect runner. */
   prepareMedia?: (input: { workspaceId: string; messageId: string; source: FrozenSource }) => Promise<unknown>;
   notify?: (workspaceId: string, created: Array<{ messageId: string; conversationId: string }>) => Promise<void>;
 };
@@ -64,19 +66,33 @@ export type AfterPersist = {
 export async function persistProviderMessages(input: {
   prisma: PrismaClient; channel: CanonicalHistoryChannel; connection: { id: string; provider: 'evolution' | 'waha'; lifecycleGeneration?: number; sessionName?: string };
   mode: 'history' | 'recovered_live'; items: ProviderMessageItem[]; batchId: string; after?: AfterPersist;
+  recoveryBudget?: { signal: AbortSignal; remaining: () => number; fence: RecoveryWriteFence };
 }): Promise<CanonicalHistoryResult> {
   const { prisma, channel, connection, mode, batchId } = input;
   const created: Array<{ messageId: string; conversationId: string; media: FrozenSource | null }> = [];
   const result: CanonicalHistoryResult = { conversationId: null, conversationIds: new Set(), inserted: 0, held: 0, skipped: 0 };
   const contested = new Set<string>();
   for (const item of [...input.items].sort((a, b) => a.timestampMs - b.timestampMs)) {
-    await prisma.$transaction(async tx => {
+    input.recoveryBudget?.signal.throwIfAborted();
+    const write = async (tx: Prisma.TransactionClient) => {
       await enterCanonicalWorkspaceTransaction(tx, channel.workspaceId);
+      if (input.recoveryBudget) {
+        await tx.$queryRaw`SELECT id FROM channels WHERE workspace_id=${channel.workspaceId} AND id=${channel.id}::uuid FOR SHARE`;
+        await tx.$queryRaw`SELECT id FROM channel_connections WHERE workspace_id=${channel.workspaceId} AND channel_id=${channel.id}::uuid AND id=${connection.id}::uuid FOR SHARE`;
+      }
       const context = await deriveTrustedMessagingContext(tx, { workspaceId: channel.workspaceId, channelId: channel.id,
         authenticatedSource: { provider: connection.provider, connectionId: connection.id }, mode, observedAt: new Date().toISOString() });
       if ((connection.lifecycleGeneration !== undefined && context.lifecycleGeneration !== connection.lifecycleGeneration)
         || (connection.sessionName !== undefined && context.sessionName !== connection.sessionName)) throw new StaleMessagingSourceError('Recovery source changed');
+      if (input.recoveryBudget) {
+        const current = await tx.channelConnection.findFirst({ where: { id: connection.id, workspaceId: channel.workspaceId,
+          channelId: channel.id, historyRecoveryLeaseToken: input.recoveryBudget.fence.token,
+          historyRecoveryLeaseUntil: { gt: new Date() }, recoveredThroughAt: input.recoveryBudget.fence.checkpoint,
+          verifiedPhoneNumber: input.recoveryBudget.fence.verifiedPhoneNumber, status: 'connected', eligible: true } });
+        if (!current) throw new StaleMessagingSourceError('Recovery lease changed');
+      }
       const sourceChannel = await tx.channel.findUniqueOrThrow({ where: { id: channel.id } });
+      if (input.recoveryBudget && sourceChannel.verifiedMessagingPhoneNumber !== input.recoveryBudget.fence.anchor) throw new StaleMessagingSourceError('Recovery channel anchor changed');
       const anchor = normalizeWhatsappPhone(sourceChannel.verifiedMessagingPhoneNumber);
       if (anchor) {
         const physical = await tx.channelConnection.findUniqueOrThrow({ where: { id: connection.id } });
@@ -117,6 +133,16 @@ export async function persistProviderMessages(input: {
         } });
       }
       if (stored.outcome !== 'created') { result.skipped++; return; }
+      if (input.recoveryBudget) {
+        for (const kind of ['realtime.message', 'realtime.conversation']) {
+          const scope = { workspaceId: channel.workspaceId, channelId: channel.id }, logicalKey = `message:${message.id}`;
+          await tx.ingressEffect.upsert({ where: { workspaceId_channelId_logicalKey_kind: { ...scope, logicalKey, kind } }, update: {}, create: {
+            ...scope, logicalKey, kind, messageId: message.id, conversationId: stored.conversationId,
+            cause: json({ origin: 'canonical_history', observationId: stored.observationId, messageId: message.id }),
+            frozen: json({ presentationOnly: true, mode, outcome: 'created', dependsOn: [] })
+          } });
+        }
+      }
       result.inserted++;
       created.push({ messageId: message.id, conversationId: stored.conversationId, media });
       // Recovered in time order: a reply we sent from the phone clears what was waiting before it.
@@ -128,14 +154,18 @@ export async function persistProviderMessages(input: {
       await selectConversationPreviewInTransaction(tx, context, { conversationId: stored.conversationId, messageId: message.id, preview: event.content.preview, selection: 'new_message' });
       await tx.conversation.updateMany({ where: { workspaceId: channel.workspaceId, id: stored.conversationId,
         OR: [{ lastMessageAt: null }, { lastMessageAt: { lt: message.createdAt } }] }, data: { lastMessageAt: message.createdAt } });
-    }, { isolationLevel: 'ReadCommitted', timeout: 30_000 });
+    };
+    if (input.recoveryBudget) await recoveryTransaction(prisma, Math.min(500, input.recoveryBudget.remaining()), write);
+    else await prisma.$transaction(write, { isolationLevel: 'ReadCommitted', timeout: 30_000 });
   }
   // Two conversations claim a chat: the phone-number default decides, and what was held enters as history.
-  for (const chatId of contested) await autoResolveAuthority(prisma, { workspaceId: channel.workspaceId, channelId: channel.id, chatId }).catch(() => undefined);
-  if (input.after?.prepareMedia) {
-    for (const item of created) if (item.media) await input.after.prepareMedia({ workspaceId: channel.workspaceId, messageId: item.messageId, source: item.media }).catch(() => undefined);
+  for (const chatId of input.recoveryBudget ? [] : contested) await autoResolveAuthority(prisma, { workspaceId: channel.workspaceId, channelId: channel.id, chatId }).catch(() => undefined);
+  // media.prepare already committed with the canonical row. The durable effect runner
+  // owns network work for imports and recovery; a hanging provider never blocks coverage.
+  if (!input.recoveryBudget && created.length && input.after?.notify) {
+    const notification = input.after.notify(channel.workspaceId, created.map(({ messageId, conversationId }) => ({ messageId, conversationId }))).catch(() => undefined);
+    await notification;
   }
-  if (created.length && input.after?.notify) await input.after.notify(channel.workspaceId, created.map(({ messageId, conversationId }) => ({ messageId, conversationId }))).catch(() => undefined);
   return result;
 }
 

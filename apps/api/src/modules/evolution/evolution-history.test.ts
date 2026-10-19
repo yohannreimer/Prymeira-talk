@@ -417,3 +417,23 @@ describe('exhausted recovery reads', () => {
     await expect(source.recoveryMessages({ instanceName: 'fixture', remoteJid: jid, from, to: end })).rejects.toThrow(/HISTORY_(SHAPE|PAGINATION)/);
   });
 });
+
+it('exposes one bounded recovery page without repeated complete scans and aborts a hanging body', async () => {
+  const calls: unknown[] = [];
+  const source = createEvolutionHistorySource({ baseUrl: 'https://evolution.invalid', apiKey: 'synthetic', fetch: (async (_url, init) => {
+    calls.push(JSON.parse(String(init?.body)));
+    return Response.json({ messages: { records: [], currentPage: 1, total: 0, pages: 0 } });
+  }) as typeof fetch });
+  expect(await source.recoveryMessagePage({ instanceName: 'synthetic', remoteJid: '15550000001@s.whatsapp.net', page: 1, from: new Date(1000), to: new Date(2000), signal: AbortSignal.timeout(100) })).toMatchObject({ pages: 0, total: 0, records: [] });
+  expect(calls).toHaveLength(1);
+  let cancelled = false;
+  const hanging = createEvolutionHistorySource({ baseUrl: 'https://evolution.invalid', apiKey: 'synthetic', fetch: (async () => new Response(new ReadableStream({ cancel() { cancelled = true; } }))) as typeof fetch });
+  await expect(hanging.recoveryChatPage({ instanceName: 'synthetic', offset: 0, signal: AbortSignal.timeout(20) })).rejects.toThrow();
+  expect(cancelled).toBe(true);
+});
+
+it.each(['over-cap', 'capped-response', 'ignored-filter'] as const)('fails closed on a bounded recovery batch with %s', async mode => {
+  const row={key:{id:'synthetic',remoteJid:'15550000001@s.whatsapp.net',fromMe:false},messageTimestamp:3,message:{conversation:'synthetic'}};
+  const source=createEvolutionHistorySource({baseUrl:'https://evolution.invalid',apiKey:'synthetic',fetch:(async()=>Response.json({messages:{currentPage:1,total:mode==='over-cap'?5001:mode==='capped-response'?2:1,pages:mode==='over-cap'?2:1,records:[row]}})) as typeof fetch});
+  await expect(source.recoveryMessagePage({instanceName:'synthetic',remoteJid:row.key.remoteJid,page:1,from:new Date(1000),to:new Date(2000),signal:AbortSignal.timeout(100)})).rejects.toThrow(mode==='ignored-filter'?'HISTORY_FILTER_IGNORED':'HISTORY_PAGINATION');
+});

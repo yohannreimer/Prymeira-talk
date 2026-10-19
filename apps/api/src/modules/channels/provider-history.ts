@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { recoverEvolutionWindow, type EvolutionRecoveryOptions } from './evolution-history-recovery.js';
+import { recoveryTransaction } from './history-recovery-budget.js';
 import { recoverWahaWindow } from './waha-history-recovery.js';
 import { lidsIn } from '../waha/waha-lid-resolver.js';
 import type { ChannelConnection, PrismaClient } from '@prisma/client';
@@ -18,7 +20,7 @@ import { fillContactDetails, persistProviderMessages, type AfterPersist, type Ca
  * the same canonical store and the store's exact identity keeps one message per WhatsApp message.
  */
 export type ProviderChat = { remoteJid: string; chatAddress: string; name: string | null; avatarUrl: string | null; lastActivityMs: number | null; lidMappings?: LidMapping[] };
-export type ProviderHistoryDeps = { evolution?: Pick<EvolutionHistorySource, 'recentChats' | 'recentMessages'> & Partial<Pick<EvolutionHistorySource, 'recoveryChats' | 'recoveryMessages'>> | null; waha?: (Pick<WahaClient, 'getChats' | 'getMessages'> & Partial<Pick<WahaClient, 'getRecoveryMessages'>>) | null; wahaLids?: Pick<WahaLidResolver, 'lookup'> | null; after?: AfterPersist };
+export type ProviderHistoryDeps = { evolution?: Pick<EvolutionHistorySource, 'recentChats' | 'recentMessages'> & Partial<Pick<EvolutionHistorySource, 'recoveryChats' | 'recoveryMessages' | 'recoveryChatPage' | 'recoveryMessagePage'>> | null; waha?: (Pick<WahaClient, 'getChats' | 'getMessages'> & Partial<Pick<WahaClient, 'getRecoveryMessages'>>) | null; wahaLids?: Pick<WahaLidResolver, 'lookup'> | null; after?: AfterPersist };
 
 const HISTORY_WINDOW_MS = 15 * 24 * 60 * 60 * 1000;
 const RECOVERY_OVERLAP_MS = 10 * 60 * 1000;
@@ -180,7 +182,7 @@ async function recoveryItems(deps: ProviderHistoryDeps, connection: ChannelConne
   return wahaItems(connection.sessionName, messages, chat.lidMappings);
 }
 
-const channelOf = async (prisma: PrismaClient, connection: ChannelConnection): Promise<CanonicalHistoryChannel & { historyImportStatus: string | null }> => {
+const channelOf = async (prisma: Pick<PrismaClient, 'channel'>, connection: ChannelConnection): Promise<CanonicalHistoryChannel & { historyImportStatus: string | null }> => {
   const channel = await prisma.channel.findUniqueOrThrow({ where: { id: connection.channelId } });
   return { id: channel.id, workspaceId: channel.workspaceId, providerKey: channel.providerKey, historyImportStatus: channel.historyImportStatus };
 };
@@ -208,23 +210,36 @@ export async function importConnectionHistory(prisma: PrismaClient, deps: Provid
  * the rest enter as `recovered_live` (visible and unread, no agent or automation). The checkpoint only advances after
  * the whole window is reconciled, with a compare-and-set so two workers never move it past unreconciled messages.
  */
-export async function recoverConnectionGap(prisma: PrismaClient, deps: ProviderHistoryDeps, connection: ChannelConnection, options: { now?: number; chatLimit?: number; perChat?: number } = {}) {
+export async function recoverConnectionGap(prisma: PrismaClient, deps: ProviderHistoryDeps, connection: ChannelConnection, options: EvolutionRecoveryOptions & { chatLimit?: number; perChat?: number } = {}) {
   const now = options.now ?? Date.now();
+  const started = Date.now();
+  options.signal?.throwIfAborted();
+  const channelInBudget = () => recoveryTransaction(prisma, options.maxMs ?? 5000, tx => channelOf(tx, connection));
+  const engineOptions = () => ({ ...options, now, maxMs: Math.max(1, (options.maxMs ?? 5000) - (Date.now() - started)) });
   if (connection.provider === 'waha' && deps.waha?.getRecoveryMessages) {
-    const channel = await channelOf(prisma, connection);
+    const channel = await channelInBudget();
     return recoverWahaWindow(prisma, connection, {
       read: query => deps.waha!.getRecoveryMessages!(query),
-      persist: async messages => {
+      persist: async (messages, budget) => {
         const mappings: LidMapping[] = [];
         for (const lid of new Set(messages.flatMap(message => lidsIn({ id: message.id, from: message.from, to: message.to, participant: message.participant }, 10)))) {
-          const pn = await deps.wahaLids?.lookup(connection.sessionName, lid);
+          const pn = await deps.wahaLids?.lookup(connection.sessionName, lid, budget.signal);
           if (!pn) throw new Error('HISTORY_CHAT_IDENTITY_INCOMPLETE');
           mappings.push({ lid, pn });
         }
         return persistProviderMessages({ prisma, channel, connection: { id: connection.id, provider: 'waha', lifecycleGeneration: connection.lifecycleGeneration, sessionName: connection.sessionName }, mode: 'recovered_live',
-          items: wahaItems(connection.sessionName, messages, mappings), batchId: randomUUID(), after: deps.after });
+          items: wahaItems(connection.sessionName, messages, mappings), batchId: randomUUID(), after: deps.after, recoveryBudget: budget });
       }
-    }, { now });
+    }, engineOptions());
+  }
+  if (connection.provider === 'evolution' && (deps.evolution?.recoveryChatPage || deps.evolution?.recoveryMessagePage)) {
+    if (!deps.evolution.recoveryChatPage || !deps.evolution.recoveryMessagePage) throw new Error('HISTORY_COMPLETENESS_UNSUPPORTED');
+    const channel = await channelInBudget();
+    return recoverEvolutionWindow(prisma, connection, { recoveryChatPage: query => deps.evolution!.recoveryChatPage!(query),
+      recoveryMessagePage: query => deps.evolution!.recoveryMessagePage!(query) }, (records, budget) => persistProviderMessages({
+      prisma, channel, connection: { id: connection.id, provider: 'evolution', lifecycleGeneration: connection.lifecycleGeneration, sessionName: connection.sessionName },
+      mode: 'recovered_live', items: evolutionItems(connection.sessionName, records), batchId: randomUUID(), after: deps.after, recoveryBudget: budget
+    }), engineOptions());
   }
   // Compatibility for injected legacy adapters. The real WAHA client always supplies the bounded
   // method above; errors/unsupported engines NEVER fall through to this exhaustive legacy path.
@@ -261,8 +276,11 @@ export async function recoverConnectionGap(prisma: PrismaClient, deps: ProviderH
 }
 
 /** A WAHA connection may only read history for a channel when it is proven to be the same number as Evolution. */
-export async function pairedConnections(prisma: PrismaClient, input: { workspaceIds?: readonly string[] }) {
-  const connections = await prisma.channelConnection.findMany({ include: { channel: { select: { verifiedMessagingPhoneNumber: true } } }, where: { channel: { archivedAt: null }, OR: [{ status: 'connected' }, { provider: 'evolution', verifiedPhoneNumber: { not: null } }], ...(input.workspaceIds ? { workspaceId: { in: [...input.workspaceIds] } } : {}) } });
+export async function pairedConnections(prisma: Pick<PrismaClient, 'channelConnection'>, input: { workspaceIds?: readonly string[] }) {
+  const discovered = await prisma.channelConnection.findMany({ omit: { historyRecoveryCursor: true }, include: { channel: { select: { verifiedMessagingPhoneNumber: true } } }, where: { channel: { archivedAt: null }, OR: [{ status: 'connected' }, { provider: 'evolution', verifiedPhoneNumber: { not: null } }], ...(input.workspaceIds ? { workspaceId: { in: [...input.workspaceIds] } } : {}) } });
+  // Eligibility may cover many numbers. Their durable manifests can each reach
+  // the scan cap; load only the selected connection's cursor inside its engine.
+  const connections = discovered.map(connection => ({ ...connection, historyRecoveryCursor: null }));
   const byChannel = new Map<string, ChannelConnection[]>();
   for (const connection of connections) byChannel.set(connection.channelId, [...(byChannel.get(connection.channelId) ?? []), connection]);
   return connections.filter(connection => {
@@ -280,19 +298,41 @@ export async function pairedConnections(prisma: PrismaClient, input: { workspace
   });
 }
 
-export async function recoverGapsSweep(prisma: PrismaClient, deps: ProviderHistoryDeps, input: { workspaceIds?: readonly string[]; deferWahaUntilImported?: boolean; onError?: (error: unknown, connectionId: string) => void } = {}) {
+export async function recoverGapsSweep(prisma: PrismaClient, deps: ProviderHistoryDeps, input: {
+  workspaceIds?: readonly string[]; deferWahaUntilImported?: boolean; onError?: (error: unknown, connectionId: string) => void;
+  maxMs?: number; clock?: () => number;
+} = {}) {
+  const clock = input.clock ?? Date.now, started = clock(), maxMs = input.maxMs ?? 5000;
+  if (!Number.isFinite(maxMs) || maxMs < 1 || maxMs > 30_000) throw new Error('HISTORY_BUDGET');
+  const remaining = () => Math.max(0, maxMs - (clock() - started)), signal = AbortSignal.timeout(Math.ceil(maxMs));
+  const bounded = !!(deps.waha?.getRecoveryMessages || deps.evolution?.recoveryChatPage || deps.evolution?.recoveryMessagePage);
+  // The production adapters include discovery in the same sweep deadline. Legacy
+  // injected adapters keep their compatibility path; real errors never fall back.
+  const connections = bounded
+    ? await recoveryTransaction(prisma, Math.min(500, remaining()), tx => pairedConnections(tx, input))
+    : await pairedConnections(prisma, input);
+  connections.sort((a, b) => {
+    const x = a.historyRecoveryNextAttemptAt?.getTime(), y = b.historyRecoveryNextAttemptAt?.getTime();
+    return x == null && y != null ? -1 : y == null && x != null ? 1 : (x ?? 0) - (y ?? 0) || a.id.localeCompare(b.id);
+  });
   let recovered = 0;
-  for (const connection of await pairedConnections(prisma, input)) {
+  for (const connection of connections) {
+    if (remaining() <= 0 || signal.aborted) break;
     if (input.deferWahaUntilImported && connection.provider === 'waha' && !connection.historyImportedAt) continue;
-    // The scheduler wakes frequently to resume bounded WAHA pages; Evolution keeps its 5-minute cadence.
-    if (connection.provider === 'evolution') {
+    if (connection.historyRecoveryNextAttemptAt && connection.historyRecoveryNextAttemptAt.getTime() > clock()) continue;
+    const connectionBounded = connection.provider === 'waha' ? !!deps.waha?.getRecoveryMessages
+      : !!deps.evolution?.recoveryChatPage && !!deps.evolution?.recoveryMessagePage;
+    if (bounded && !connectionBounded) { input.onError?.(new Error('HISTORY_PROVIDER_UNAVAILABLE'), connection.id); continue; }
+    // Compatibility adapters retain their original cadence; every real physical
+    // source instead records its next turn atomically with its recovery lease.
+    if (connection.provider === 'evolution' && !connectionBounded) {
       const now = new Date();
       const claimed = await prisma.channelConnection.updateMany({ where: { id: connection.id, lifecycleGeneration: connection.lifecycleGeneration,
         OR: [{ historyRecoveryNextAttemptAt: null }, { historyRecoveryNextAttemptAt: { lte: now } }] },
         data: { historyRecoveryNextAttemptAt: new Date(now.getTime() + 5 * 60_000) } });
       if (!claimed.count) continue;
     }
-    try { recovered += (await recoverConnectionGap(prisma, deps, connection)).recovered; }
+    try { recovered += (await recoverConnectionGap(prisma, deps, connection, { maxMs: remaining(), clock, signal })).recovered; }
     catch (error) { input.onError?.(error, connection.id); }
   }
   return { recovered };

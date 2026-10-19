@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient, type Prisma } from '@prisma/client';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { HistoryRecord } from '../evolution/evolution-history.js';
-import type { WahaMessage } from '../waha/waha.client.js';
+import type { WahaMessage, WahaRecoveryQuery } from '../waha/waha.client.js';
 import { normalizeWahaEvent } from '../waha/waha-normalizer.js';
 import { persistProviderMessages, importChatCanonical } from './channel-history-canonical.js';
 import { normalizeChatAddress } from '../messaging/whatsapp-identity.js';
@@ -184,6 +184,41 @@ describe.skipIf(!databaseUrl)('provider history and gap recovery on PostgreSQL',
     expect(await db.message.count({ where: { workspaceId: f.workspaceId } })).toBe(0);
   });
 
+  it('includes eligibility discovery in the bounded sweep SQL deadline', async () => {
+    const f=await fixture(),read=vi.fn();
+    const proxy=new Proxy(db,{get(object,property){
+      if(property==='$transaction')return (work:(tx:Prisma.TransactionClient)=>Promise<unknown>,options?:{timeout?:number;maxWait?:number;isolationLevel?:Prisma.TransactionIsolationLevel})=>object.$transaction(async tx=>{
+        const delegate=new Proxy(tx.channelConnection,{get(target,key){
+          if(key==='findMany')return async(args:Parameters<typeof target.findMany>[0])=>{await tx.$queryRaw`SELECT pg_sleep(2)::text`;return target.findMany(args);};
+          const value=Reflect.get(target,key,target);return typeof value==='function'?value.bind(target):value;
+        }});
+        return work(new Proxy(tx,{get(target,key){return key==='channelConnection'?delegate:Reflect.get(target,key,target);}}));
+      },options);
+      const value=Reflect.get(object,property,object);return typeof value==='function'?value.bind(object):value;
+    }});
+    const began=Date.now();
+    await expect(recoverGapsSweep(proxy,{waha:{getChats:async()=>[],getMessages:async()=>[],getRecoveryMessages:read}},{workspaceIds:[f.workspaceId],maxMs:1000})).rejects.toThrow();
+    expect(Date.now()-began).toBeLessThan(1500);expect(read).not.toHaveBeenCalled();
+  });
+  it('shares one sweep budget and durably gives untouched and earliest-due numbers the next turn', async () => {
+    const fixtures=[await fixture(),await fixture(),await fixture()],now=Date.now();let elapsed=0;
+    await db.channelConnection.updateMany({where:{id:{in:fixtures.map(f=>f.evolution.id)}},data:{eligible:false,status:'disconnected'}});
+    await db.channelConnection.update({where:{id:fixtures[1]!.waha.id},data:{historyRecoveryNextAttemptAt:new Date(now-2000)}});
+    await db.channelConnection.update({where:{id:fixtures[2]!.waha.id},data:{historyRecoveryNextAttemptAt:new Date(now-1000)}});
+    const read=vi.fn(async(q:WahaRecoveryQuery)=>{elapsed+=1000;return {messages:[],rawDigest:'a'.repeat(64),rawCount:0,nextOffset:q.offset,exhausted:true};});
+    const source={waha:{getChats:vi.fn(async()=>[]),getMessages:vi.fn(async()=>[]),getRecoveryMessages:read}},onError=vi.fn();
+    const options={workspaceIds:fixtures.map(f=>f.workspaceId),maxMs:1000,clock:()=>now+elapsed,onError};
+    for(let i=0;i<3;i++){
+      const before=read.mock.calls.length;
+      expect(await recoverGapsSweep(db,source,options)).toEqual({recovered:0});
+      expect(read.mock.calls.length-before).toBe(1);
+      expect(read.mock.calls.at(-1)![0].session).toBe(fixtures[i]!.waha.sessionName);
+      const attempted=await db.channelConnection.findUniqueOrThrow({where:{id:fixtures[i]!.waha.id}});
+      expect(attempted.historyRecoveryNextAttemptAt!.getTime()).toBeGreaterThan(now+elapsed);
+      expect(attempted.recoveredThroughAt).toEqual(fixtures[i]!.waha.recoveredThroughAt);
+    }
+    expect(onError).toHaveBeenCalledTimes(3);
+  });
   it('prepares durable media and announces live what recovery or history writes', async () => {
     const f = await fixture();
     await db.channelConnection.update({ where: { id: f.evolution.id }, data: { recoveredThroughAt: new Date(NOW - 20 * 60_000) } });
@@ -194,9 +229,11 @@ describe.skipIf(!databaseUrl)('provider history and gap recovery on PostgreSQL',
     const result = await recoverConnectionGap(db, sources, await db.channelConnection.findUniqueOrThrow({ where: { id: f.evolution.id } }), { now: NOW });
     expect(result.recovered).toBe(2);
     const stored = await db.message.findFirstOrThrow({ where: { workspaceId: f.workspaceId, type: 'image' } });
-    expect(prepareMedia).toHaveBeenCalledTimes(1);
-    expect(prepareMedia).toHaveBeenCalledWith({ workspaceId: f.workspaceId, messageId: stored.id,
-      source: expect.objectContaining({ provider: 'evolution', channelProvider: 'evolution', sessionName: f.evolution.sessionName, key: expect.objectContaining({ nativeId: 'IMG' }) }) });
+    expect(prepareMedia).not.toHaveBeenCalled();
+    expect(await db.ingressEffect.findFirstOrThrow({ where: { workspaceId: f.workspaceId, messageId: stored.id, kind: 'media.prepare' } })).toMatchObject({
+      state: 'pending', frozen: expect.objectContaining({ mediaSource: expect.objectContaining({ provider: 'evolution', sessionName: f.evolution.sessionName,
+        key: expect.objectContaining({ nativeId: 'IMG' }) }) })
+    });
     expect(notify).toHaveBeenCalledWith(f.workspaceId, expect.arrayContaining([expect.objectContaining({ messageId: stored.id })]));
     // A failing media download never undoes the message: it stays, with its media pending.
     const g = await fixture();
