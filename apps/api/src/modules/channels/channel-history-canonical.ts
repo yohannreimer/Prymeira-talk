@@ -6,7 +6,7 @@ import { usableContactName } from '../contacts/contact-name.js';
 import { enterCanonicalWorkspaceTransaction } from '../messaging/canonical-boundary.js';
 import { deriveTrustedMessagingContext, StaleMessagingSourceError } from '../messaging/canonical-source.js';
 import { selectConversationPreviewInTransaction } from '../messaging/conversation-preview.js';
-import { createCanonicalStore } from '../messaging/canonical-store.js';
+import { createCanonicalStore, type CanonicalStoreOptions } from '../messaging/canonical-store.js';
 import type { NormalizationResult, TrustedMessagingContext } from '../messaging/normalized-event.js';
 import type { FrozenSource } from '../ingress/media-prepare-handler.js';
 import { normalizeEvolutionWebhook } from '../evolution/evolution-event-normalizer.js';
@@ -39,6 +39,7 @@ export async function canonicalHistoryConnection(prisma: PrismaClient, channel: 
 /** One provider message read back from a provider API (history or gap recovery), normalized under the trusted
  * context only inside its own transaction. `receiptId` is the provider's own message id: never text or time. */
 export type ProviderMessageItem = { receiptId: string; timestampMs: number; originalType?: string; fingerprint?: string;
+  wahaTemplateSnapshot?: CanonicalStoreOptions['wahaTemplateSnapshot'];
   normalize: (context: TrustedMessagingContext) => NormalizationResult };
 /** What happens after the messages are committed: durable media and live updates. Both are best effort: a failure
  * leaves the message visible with its media pending (recoverable), never rolls the message back. */
@@ -92,6 +93,7 @@ export async function persistProviderMessages(input: {
       // store owns that complete identity; receipt keys preserve the same scoped tuple.
       const receiptKey = `${mode}:${connection.provider}:${channel.id}:${sha(stable(event.key))}`;
       const stored = await store.persistInTransaction(tx, event, { receiptKey,
+        ...(connection.provider === 'waha' && item.wahaTemplateSnapshot ? { wahaTemplateSnapshot: item.wahaTemplateSnapshot } : {}),
         ...(mode === 'history' ? { presentation: { ingestedAt: new Date(item.timestampMs), history: { originalType: item.originalType ?? 'unknown', batchId } } } : {}) });
       if (stored.outcome === 'held') {
         result.held++;

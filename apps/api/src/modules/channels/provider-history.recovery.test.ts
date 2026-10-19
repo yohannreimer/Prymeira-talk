@@ -4,7 +4,7 @@ vi.mock('./channel-history-canonical.js', () => ({
   persistProviderMessages: vi.fn(async ({ items }) => ({ inserted: items.length, held: 0, conversationId: null })),
   fillContactDetails: vi.fn()
 }));
-import { importConnectionHistory, recoverConnectionGap, recoverGapsSweep } from './provider-history.js';
+import { importConnectionHistory, recoverConnectionGap, recoverGapsSweep, wahaItems } from './provider-history.js';
 import { createWahaClient } from '../waha/waha.client.js';
 import { persistProviderMessages } from './channel-history-canonical.js';
 const now = 1_800_000_000_000;
@@ -15,6 +15,11 @@ function database() {
 const chat = (i: number) => ({ id: `1555000${String(i).padStart(4, '0')}@c.us`, timestamp: now / 1000 });
 const message = (i: number) => ({ id: `false_${chat(0).id}_M${i}`, from: chat(0).id, fromMe: false, timestamp: (now - 60_000 - i * 1000) / 1000, body: `fixture-${i}` });
 describe('complete recovery windows', () => {
+  it('carries native template main text only from GOWS history payloads', () => {
+    const m = message(1), native = { ...m, _data: { Info: {}, Message: { templateMessage: { hydratedTemplate: {} } } } };
+    expect(wahaItems('session', [native])[0]?.wahaTemplateSnapshot).toEqual({ nativeId: m.id, body: m.body });
+    expect(wahaItems('session', [{ ...m, _data: { type: 'template' } }])[0]?.wahaTemplateSnapshot).toBeUndefined();
+  });
   it('bounds chat metadata retained across individually bounded history pages', async () => {
     const db = database(), picture = `https://provider.test/${'x'.repeat(32 * 1024)}`;
     const waha = { getChats: vi.fn(async ({ offset = 0 }) => offset < 300 ? Array.from({ length: 100 }, (_, i) => ({ ...chat(offset + i), picture })) : []), getMessages: vi.fn(async () => []) };

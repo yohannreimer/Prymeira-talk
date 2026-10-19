@@ -280,6 +280,37 @@ describe.skipIf(!url)('canonical transactional store on PostgreSQL', () => {
       expect(await db.message.findMany({ where: { workspaceId: c.workspaceId }, select: { body: true } })).toEqual([{ body: 'hello' }]);
     }
   });
+  it('preserves an authored template when a verified GOWS history snapshot only expands its display text', async () => {
+    const c = { ...await context(undefined, undefined, 'waha'), mode: 'recovered_live' as const };
+    const template = msg(c); template.content = { ...template.content, type: 'template', body: 'Original template', preview: 'Original template' };
+    const first = await persist(template, 'send');
+    const snapshot = { ...msg(c), content: { ...msg(c).content, body: 'Original template\nButton label', preview: 'Original template\nButton label' } };
+    expect(await persist(snapshot, 'recovery')).toMatchObject({ outcome: 'held', reconciliationReasons: ['revision_reconciliation_required'] });
+    const enriched = { ...snapshot, addressMappings: [{ role: 'sender' as const, lid: LID, pn: '15550002222@s.whatsapp.net', source: 'waha.lid_lookup' as const }] };
+    expect(await persist(enriched, 'recovery')).toMatchObject({ outcome: 'held', reconciliationReasons: ['receipt_key_conflict'] });
+    const before = await db.message.findUniqueOrThrow({ where: { id: first.messageId! } });
+    const proof = { nativeId: snapshot.key.nativeId!, body: 'Original template' };
+    expect(await persist(enriched, 'recovery', { wahaTemplateSnapshot: proof })).toMatchObject({ outcome: 'duplicate', messageId: first.messageId, allowOperationalEffects: false });
+    expect(await db.message.findUniqueOrThrow({ where: { id: first.messageId! } })).toEqual(before);
+    expect(await db.canonicalObservation.count({ where: { workspaceId: c.workspaceId, state: 'held' } })).toBe(0);
+    expect(await db.canonicalMessageIdentity.findUnique({ where: { id: first.identityId! } })).toMatchObject({ contentState: 'ready' });
+    const next = { ...template, key: msg(c, 'B').key }; const nextStored = await persist(next, 'send-B');
+    const nextSnapshot = { ...snapshot, key: next.key };
+    expect(await persist(nextSnapshot, 'recovery-B', { wahaTemplateSnapshot: { ...proof, nativeId: next.key.nativeId! } })).toMatchObject({ outcome: 'duplicate', messageId: nextStored.messageId });
+  });
+  it('never confirms a template using another native id, changed main text, live delivery or a known edit', async () => {
+    for (const scenario of ['id', 'body', 'live', 'edit']) {
+      const c = { ...await context(undefined, undefined, 'waha'), mode: scenario === 'live' ? 'live' as const : 'recovered_live' as const };
+      const template = msg(c); template.content = { ...template.content, type: 'template', body: 'Original template' };
+      const first = await persist(template, 'send');
+      const snapshot = { ...msg(c), content: { ...msg(c).content, body: 'Original template\nButton label' } };
+      await persist(snapshot, 'recovery');
+      if (scenario === 'edit') await db.message.update({ where: { id: first.messageId! }, data: { metadata: { editedAt: '2026-10-01T12:00:00Z' } } });
+      const proof = { nativeId: scenario === 'id' ? 'different' : snapshot.key.nativeId!, body: scenario === 'body' ? 'Changed' : 'Original template' };
+      expect(await persist(snapshot, 'recovery', { wahaTemplateSnapshot: proof })).toMatchObject({ outcome: 'held' });
+      expect(await db.message.findUniqueOrThrow({ where: { id: first.messageId! } })).toMatchObject({ type: 'template', body: 'Original template' });
+    }
+  });
   it('requires exact adoption when a scoped legacy native ID already exists', async () => {
     const c=await context();
     const contact=await db.contact.create({data:{workspaceId:c.workspaceId,phone:'15550001111'}});
