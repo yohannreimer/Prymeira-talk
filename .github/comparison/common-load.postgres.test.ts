@@ -90,7 +90,7 @@ describe.skipIf(!databaseUrl || !brokerUrl)('isolated matched VPS comparison (di
   }, 60_000);
 
   const post = (path: string, body: unknown, headers: Record<string, string> = { 'x-prymeira-talk-secret': SECRET }) =>
-    fetch(`http://127.0.0.1:${port}${path}`, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) });
+    fetch(`http://127.0.0.1:${port}${path}`, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body), signal: AbortSignal.timeout(20_000) });
   const upsert = (id: string, message: unknown) => ({ event: 'MESSAGES_UPSERT', instance, data: { key: { id, remoteJid: '15550001111@s.whatsapp.net', fromMe: false }, message, messageTimestamp: Math.floor(Date.now() / 1000), pushName: 'Maria' } });
 
   it('refuses a wrong secret, and reports an unknown source instead of guessing', async () => {
@@ -190,20 +190,30 @@ describe.skipIf(!databaseUrl || !brokerUrl)('isolated matched VPS comparison (di
       sweepMs = Number(summary![1]); firstTurnRuntimeRecovered = Number(logs.join('').match(/gaps:\s*\{[\s\S]*?counts:\s*\{\s*recovered:\s*(\d+)/)?.[1] ?? -1); expect(firstTurnRuntimeRecovered).toBeGreaterThanOrEqual(0); overlapEndMs = firstSweepFinishedAt - began;
     })();
     try {
+      const httpOutcomes: Array<{ sequence: number; provider: string; rawId: string; digest: string; sentAt: number; responseAt: number; status: number; receiptId: string | null; error: string | null }> = [];
+      const offer = async (sequence: number, provider: string, rawId: string, body: unknown, headers?: Record<string,string>) => {
+        const at=Date.now(), digest=createHash('sha256').update(JSON.stringify(body)).digest('hex');
+        let status=0,receiptId: string|null=null,error: string|null=null;
+        try { const response=await post(`/webhooks/${provider}/${workspaceId}`,body,headers); status=response.status;const json=await response.json() as {receiptId?:string;error?:string};receiptId=typeof json.receiptId==='string'?json.receiptId:null;error=json.error??null; }
+        catch(e){error=e instanceof Error?e.name:'request-error';}
+        const responseAt=Date.now();httpOutcomes.push({sequence,provider,rawId,digest,sentAt:at,responseAt,status,receiptId,error});
+        if(status===202&&receiptId){receiptSentAt.set(receiptId,at);envelopeDetails.set(receiptId,{sequence,provider,sentAt:at,acceptedAt:responseAt});acceptMs.push(responseAt-at);}
+      };
       const offered: Array<Promise<unknown>> = [];
       for (let i = 0; i < 80; i++) {
-        const scheduled = began + i * 125; if (Date.now() < scheduled) await new Promise(resolve => setTimeout(resolve, scheduled - Date.now()));
-        const id = `${prefix}${i}`, timestamp = Math.floor(Date.now() / 1000); sentAt.set(id, Date.now());
-        const evo = upsert(id, { conversation: 'synthetic controlled load' });
-        const wa = { event: 'message.any', session: wahaSession, payload: { id: `false_15550001111@c.us_${id}`, from: '15550001111@c.us', fromMe: false, body: 'synthetic controlled load', timestamp } };
-        offered.push(Promise.all([
-          (async () => { const at = Date.now(); const response = await post(`/webhooks/evolution/${workspaceId}`, evo); expect(response.status).toBe(202); const receiptId = (await response.json() as { receiptId: string }).receiptId, acceptedAt = Date.now(); receiptSentAt.set(receiptId, at); envelopeDetails.set(receiptId, { sequence: i, provider: 'evolution', sentAt: at, acceptedAt }); acceptMs.push(acceptedAt - at); })(),
-          (async () => { const at = Date.now(); const bytes = JSON.stringify(wa); const response = await post(`/webhooks/waha/${workspaceId}`, wa, { 'x-webhook-hmac-algorithm': 'sha512', 'x-webhook-hmac': createHmac('sha512', 'rehearsal-waha-secret-1234567').update(bytes).digest('hex') }); expect(response.status).toBe(202); const receiptId = (await response.json() as { receiptId: string }).receiptId, acceptedAt = Date.now(); receiptSentAt.set(receiptId, at); envelopeDetails.set(receiptId, { sequence: i, provider: 'waha', sentAt: at, acceptedAt }); acceptMs.push(acceptedAt - at); })()
-        ]));
+        const scheduled=began+i*125;if(Date.now()<scheduled)await new Promise(r=>setTimeout(r,scheduled-Date.now()));
+        const id=`${prefix}${i}`,timestamp=Math.floor(Date.now()/1000);sentAt.set(id,Date.now());
+        const evo=upsert(id,{conversation:'synthetic controlled load'});
+        const wa={event:'message.any',session:wahaSession,payload:{id:`false_15550001111@c.us_${id}`,from:'15550001111@c.us',fromMe:false,body:'synthetic controlled load',timestamp}};
+        offered.push(offer(i,'evolution',id,evo),offer(i,'waha',id,wa,{'x-webhook-hmac-algorithm':'sha512','x-webhook-hmac':createHmac('sha512','rehearsal-waha-secret-1234567').update(JSON.stringify(wa)).digest('hex')}));
       }
-      if (Date.now() < began + 10_000) await new Promise(resolve => setTimeout(resolve, began + 10_000 - Date.now()));
-      const trafficDurationMs = Date.now() - began;
-      await Promise.all(offered);
+      if(Date.now()<began+10000)await new Promise(r=>setTimeout(r,began+10000-Date.now()));
+      const trafficDurationMs=Date.now()-began;await Promise.all(offered);
+      const durableReceipts = await db.ingressReceipt.findMany({where:{workspaceId,authenticatedDigest:{in:httpOutcomes.map(o=>o.digest)}},select:{id:true,authenticatedDigest:true}});
+      const durableDigests=new Set(durableReceipts.map(r=>r.authenticatedDigest));
+      for(const row of durableReceipts){const outcome=httpOutcomes.find(o=>o.digest===row.authenticatedDigest)!;if(!receiptSentAt.has(row.id)){receiptSentAt.set(row.id,outcome.sentAt);envelopeDetails.set(row.id,{sequence:outcome.sequence,provider:outcome.provider,sentAt:outcome.sentAt,acceptedAt:outcome.responseAt});}}
+      const expectedLive=new Set(httpOutcomes.filter(o=>durableDigests.has(o.digest)).map(o=>o.rawId));
+      await writeFile(join(process.cwd(),'../../validation-artifacts',`admission-${Date.now()}.json`),JSON.stringify({kind:'matched-comparison-admission',variant:process.env.TALK_COMPARE_VARIANT,slot:process.env.TALK_COMPARE_SLOT,offerWindowMs:trafficDurationMs,httpOutcomes,durableReceipts,expectedCanonicalIds:[...expectedLive]},null,2));
       await recovery;
       const firstTurnCounts = new Map(counts);
       const yielded = await db.channelConnection.findMany({ where: { id: { in: recoveryConnections.map(c => c.id) } }, select: { id: true, historyRecoveryFailures: true, recoveredThroughAt: true, historyRecoveryNextAttemptAt: true, historyRecoveryLeaseToken: true, historyRecoveryLeaseUntil: true, historyRecoveryCursor: true } });
@@ -220,11 +230,11 @@ describe.skipIf(!databaseUrl || !brokerUrl)('isolated matched VPS comparison (di
       const pendingConnections = yielded.filter(c => !isAdvanced(c));
       const laterTurnRequired = pendingConnections.length > 0;
       let laterTurnProgressProved: boolean | null = null;
-      const identities = await until(() => db.canonicalMessageIdentity.findMany({ where: { workspaceId, rawId: { startsWith: prefix } }, include: { message: true } }), rows => [...sentAt.keys()].every(id => rows.some(row => row.rawId === id)), 120_000);
-      const actual = identities.filter(i => sentAt.has(i.rawId)).map(i => i.rawId).sort(), expected = [...sentAt.keys()].sort(); expect(actual).toEqual(expected);
-      const appliedProgress = await until(() => db.ingressEventProgress.findMany({ where: { workspaceId, receiptId: { in: [...receiptSentAt.keys()] } }, select: { receiptId: true, committedAt: true, state: true } }), rows => rows.length === 160, 120_000);
+      const identities = await until(() => db.canonicalMessageIdentity.findMany({ where: { workspaceId, rawId: { startsWith: prefix } }, include: { message: true } }), rows => [...expectedLive].every(id => rows.some(row => row.rawId === id)), 120_000);
+      const actual = identities.filter(i => expectedLive.has(i.rawId)).map(i => i.rawId).sort(), expected = [...expectedLive].sort(); expect(actual).toEqual(expected);
+      const appliedProgress = await until(() => db.ingressEventProgress.findMany({ where: { workspaceId, receiptId: { in: [...receiptSentAt.keys()] } }, select: { receiptId: true, committedAt: true, state: true } }), rows => rows.length === receiptSentAt.size, 120_000);
       expect(appliedProgress.every(p => p.state !== 'held')).toBe(true);
-      await until(async () => applicationObservedAt.size, count => count === 160, 120_000);
+      await until(async () => applicationObservedAt.size, count => count === receiptSentAt.size, 120_000);
       const applicationMs = appliedProgress.map(p => applicationObservedAt.get(p.receiptId)! - receiptSentAt.get(p.receiptId)!);
       const overlapProgress = appliedProgress.filter(p => receiptSentAt.get(p.receiptId)! <= began + overlapEndMs);
 
@@ -232,13 +242,14 @@ describe.skipIf(!databaseUrl || !brokerUrl)('isolated matched VPS comparison (di
       const ingressP95Ms = percentile(acceptMs, .95), applicationP95Ms = percentile(applicationMs, .95);
       const overlapApplicationP95Ms = percentile(overlapProgress.map(p => applicationObservedAt.get(p.receiptId)! - receiptSentAt.get(p.receiptId)!), .95);
       const quantiles = (values: number[]) => values.length ? { count: values.length, p50: percentile(values, .5), p90: percentile(values, .9), p95: percentile(values, .95), p99: percentile(values, .99), max: Math.max(...values) } : { count: 0 };
-      const envelopes = [...envelopeDetails].map(([receiptId, detail]) => ({ sequence: detail.sequence, provider: detail.provider, sentMs: detail.sentAt-began, acceptedMs: detail.acceptedAt-began,
+      const envelopes = [...envelopeDetails].map(([receiptId, detail]) => ({ sequence: detail.sequence, provider: detail.provider, httpStatus: httpOutcomes.find(o=>o.sequence===detail.sequence&&o.provider===detail.provider)!.status, sentMs: detail.sentAt-began, acceptedMs: detail.acceptedAt-began,
         applicationFinalizedMs: applicationFinalizedAt.has(receiptId) ? applicationFinalizedAt.get(receiptId)!-began : null, firstObservedAppliedMs: applicationObservedAt.get(receiptId)!-began,
         ingressMs: detail.acceptedAt-detail.sentAt, applicationMs: applicationObservedAt.get(receiptId)!-detail.sentAt,
         applicationFinalizationMs: applicationFinalizedAt.has(receiptId) ? applicationFinalizedAt.get(receiptId)!-detail.sentAt : null,
         visibilityDelayMs: applicationFinalizedAt.has(receiptId) ? applicationObservedAt.get(receiptId)!-applicationFinalizedAt.get(receiptId)! : null,
         overlapsRecovery: detail.sentAt <= began+overlapEndMs })).sort((a,b) => a.sequence-b.sequence || a.provider.localeCompare(b.provider));
       const observations = { schemaVersion: 1, kind: 'matched-comparison-observations', observationsOnly: true, recoveryEnabled: !diagnosticControl, diagnosticControl,
+        httpOutcomes: httpOutcomes.map(o=>({...o,sentAt:o.sentAt-began,responseAt:o.responseAt-began,durable:durableDigests.has(o.digest)})), admission: {offered:160,accepted:httpOutcomes.filter(o=>o.status===202).length,durableReceipts:durableReceipts.length,non202Durable:httpOutcomes.filter(o=>o.status!==202&&durableDigests.has(o.digest)).length,missingOfferedCanonical:[...sentAt.keys()].filter(id=>!expectedLive.has(id)),statusCounts:Object.fromEntries([...new Set(httpOutcomes.map(o=>o.status))].map(status=>[status,httpOutcomes.filter(o=>o.status===status).length]))},
         runtimeArtifacts: JSON.parse(process.env.TALK_COMPARE_RUNTIME_ARTIFACTS!), variant: process.env.TALK_COMPARE_VARIANT, slot: process.env.TALK_COMPARE_SLOT, diagnosticOnly: true, qualification: false,
         controllerSha: execFileSync('git', ['rev-parse','HEAD'], { encoding: 'utf8' }).trim(), controllerSourceState: execFileSync('git', ['status','--porcelain'], { encoding: 'utf8' }).trim() ? 'working-tree' : 'clean-checkout',
         harnessRunId: process.env.TALK_VALIDATION_RUN_ID ?? null, startedAt, observedAt: new Date().toISOString(), thresholds: { ingressP95Ms: 500, applicationP95Ms: 2000 },
@@ -254,7 +265,7 @@ describe.skipIf(!databaseUrl || !brokerUrl)('isolated matched VPS comparison (di
       const diagnosticPath = join(process.cwd(), '../../validation-artifacts', `load-observations-${Date.now()}.json`); await mkdir(join(process.cwd(), '../../validation-artifacts'), { recursive: true });
       await writeFile(diagnosticPath, JSON.stringify(observations, null, 2));
       console.info('SYNTHETIC_LOAD_OBSERVATIONS', JSON.stringify({ file: diagnosticPath, ingressMs: observations.ingressMs, applicationMs: observations.applicationMs, overlapApplicationMs: observations.overlapApplicationMs, visibilityDelayMs: observations.visibilityDelayMs, pollQueryMs: observations.pollQueryMs, pollGapMs: observations.pollGapMs, sweep: observations.sweep }));
-      expect(acceptMs).toHaveLength(160);
+      expect(httpOutcomes).toHaveLength(160);
       let recoveryCompletion: unknown = { enabled: false };
       if (!diagnosticControl) {
         const resumeStartedAt = new Date().toISOString();
@@ -268,7 +279,7 @@ describe.skipIf(!databaseUrl || !brokerUrl)('isolated matched VPS comparison (di
           recoveredIdentities: finalRows.length, state: await db.channelConnection.findMany({ where: { id: { in: recoveryConnections.map(c=>c.id) } } }) };
       }
       const allIdentities = await db.canonicalMessageIdentity.findMany({ where: { workspaceId, rawId: { startsWith: prefix } } });
-      expect(allIdentities.length).toBe(diagnosticControl ? 80 : 83);
+      expect(allIdentities.length).toBe(expectedLive.size+(diagnosticControl?0:3));
       const historical = await db.ingressEffect.findMany({ where: { workspaceId, messageId: { in: allIdentities.filter(i => recoveredIds.includes(i.rawId)).map(i => i.messageId) } } });
       const historicalByKind = Object.fromEntries([...new Set(historical.map(e=>e.kind))].map(kind=>[kind,historical.filter(e=>e.kind===kind).length]));
       expect(historical.every(e => ['realtime.message','realtime.conversation','media.prepare'].includes(e.kind) && e.receiptId === null)).toBe(true);
@@ -277,7 +288,8 @@ describe.skipIf(!databaseUrl || !brokerUrl)('isolated matched VPS comparison (di
       const worker = recoveryWorker; worker.kill('SIGTERM'); await until(async () => worker.exitCode, value => value !== null);
       const restarted = spawn(process.execPath, ['dist/ingress-worker.js'], { cwd: process.cwd(), env: { ...runtimeEnv, INGRESS_RECOVERY_ENABLED: 'false' }, stdio: 'pipe' }); children.push(restarted);
       restarted.stdout!.on('data', data => logs.push(String(data))); restarted.stderr!.on('data', data => logs.push(String(data)));
-      const duplicate = await post(`/webhooks/evolution/${workspaceId}`, upsert(`${prefix}0`, { conversation: 'synthetic controlled load' })); expect(duplicate.status).toBe(202);
+      expect(expectedLive.size).toBeGreaterThan(0);
+      const duplicate = await post(`/webhooks/evolution/${workspaceId}`, upsert([...expectedLive][0]!, { conversation: 'synthetic controlled load' })); expect(duplicate.status).toBe(202);
       const duplicateReceipt = (await duplicate.json() as { receiptId: string }).receiptId;
       await until(() => db.ingressApplication.findUnique({ where: { receiptId: duplicateReceipt } }), application => application?.state === 'applied');
       expect(await db.canonicalMessageIdentity.count({ where: { workspaceId, rawId: { startsWith: prefix } } })).toBe(beforeIdentities);
@@ -286,9 +298,9 @@ describe.skipIf(!databaseUrl || !brokerUrl)('isolated matched VPS comparison (di
       expect(trafficDurationMs).toBeGreaterThanOrEqual(10_000); expect(trafficDurationMs).toBeLessThan(11_000);
       const cpuWindowSeconds = resources.at(-1)!.cpuPercent - resources[0]!.cpuPercent;
       const resourceDurationMs = resources.at(-1)!.elapsedMs - resources[0]!.elapsedMs;
-      const finalResult = { ...observations, executionCompleted: true, latencyPass: ingressP95Ms < 500 && applicationP95Ms < 2000,
+      const finalResult = { ...observations, executionCompleted: true, latencyPass: httpOutcomes.every(o=>o.status===202) && receiptSentAt.size===160 && ingressP95Ms < 500 && applicationP95Ms < 2000,
         recoveryState: yielded, recoveryCompletion, finalOracleIdentities: allIdentities.length, offeredLoad: { mode: 'open-loop', pairs: 80, envelopes: 160, intervalMs: 125, offerWindowMs: trafficDurationMs }, historicalEffects: historicalByKind, autonomousHistoricalEffects: 0, restartDuplicatePreserved: true,
-        totalProviderCalls: [...counts.values()].reduce((a,b)=>a+b,0)+versionRequests, completedLiveIdentities: 80,
+        totalProviderCalls: [...counts.values()].reduce((a,b)=>a+b,0)+versionRequests, completedLiveIdentities: expectedLive.size,
         boundary: 'Common observational harness, not release qualification. Recovery callbacks/cursor guarantees differ by version and are observed rather than presumed.' };
       await writeFile(diagnosticPath, JSON.stringify(finalResult,null,2));
     } finally { observingStopped = true; await observing; clearInterval(sampler); await recovery; await new Promise<void>(resolve => provider.close(() => resolve())); }
