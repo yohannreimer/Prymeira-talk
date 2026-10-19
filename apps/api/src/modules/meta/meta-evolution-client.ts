@@ -64,7 +64,7 @@ export function createOwnedMetaEvolutionClient(base: EvolutionClient, db: Partia
         let sent: { providerMessageId?: string | null } | undefined;
         try { sent = await method.call(target, input); }
         catch (error) {
-          const outcome = classifySendFailure(error);
+          const outcome = classifySendFailure(error, 'evolution');
           try { await journal.recordAttempt(dispatchId, { connectionId: null, provider: 'evolution', outcome, code: code(error) }); }
           catch (journalError) { return uncertain(journalError); }
           if (outcome === 'uncertain') return uncertain(error);

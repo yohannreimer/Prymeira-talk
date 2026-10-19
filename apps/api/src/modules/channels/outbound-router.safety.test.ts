@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createOutboundRouter, OutboundUncertainError } from './outbound-router.js';
 import { createDeliveryProbe } from './outbound-probes.js';
+import { EvolutionClientError } from '../evolution/evolution.client.js';
 
 const at = new Date('2026-10-15T15:00:00.500Z');
 function fixture() {
@@ -12,7 +13,7 @@ function fixture() {
   const db = { channel: { findFirst: vi.fn(async () => channels[0]), findMany }, channelConnection: { findMany: vi.fn(async ({ where }: any) => where.OR ? connections : connections.filter(c => c.workspaceId === where.workspaceId && c.channelId === where.channelId)) } };
   const sent = { providerMessageId: 'sent', raw: {} };
   const base = { createInstance: vi.fn(), connectInstance: vi.fn(), setWebhook: vi.fn(), logoutInstance: vi.fn(), getConnectionState: vi.fn(), getInstanceIdentity: vi.fn(), fetchMedia: vi.fn(), listTemplates: vi.fn(), sendTemplate: vi.fn(), sendText: vi.fn(async () => sent), sendMedia: vi.fn(), sendAudio: vi.fn(), sendContact: vi.fn(), deleteMessageForEveryone: vi.fn(), editMessage: vi.fn(), fetchProfilePicture: vi.fn(), getGroupInfo: vi.fn(), checkWhatsappNumbersAvailability: vi.fn() };
-  const waha = { sendText: vi.fn(async () => sent), sendMedia: vi.fn(), sendVoice: vi.fn(), sendContact: vi.fn(), deleteMessage: vi.fn(), editMessage: vi.fn(), getContactProfilePicture: vi.fn(), getGroup: vi.fn(), checkNumber: vi.fn() };
+  const waha = { sendText: vi.fn(async () => sent), sendMedia: vi.fn(), sendVoice: vi.fn(), sendContact: vi.fn(), deleteMessage: vi.fn(), editMessage: vi.fn(), getContactProfilePicture: vi.fn(), getGroup: vi.fn(), checkNumber: vi.fn(async () => ({ numberExists: true, chatId: '15550000001@c.us' })) };
   const journal = { begin: vi.fn(async () => 'dispatch'), recordAttempt: vi.fn(), accept: vi.fn(), markUncertain: vi.fn(), fail: vi.fn() };
   const make = (extra: Record<string, unknown> = {}) => createOutboundRouter({ base, waha, db, journal, probeDelayMs: 0, now: () => at, ...extra } as never);
   const send = (client = make(), scope = {}) => client.sendText({ instanceName: 'evo', number: '15550000001', text: 'Olá', ...scope });
@@ -64,10 +65,83 @@ describe('outbound authorization and durable intent', () => {
     expect(f.base.sendText).toHaveBeenCalledTimes(1); expect(f.waha.sendText).not.toHaveBeenCalled();
   });
   it('does not fail over if recording a proven provider rejection fails', async () => {
-    const f = fixture(); f.base.sendText.mockRejectedValue(Object.assign(new Error('rejected'), { statusCode: 404 }));
+    const f = fixture(); f.base.sendText.mockRejectedValue(Object.assign(new Error('refused'), { code: 'ECONNREFUSED' }));
     f.journal.recordAttempt.mockRejectedValue(new Error('journal unavailable'));
     await expect(f.send()).rejects.toBeInstanceOf(OutboundUncertainError);
     expect(f.base.sendText).toHaveBeenCalledTimes(1); expect(f.waha.sendText).not.toHaveBeenCalled();
+  });
+  it.each(['unknown', 'missing', 'failed'] as const)('never resends an Evolution post-send HTTP 400 when delivery proof is %s', async proof => {
+    const f = fixture();
+    // Evolution 2.4.0-rc.2 wraps prepare/persist failures after the WhatsApp send in HTTP 400.
+    const error = new EvolutionClientError(400, { message: 'Connection Closed' });
+    f.base.sendText.mockRejectedValue(error);
+    const probe = vi.fn(async () => {
+      if (proof === 'failed') throw new Error('probe unavailable');
+      return proof === 'unknown' ? 'unknown' : { found: false, providerMessageId: null };
+    });
+    const onNotDelivered = vi.fn();
+    await expect(f.send(f.make({ probe, onNotDelivered }))).rejects.toBeInstanceOf(OutboundUncertainError);
+    expect(f.base.sendText).toHaveBeenCalledTimes(1);
+    expect(f.waha.sendText).not.toHaveBeenCalled();
+    expect(probe).toHaveBeenCalledTimes(2);
+    expect(f.journal.recordAttempt).toHaveBeenCalledWith('dispatch', expect.objectContaining({ provider: 'evolution', outcome: 'uncertain' }));
+    expect(f.journal.markUncertain).toHaveBeenCalledTimes(1);
+    expect(f.journal.accept).not.toHaveBeenCalled();
+    expect(f.journal.fail).not.toHaveBeenCalled();
+    expect(onNotDelivered).not.toHaveBeenCalled();
+  });
+  it('accepts proven delivery after Evolution HTTP 400 without a second send', async () => {
+    const f = fixture();
+    f.base.sendText.mockRejectedValue(new EvolutionClientError(400, { message: 'Failed to persist message' }));
+    const probe = vi.fn(async ({ connection }: any) => connection.provider === 'waha' ? { found: true, providerMessageId: 'already-sent' } : 'unknown');
+    await expect(f.send(f.make({ probe }))).resolves.toEqual({ providerMessageId: 'already-sent', raw: { recoveredByProbe: true } });
+    expect(f.base.sendText).toHaveBeenCalledTimes(1);
+    expect(f.waha.sendText).not.toHaveBeenCalled();
+    expect(f.journal.accept).toHaveBeenCalledWith('dispatch', { connectionId: 'wa', providerMessageId: 'already-sent' });
+    expect(f.journal.markUncertain).not.toHaveBeenCalled();
+  });
+  it('fails over after a proven connection refusal and journals both attempts', async () => {
+    const f = fixture();
+    f.base.sendText.mockRejectedValue(Object.assign(new Error('refused'), { cause: { code: 'ECONNREFUSED' } }));
+    await expect(f.send()).resolves.toMatchObject({ providerMessageId: 'sent' });
+    expect(f.base.sendText).toHaveBeenCalledTimes(1);
+    expect(f.waha.sendText).toHaveBeenCalledTimes(1);
+    expect(f.journal.recordAttempt.mock.calls).toEqual([
+      ['dispatch', expect.objectContaining({ provider: 'evolution', outcome: 'not_delivered' })],
+      ['dispatch', expect.objectContaining({ provider: 'waha', outcome: 'accepted' })]
+    ]);
+  });
+  it('can fail over after local WAHA destination validation without sending to WAHA', async () => {
+    const f = fixture(); f.channel.activeConnectionId = 'wa';
+    f.waha.checkNumber.mockResolvedValue({ numberExists: false } as never);
+    const onNotDelivered = vi.fn();
+    await expect(f.send(f.make({ onNotDelivered }))).resolves.toMatchObject({ providerMessageId: 'sent' });
+    expect(f.waha.sendText).not.toHaveBeenCalled();
+    expect(f.base.sendText).toHaveBeenCalledTimes(1);
+    expect(f.journal.recordAttempt).toHaveBeenCalledWith('dispatch', expect.objectContaining({ provider: 'waha', outcome: 'not_delivered' }));
+    expect(onNotDelivered).not.toHaveBeenCalled();
+  });
+  it('can fail over an unsupported local operation before invoking the first provider', async () => {
+    const f = fixture();
+    delete (f.base as Partial<typeof f.base>).editMessage;
+    await expect(f.make().editMessage!({ instanceName: 'evo', id: 'id', remoteJid: '15550000001@s.whatsapp.net', text: 'edited' })).resolves.toBeUndefined();
+    expect(f.waha.editMessage).toHaveBeenCalledTimes(1);
+    expect(f.journal.recordAttempt).toHaveBeenCalledWith('dispatch', expect.objectContaining({ provider: 'evolution', outcome: 'not_delivered' }));
+  });
+  it('holds the durable intent if recording a post-send HTTP 400 or its proof fails', async () => {
+    for (const stage of ['attempt', 'accept']) {
+      const f = fixture();
+      f.base.sendText.mockRejectedValue(new EvolutionClientError(400, { message: 'persist failed' }));
+      if (stage === 'attempt') f.journal.recordAttempt.mockRejectedValue(new Error('journal unavailable'));
+      else f.journal.accept.mockRejectedValue(new Error('journal unavailable'));
+      const probe = vi.fn(async () => ({ found: true, providerMessageId: 'already-sent' }));
+      await expect(f.send(f.make({ probe }))).rejects.toBeInstanceOf(OutboundUncertainError);
+      expect(f.base.sendText).toHaveBeenCalledTimes(1);
+      expect(f.waha.sendText).not.toHaveBeenCalled();
+      expect(f.journal.markUncertain).toHaveBeenCalledTimes(1);
+      expect(f.journal.fail).not.toHaveBeenCalled();
+      if (stage === 'attempt') expect(probe).not.toHaveBeenCalled();
+    }
   });
   it('does not fallback to an unavailable read provider when no connection is eligible', async () => {
     const f = fixture(); f.connections.forEach(connection => { connection.eligible = false; });

@@ -56,7 +56,7 @@ describe('WAHA HTTP contracts', () => {
     const client = (await load()).createWahaClient({ baseUrl: 'https://waha.example', apiKey: 'secret', fetch, maxResponseBytes: 16 });
     const error = await client.sendText({ session: 's', chatId: '123@c.us', text: 'fixture' }).catch(error => error);
     expect(error).toMatchObject({ code: 'WAHA_RESPONSE_LIMIT' });
-    expect((await import('../channels/outbound-routing.js')).classifySendFailure(error)).toBe('uncertain');
+    expect((await import('../channels/outbound-routing.js')).classifySendFailure(error, 'waha')).toBe('uncertain');
     expect(fetch).toHaveBeenCalledOnce();
   });
   it('provides a real authenticated session client', async () => {

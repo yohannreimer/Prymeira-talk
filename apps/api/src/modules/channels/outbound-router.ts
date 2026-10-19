@@ -5,7 +5,7 @@ import { parseWahaMessageKey } from '../messaging/whatsapp-identity.js';
 import type { WahaClient } from '../waha/waha.client.js';
 import { resolveWahaDestination, WahaDestinationError } from '../waha/waha-destination.js';
 import type { DispatchKind, OutboundDispatchJournal } from './outbound-dispatch-journal.js';
-import { classifySendFailure, writerCandidates, type RoutableChannel, type RoutableConnection } from './outbound-routing.js';
+import { classifySendFailure, OutboundPreSendError, writerCandidates, type RoutableChannel, type RoutableConnection } from './outbound-routing.js';
 import { sendCanonicalCampaignText, sendCanonicalProspectingText } from '../campaigns/campaign-canonical-send.js';
 
 /** The single outbound router. It wraps the Evolution client, which every sender (human, AI, automations,
@@ -113,24 +113,24 @@ export function createOutboundRouter(options: {
       switch (command.kind) {
         case 'text': return base.sendText({ ...command.input, instanceName: input.instanceName });
         case 'media': return base.sendMedia({ ...command.input, instanceName: input.instanceName });
-        case 'audio': if (!base.sendAudio) throw new Error('AUDIO_NOT_SUPPORTED'); return base.sendAudio({ ...command.input, instanceName: input.instanceName });
-        case 'template': if (!base.sendTemplate) throw new Error('TEMPLATE_NOT_SUPPORTED'); return base.sendTemplate({ ...command.input, instanceName: input.instanceName });
-        case 'edit': if (!base.editMessage) throw new Error('EDIT_NOT_SUPPORTED'); await base.editMessage({ ...command.input, instanceName: input.instanceName }); return { providerMessageId: command.input.id, raw: {} };
-        case 'delete': if (!base.deleteMessageForEveryone) throw new Error('DELETE_NOT_SUPPORTED'); await base.deleteMessageForEveryone({ ...command.input, instanceName: input.instanceName }); return { providerMessageId: command.input.id, raw: {} };
-        case 'contact': if (!base.sendContact) throw new Error('CONTACT_NOT_SUPPORTED'); return base.sendContact({ ...command.input, instanceName: input.instanceName });
+        case 'audio': if (!base.sendAudio) throw new OutboundPreSendError('evolution', 'AUDIO_NOT_SUPPORTED'); return base.sendAudio({ ...command.input, instanceName: input.instanceName });
+        case 'template': if (!base.sendTemplate) throw new OutboundPreSendError('evolution', 'TEMPLATE_NOT_SUPPORTED'); return base.sendTemplate({ ...command.input, instanceName: input.instanceName });
+        case 'edit': if (!base.editMessage) throw new OutboundPreSendError('evolution', 'EDIT_NOT_SUPPORTED'); await base.editMessage({ ...command.input, instanceName: input.instanceName }); return { providerMessageId: command.input.id, raw: {} };
+        case 'delete': if (!base.deleteMessageForEveryone) throw new OutboundPreSendError('evolution', 'DELETE_NOT_SUPPORTED'); await base.deleteMessageForEveryone({ ...command.input, instanceName: input.instanceName }); return { providerMessageId: command.input.id, raw: {} };
+        case 'contact': if (!base.sendContact) throw new OutboundPreSendError('evolution', 'CONTACT_NOT_SUPPORTED'); return base.sendContact({ ...command.input, instanceName: input.instanceName });
       }
     }
-    if (!waha) throw new Error('WAHA_NOT_CONFIGURED');
-    if (command.kind === 'template') throw Object.assign(new Error('TEMPLATE_NOT_SUPPORTED'), { statusCode: 422 });
+    if (!waha) throw new OutboundPreSendError('waha', 'WAHA_NOT_CONFIGURED');
+    if (command.kind === 'template') throw new OutboundPreSendError('waha', 'TEMPLATE_NOT_SUPPORTED');
     const session = connection.sessionName, id = await resolveWahaDestination(waha, session, command.destination);
     switch (command.kind) {
       case 'edit': {
-        if (!waha.editMessage) throw Object.assign(new Error('EDIT_NOT_SUPPORTED'), { statusCode: 422 });
+        if (!waha.editMessage) throw new OutboundPreSendError('waha', 'EDIT_NOT_SUPPORTED');
         await waha.editMessage({ session, chatId: id, messageId: `true_${id}_${command.input.id}`, text: command.input.text });
         return { providerMessageId: command.input.id, raw: {} };
       }
       case 'delete': {
-        if (!waha.deleteMessage) throw Object.assign(new Error('DELETE_NOT_SUPPORTED'), { statusCode: 422 });
+        if (!waha.deleteMessage) throw new OutboundPreSendError('waha', 'DELETE_NOT_SUPPORTED');
         await waha.deleteMessage({ session, chatId: id, messageId: `true_${id}_${command.input.id}` });
         return { providerMessageId: command.input.id, raw: {} };
       }
@@ -191,7 +191,7 @@ export function createOutboundRouter(options: {
       try { sent = await sendVia(connection, command); }
       catch (error) {
         lastError = error;
-        const outcome = classifySendFailure(error);
+        const outcome = classifySendFailure(error, connection.provider);
         try { await journal.recordAttempt(dispatchId, { connectionId: connection.id, provider: connection.provider, outcome, code: errorCode(error) }); }
         catch (journalError) { return uncertain(journalError); }
         if (outcome === 'uncertain') {

@@ -16,6 +16,6 @@ describe('real messaging without Evolution configuration', () => {
     await expect(client.createInstance({ instanceName: 'fixture', webhookUrl: 'https://example.invalid', webhookSecret: 'fixture' })).rejects.toMatchObject({ code: 'EVOLUTION_UNAVAILABLE', statusCode: 503 });
     const error = await client.sendText({ instanceName: 'fixture', number: '15550001111', text: 'synthetic' }).catch(error => error);
     expect(error).toMatchObject({ code: 'EVOLUTION_UNAVAILABLE' });
-    expect(classifySendFailure(error)).toBe('not_delivered');
+    expect(classifySendFailure(error, 'evolution')).toBe('not_delivered');
   });
 });

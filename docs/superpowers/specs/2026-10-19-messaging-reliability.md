@@ -1,0 +1,9 @@
+# Messaging reliability: approved isolated scope
+
+User approved three blocks on 2026-10-19. Baseline 27fa3a06513d459e594f69c883fd777913764c5d. No production changes, real pending replay, provider sessions, remote settings, publishing or deployment.
+
+1. Provider-aware send failures: Evolution HTTP 400 can follow an actual send. Ambiguous delivery must retain uncertain/proof handling and must never automatically resend through WAHA. Keep proven pre-send failover and intent/attempt fences.
+2. Bounded recovery: propagate a finite time/page/persistence budget through recovery I/O and database work, retain resumable durable progress and two stable exhaustive passes before advancing coverage. Reuse durable media.prepare; recovery must not eagerly download media. Bound Evolution scans separately without claiming unsupported provider capabilities. Preserve canonical identity, tenant isolation, source generation/session fences, workspace lock order, late arrivals, historical modes without autonomous effects, and the existing 2026-10-19 13:31:31.133Z recovery cutoff decision. Yield rather than monopolize normal attendance.
+3. Executable reference and release safeguards: a root AGENTS map and docs/messaging source of truth tied to actual code/provider versions; focused provider contracts, crash/restart/database contention/recovery regression and synthetic load tests; isolated migration compatibility validation; CI gates and actionable operational criteria. Distinguish receipt, broker reference, application, effect, delivery proof and checkpoint. No 100% integrity claims.
+
+Acceptance: fresh unit/type/build and existing isolated integration suite, new regressions red then green, synthetic fault/load evidence with finite limits, documented gaps and no production contact. Rollback must remain compatible with candidate writes and not replay uncertain sends or historical pending work.

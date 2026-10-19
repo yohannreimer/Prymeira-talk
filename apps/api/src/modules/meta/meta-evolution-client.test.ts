@@ -66,18 +66,19 @@ describe('owned Meta Evolution client', () => {
     await expect(f.client.sendText(command)).rejects.toThrow('storage unavailable');
     expect(f.base.sendText).not.toHaveBeenCalled();
   });
-  it.each(['timeout', 'accepted-journal-failure'] as const)('keeps %s uncertain and never resends', async failure => {
+  it.each(['timeout', 'http-400', 'accepted-journal-failure'] as const)('keeps %s uncertain and never resends', async failure => {
     const f = fixture();
     if (failure === 'timeout') f.base.sendText.mockRejectedValue(Object.assign(new Error('timeout'), { name: 'TimeoutError' }));
+    else if (failure === 'http-400') f.base.sendText.mockRejectedValue(Object.assign(new Error('persist failed after send'), { statusCode: 400 }));
     else f.db.$executeRaw.mockRejectedValue(new Error('journal failure'));
     await expect(f.client.sendText(command)).rejects.toMatchObject({ code: 'OUTBOUND_UNCERTAIN', dispatchId: 'dispatch' });
     expect(f.base.sendText).toHaveBeenCalledOnce();
     expect(f.dispatch.state).toBe('uncertain');
   });
-  it('marks a definite rejection failed without a second provider attempt', async () => {
+  it('marks a connection refusal failed without a second provider attempt', async () => {
     const f = fixture();
-    f.base.sendText.mockRejectedValue(Object.assign(new Error('rejected'), { statusCode: 422 }));
-    await expect(f.client.sendText(command)).rejects.toThrow('rejected');
+    f.base.sendText.mockRejectedValue(Object.assign(new Error('refused'), { code: 'ECONNREFUSED' }));
+    await expect(f.client.sendText(command)).rejects.toThrow('refused');
     expect(f.base.sendText).toHaveBeenCalledOnce();
     expect(f.dispatch.state).toBe('failed');
   });

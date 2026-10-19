@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { createOwnedMetaEvolutionClient } from '../meta/meta-evolution-client.js';
 import { PrismaClient } from '@prisma/client';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import type { EvolutionClient } from '../evolution/evolution.client.js';
+import { EvolutionClientError, type EvolutionClient } from '../evolution/evolution.client.js';
 import { createChannelsService } from './channels.service.js';
 import { createOutboundDispatchJournal } from './outbound-dispatch-journal.js';
 import { createOutboundRouter, OutboundUncertainError, type DeliveryProbe } from './outbound-router.js';
@@ -36,6 +36,7 @@ describe.skipIf(!databaseUrl)('outbound router on PostgreSQL', () => {
     return { workspaceId, channel, evolution, waha };
   }
   const http = (statusCode: number, responseBody?: unknown) => Object.assign(new Error(`status ${statusCode}`), { statusCode, responseBody });
+  const connectionRefused = () => Object.assign(new Error('connection refused'), { code: 'ECONNREFUSED' });
   const timeout = () => Object.assign(new Error('timeout'), { name: 'TimeoutError' });
 
   function clients(over: { evolution?: Partial<EvolutionClient>; waha?: Record<string, unknown> } = {}) {
@@ -94,13 +95,13 @@ describe.skipIf(!databaseUrl)('outbound router on PostgreSQL', () => {
     expect(d.base.sendText).toHaveBeenCalledWith(expect.objectContaining({ quoted: { id: '3EB0Q', fromMe: true, participant: null, body: 'oi' } }));
   });
   it('deletes for everyone through WAHA when Evolution cannot', async () => {
-    const f = await fixture(), c = clients({ evolution: { deleteMessageForEveryone: vi.fn(async () => { throw http(404); }) }, waha: { deleteMessage: vi.fn(async () => undefined) } });
+    const f = await fixture(), c = clients({ evolution: { deleteMessageForEveryone: vi.fn(async () => { throw connectionRefused(); }) }, waha: { deleteMessage: vi.fn(async () => undefined) } });
     await router(c).deleteMessageForEveryone!({ instanceName: f.channel.providerKey, id: '3EB0DEL', remoteJid: '5547888880000@s.whatsapp.net', fromMe: true });
     expect((c.waha as unknown as { deleteMessage: ReturnType<typeof vi.fn> }).deleteMessage).toHaveBeenCalledWith({ session: f.waha.sessionName, chatId: '5547888880000@c.us', messageId: 'true_5547888880000@c.us_3EB0DEL' });
   });
   it('fails over to the other connection only when the first provably did not send', async () => {
     const f = await fixture(), onNotDelivered = vi.fn();
-    const c = clients({ evolution: { sendText: vi.fn(async () => { throw http(404); }) } as never });
+    const c = clients({ evolution: { sendText: vi.fn(async () => { throw connectionRefused(); }) } as never });
     expect(await send(router(c, { onNotDelivered }), f)).toMatchObject({ providerMessageId: '3EB0TEXT' });
     expect(c.base.sendText).toHaveBeenCalledTimes(1);
     expect(c.waha.sendText).toHaveBeenCalledTimes(1);
@@ -127,6 +128,19 @@ describe.skipIf(!databaseUrl)('outbound router on PostgreSQL', () => {
     expect((await rows(f.workspaceId))[0]).toMatchObject({ state: 'resolved_not_delivered', resolvedBy: 'Yohann', resolvedAt: expect.any(Date) });
   });
 
+  it('holds a post-send Evolution HTTP 400 in the durable journal without resending through WAHA', async () => {
+    const f = await fixture();
+    const c = clients({ evolution: { sendText: vi.fn(async () => { throw new EvolutionClientError(400, { message: 'Connection Closed' }); }) } });
+    const probe: DeliveryProbe = vi.fn(async () => 'unknown' as const);
+    await expect(send(router(c, { probe }), f)).rejects.toBeInstanceOf(OutboundUncertainError);
+    expect(c.base.sendText).toHaveBeenCalledTimes(1);
+    expect(c.waha.sendText).not.toHaveBeenCalled();
+    expect(probe).toHaveBeenCalledTimes(2);
+    const [row] = await rows(f.workspaceId);
+    expect(row).toMatchObject({ state: 'uncertain', errorCode: 'HTTP_400' });
+    expect(row!.attempts).toEqual([expect.objectContaining({ provider: 'evolution', outcome: 'uncertain', code: 'HTTP_400' })]);
+  });
+
   it('checks both connections after an uncertain failure and treats a message found in the chat as delivered', async () => {
     const f = await fixture(), c = clients({ evolution: { sendText: vi.fn(async () => { throw timeout(); }) } as never });
     const probe: DeliveryProbe = vi.fn(async ({ connection }) => connection.provider === 'waha' ? { found: true, providerMessageId: '3EB0FOUND' } : 'unknown');
@@ -144,16 +158,16 @@ describe.skipIf(!databaseUrl)('outbound router on PostgreSQL', () => {
   });
 
   it('rethrows the original error when every connection provably failed, and journals it as failed', async () => {
-    const f = await fixture(), original = http(401);
-    const c = clients({ evolution: { sendText: vi.fn(async () => { throw original; }) } as never, waha: { sendText: vi.fn(async () => { throw http(422); }) } });
-    await expect(send(router(c), f)).rejects.toMatchObject({ statusCode: 422 });
-    expect((await rows(f.workspaceId))[0]).toMatchObject({ state: 'failed', errorCode: 'HTTP_422' });
+    const f = await fixture(), original = connectionRefused();
+    const c = clients({ evolution: { sendText: vi.fn(async () => { throw original; }) } as never, waha: { sendText: vi.fn(async () => { throw connectionRefused(); }) } });
+    await expect(send(router(c), f)).rejects.toMatchObject({ code: 'ECONNREFUSED' });
+    expect((await rows(f.workspaceId))[0]).toMatchObject({ state: 'failed', errorCode: 'ECONNREFUSED' });
   });
 
   it('keeps legacy behaviour without redundancy: no failover to WAHA, original error, uncertain never retried', async () => {
     const f = await fixture({ redundancy: false });
-    const refused = clients({ evolution: { sendText: vi.fn(async () => { throw http(404); }) } as never });
-    await expect(send(router(refused), f)).rejects.toMatchObject({ statusCode: 404 });
+    const refused = clients({ evolution: { sendText: vi.fn(async () => { throw connectionRefused(); }) } as never });
+    await expect(send(router(refused), f)).rejects.toMatchObject({ code: 'ECONNREFUSED' });
     expect(refused.waha.sendText).not.toHaveBeenCalled();
     const slow = clients({ evolution: { sendText: vi.fn(async () => { throw timeout(); }) } as never });
     await expect(send(router(slow), f)).rejects.toBeInstanceOf(OutboundUncertainError);
@@ -162,8 +176,8 @@ describe.skipIf(!databaseUrl)('outbound router on PostgreSQL', () => {
 
   it('does not use a WAHA connection that is not proven to be the same number', async () => {
     const f = await fixture({ waha: { verifiedPhoneNumber: '5547000000000' } });
-    const c = clients({ evolution: { sendText: vi.fn(async () => { throw http(404); }) } as never });
-    await expect(send(router(c), f)).rejects.toMatchObject({ statusCode: 404 });
+    const c = clients({ evolution: { sendText: vi.fn(async () => { throw connectionRefused(); }) } as never });
+    await expect(send(router(c), f)).rejects.toMatchObject({ code: 'ECONNREFUSED' });
     expect(c.waha.sendText).not.toHaveBeenCalled();
   });
 

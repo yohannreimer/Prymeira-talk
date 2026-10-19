@@ -1,3 +1,5 @@
+import { WahaDestinationError } from '../waha/waha-destination.js';
+
 /** Pure decisions of the single outbound router: which physical connection writes, and what a failed
  * attempt means. No I/O here, so the rules that protect against duplicate sends are exhaustively testable.
  *
@@ -59,31 +61,39 @@ export function logicalChannelStatus(connections: RoutableConnection[], redundan
 }
 
 export type SendFailureClass =
-  /** Provably not delivered: refused connection, unknown/closed session, authentication or validation error
-   * answered before anything was handed to WhatsApp. Safe to try the other connection. */
+  /** Provably not delivered: refused connection or a local pre-send check. HTTP errors alone
+   * do not establish whether anything was handed to WhatsApp. Safe to try the other connection. */
   | 'not_delivered'
   /** The request may have reached WhatsApp (timeout, reset, 5xx, unreadable answer). Never resend. */
   | 'uncertain';
 
-const NOT_DELIVERED_CODES = new Set(['EVOLUTION_UNAVAILABLE', 'ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'EHOSTUNREACH', 'ENETUNREACH']);
-/** Provider texts that prove nothing could have been sent: the session/socket was not open. */
-const NOT_SENT_TEXT = /connection closed|not connected|instance .*(does not exist|not found)|session .*(not found|stopped|failed|starting|scan_qr)|status is not as expected|logged out|not logged in/i;
+/** Raised only by local routing checks before invoking a provider send operation. */
+export class OutboundPreSendError extends Error {
+  readonly statusCode = 422;
+  constructor(readonly provider: ConnectionProvider, readonly code: string) {
+    super(code);
+    this.name = 'OutboundPreSendError';
+  }
+}
 
-/** `statusCode`: HTTP status when the provider answered; `code`: Node network error code when it did not.
- * `responseBody`/`message`: provider text, used only to recognise "the session was not open". */
-export function classifySendFailure(error: unknown): SendFailureClass {
-  const record = (typeof error === 'object' && error !== null ? error : {}) as { statusCode?: unknown; code?: unknown; cause?: unknown; name?: unknown; message?: unknown; responseBody?: unknown };
+const NOT_DELIVERED_NETWORK_CODES = new Set(['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'EHOSTUNREACH', 'ENETUNREACH']);
+
+/** Only local pre-send evidence and failure to establish a connection authorize another writer.
+ * An HTTP status or session/socket text does not establish where the provider failed: Evolution
+ * 2.4.0-rc.2 can send to WhatsApp, then wrap prepare/persist failures in BadRequestException (400).
+ * WAHA response statuses likewise carry no verified send-phase evidence in our client contract. */
+export function classifySendFailure(error: unknown, provider: ConnectionProvider): SendFailureClass {
+  if (error instanceof OutboundPreSendError && error.provider === provider) return 'not_delivered';
+  if (provider === 'waha' && error instanceof WahaDestinationError) return 'not_delivered';
+  const record = (typeof error === 'object' && error !== null ? error : {}) as { statusCode?: unknown; code?: unknown; cause?: unknown; name?: unknown };
+  // This local Evolution adapter never calls a provider when configuration is absent.
+  if (provider === 'evolution' && record.code === 'EVOLUTION_UNAVAILABLE') return 'not_delivered';
+  if (record.name === 'TimeoutError' || record.name === 'AbortError') return 'uncertain';
+  // A response means a request reached a server. Do not reinterpret embedded network codes as pre-send proof.
+  if (typeof record.statusCode === 'number') return 'uncertain';
   const cause = (typeof record.cause === 'object' && record.cause !== null ? record.cause : {}) as { code?: unknown };
   const networkCode = typeof record.code === 'string' ? record.code : typeof cause.code === 'string' ? cause.code : null;
-  if (networkCode && NOT_DELIVERED_CODES.has(networkCode)) return 'not_delivered';
-  if (record.name === 'TimeoutError' || record.name === 'AbortError') return 'uncertain';
-  const status = typeof record.statusCode === 'number' ? record.statusCode : null;
-  if (status === null) return 'uncertain';
-  // Client errors are answered before anything is handed to WhatsApp.
-  if ([400, 401, 403, 404, 422].includes(status)) return 'not_delivered';
-  // Server errors are ambiguous, unless the provider says the session was closed: then nothing could be sent.
-  const text = `${String(record.message ?? '')} ${typeof record.responseBody === 'string' ? record.responseBody : JSON.stringify(record.responseBody ?? '')}`;
-  return NOT_SENT_TEXT.test(text) ? 'not_delivered' : 'uncertain';
+  return networkCode && NOT_DELIVERED_NETWORK_CODES.has(networkCode) ? 'not_delivered' : 'uncertain';
 }
 
 /** After a failover the original connection becomes the writer again only once it has been continuously healthy for

@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { canWrite, classifySendFailure, shouldReturnToPrimary, writerCandidates, type RoutableChannel, type RoutableConnection } from './outbound-routing.js';
+import { canWrite, classifySendFailure, OutboundPreSendError, shouldReturnToPrimary, writerCandidates, type RoutableChannel, type RoutableConnection } from './outbound-routing.js';
+
+import { EvolutionClientError } from '../evolution/evolution.client.js';
+import { WahaClientError } from '../waha/waha.client.js';
+import { WahaDestinationError } from '../waha/waha-destination.js';
 
 const conn = (over: Partial<RoutableConnection> & Pick<RoutableConnection, 'id' | 'provider'>): RoutableConnection =>
   ({ status: 'connected', health: 'healthy', eligible: true, verifiedPhoneNumber: '5547999990000', lastHealthyAt: new Date('2026-10-02T12:00:00Z'), ...over });
@@ -66,25 +70,42 @@ describe('writerCandidates', () => {
 
 describe('classifySendFailure', () => {
   const http = (statusCode: number, extra: Record<string, unknown> = {}) => Object.assign(new Error(`status ${statusCode}`), { statusCode, ...extra });
-  it.each([
-    ['connection refused (direct code)', Object.assign(new Error('x'), { code: 'ECONNREFUSED' }), 'not_delivered'],
-    ['connection refused (fetch cause)', Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNREFUSED' } }), 'not_delivered'],
-    ['DNS failure', Object.assign(new Error('x'), { code: 'ENOTFOUND' }), 'not_delivered'],
-    ['validation error 400', http(400), 'not_delivered'],
-    ['unauthorised 401', http(401), 'not_delivered'],
-    ['unknown session 404', http(404), 'not_delivered'],
-    ['session not working 422', http(422), 'not_delivered'],
-    ['500 saying the connection was closed', http(500, { responseBody: { message: 'Connection Closed' } }), 'not_delivered'],
-    ['500 saying the instance is not connected', http(500, { responseBody: 'instance not connected' }), 'not_delivered'],
-    ['plain 500', http(500), 'uncertain'],
-    ['gateway timeout 504', http(504), 'uncertain'],
-    ['bad gateway 502', http(502), 'uncertain'],
-    ['request timeout', Object.assign(new Error('timeout'), { name: 'TimeoutError' }), 'uncertain'],
-    ['aborted request', Object.assign(new Error('aborted'), { name: 'AbortError' }), 'uncertain'],
-    ['connection reset after sending', Object.assign(new Error('reset'), { code: 'ECONNRESET' }), 'uncertain'],
-    ['unknown error', new Error('boom'), 'uncertain'],
-    ['not an error', 'oops', 'uncertain']
-  ])('%s -> %s', (_name, error, expected) => { expect(classifySendFailure(error)).toBe(expected); });
+  describe.each(['evolution', 'waha'] as const)('%s', provider => {
+    it.each([
+      ['connection refused (direct code)', Object.assign(new Error('x'), { code: 'ECONNREFUSED' }), 'not_delivered'],
+      ['connection refused (fetch cause)', Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNREFUSED' } }), 'not_delivered'],
+      ['DNS failure', Object.assign(new Error('x'), { code: 'ENOTFOUND' }), 'not_delivered'],
+      ['HTTP response with network-like error', http(400, { code: 'ECONNREFUSED' }), 'uncertain'],
+      ['500 saying the connection was closed', http(500, { responseBody: { message: 'Connection Closed' } }), 'uncertain'],
+      ['500 saying the instance is not connected', http(500, { responseBody: 'instance not connected' }), 'uncertain'],
+      ['request timeout', Object.assign(new Error('timeout'), { name: 'TimeoutError' }), 'uncertain'],
+      ['aborted request', Object.assign(new Error('aborted'), { name: 'AbortError', cause: { code: 'ECONNREFUSED' } }), 'uncertain'],
+      ['connection reset after sending', Object.assign(new Error('reset'), { code: 'ECONNRESET' }), 'uncertain'],
+      ['unknown error', new Error('boom'), 'uncertain'],
+      ['not an error', 'oops', 'uncertain']
+    ])('%s -> %s', (_name, error, expected) => { expect(classifySendFailure(error, provider)).toBe(expected); });
+
+    it.each([400, 401, 403, 404, 422, 500, 502, 504])('keeps generic and typed HTTP %s uncertain without pre-send evidence', status => {
+      expect(classifySendFailure(http(status), provider)).toBe('uncertain');
+      const typed = provider === 'evolution' ? new EvolutionClientError(status, { message: 'Connection Closed' }) : new WahaClientError(status);
+      expect(classifySendFailure(typed, provider)).toBe('uncertain');
+    });
+    it('recognizes only the matching provider local preflight rejection', () => {
+      const error = new OutboundPreSendError(provider, 'TEMPLATE_NOT_SUPPORTED');
+      expect(classifySendFailure(error, provider)).toBe('not_delivered');
+      expect(classifySendFailure(error, provider === 'evolution' ? 'waha' : 'evolution')).toBe('uncertain');
+    });
+  });
+  it('recognizes a local WAHA destination rejection rather than generic validation text', () => {
+    expect(classifySendFailure(new WahaDestinationError(), 'waha')).toBe('not_delivered');
+    expect(classifySendFailure(new WahaDestinationError(), 'evolution')).toBe('uncertain');
+    expect(classifySendFailure(http(422, { message: 'WAHA_DESTINATION_UNRESOLVED' }), 'waha')).toBe('uncertain');
+  });
+  it('keeps the unavailable Evolution adapter preflight limited to Evolution', () => {
+    const error = Object.assign(new Error('not configured'), { code: 'EVOLUTION_UNAVAILABLE', statusCode: 503 });
+    expect(classifySendFailure(error, 'evolution')).toBe('not_delivered');
+    expect(classifySendFailure(error, 'waha')).toBe('uncertain');
+  });
 });
 
 describe('shouldReturnToPrimary', () => {
