@@ -5,7 +5,7 @@ import { pairedConnections, recoverGapsSweep } from './provider-history.js';
 const connection = (overrides: Partial<ChannelConnection> = {}) => ({
   id: 'evo', workspaceId: 'fixture', channelId: 'channel', provider: 'evolution',
   status: 'connected', eligible: true, lifecycleGeneration: 0,
-  verifiedPhoneNumber: '5547999998888', lastHealthyAt: new Date(), ...overrides
+  verifiedPhoneNumber: '5547999998888', lastHealthyAt: new Date(), historyRecoveryCursor: null, ...overrides
 } as ChannelConnection);
 const database = (rows: ChannelConnection[]) => ({ channelConnection: { findMany: vi.fn(async () => rows) } } as unknown as PrismaClient);
 
@@ -16,6 +16,12 @@ describe('provider recovery eligibility', () => {
     const recentChats = vi.fn();
     expect(await recoverGapsSweep(db, { evolution: { recentChats, recentMessages: vi.fn() } })).toEqual({ recovered: 0 });
     expect(recentChats).not.toHaveBeenCalled();
+  });
+  it('omits durable cursor payloads from eligibility discovery and does not forward stale cursor snapshots', async () => {
+    const primary=connection({historyRecoveryCursor:{version:999,stale:'synthetic cursor excluded from discovery'}}),db=database([primary]);
+    const eligible=await pairedConnections(db,{});
+    expect(db.channelConnection.findMany).toHaveBeenCalledWith(expect.objectContaining({omit:{historyRecoveryCursor:true}}));
+    expect(eligible).toEqual([{...primary,historyRecoveryCursor:null}]);
   });
   it('keeps a usable primary eligible for recovery', async () => {
     const primary = connection();
