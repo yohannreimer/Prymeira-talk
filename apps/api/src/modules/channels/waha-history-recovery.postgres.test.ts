@@ -67,6 +67,40 @@ describe.skipIf(!url)('bounded durable WAHA recovery on owned PostgreSQL', () =>
     finally {release();await blocker;}
     expect((await load(c)).recoveredThroughAt).toEqual(c.recoveredThroughAt);
   });
+  it('leaves every preclaim field untouched when the sole pooled connection cannot be acquired, then resumes', async () => {
+    const c = await fixture(), now = Date.now(), base = c.recoveredThroughAt!.getTime();
+    const before = await db.channelConnection.update({ where: { id: c.id }, data: {
+      historyRecoveryFailures: 2, historyRecoveryNextAttemptAt: new Date(now - 1000),
+      historyRecoveryCursor: { version: 2, generation: c.lifecycleGeneration, checkpoint: c.recoveredThroughAt!.toISOString(),
+        from: Math.floor((base - 600_000) / 1000), to: Math.floor((base + 300_000) / 1000), offset: 0, pages: [], previousPages: null, changedPasses: 1 }
+    } });
+    const singleUrl = new URL(url!); singleUrl.searchParams.set('connection_limit', '1');
+    const single = new PrismaClient({ datasources: { db: { url: singleUrl.href } } });
+    const read = provider([row(1, now - 500_000)]), persist = vi.fn(async (messages: WahaMessage[]) => ({ inserted: messages.length, held: 0 }));
+    let ready!: () => void, release!: () => void;
+    const acquired = new Promise<void>(resolve => { ready = resolve; }), gate = new Promise<void>(resolve => { release = resolve; });
+    const blocker = single.$transaction(async tx => { await tx.$queryRaw`SELECT 1`; ready(); await gate; }, { timeout: 5000 });
+    try {
+      await acquired;
+      const began = Date.now();
+      // This is the real Prisma maxWait path, rather than a mocked P2028 or a SQL lock timeout.
+      await expect(recoverWahaWindow(single, before, { read, persist }, { now })).rejects.toMatchObject({
+        code: 'P2028', message: 'Transaction API error: Unable to start a transaction in the given time.'
+      });
+      expect(Date.now() - began).toBeGreaterThanOrEqual(200);
+      expect(Date.now() - began).toBeLessThan(1500);
+      expect(read).not.toHaveBeenCalled(); expect(persist).not.toHaveBeenCalled();
+      const state = (connection: ChannelConnection) => ({ checkpoint: connection.recoveredThroughAt, cursor: connection.historyRecoveryCursor,
+        leaseToken: connection.historyRecoveryLeaseToken, leaseUntil: connection.historyRecoveryLeaseUntil,
+        nextAttemptAt: connection.historyRecoveryNextAttemptAt, failures: connection.historyRecoveryFailures });
+      expect(state(await load(c))).toEqual(state(before));
+      release(); await blocker;
+      expect(await recoverWahaWindow(single, await load(c), { read, persist }, { now })).toMatchObject({ advanced: true, recovered: 1 });
+      expect(read).toHaveBeenCalledTimes(4); expect(persist).toHaveBeenCalledOnce();
+      expect(await load(c)).toMatchObject({ recoveredThroughAt: new Date(Math.floor((base + 300_000) / 1000) * 1000),
+        historyRecoveryCursor: null, historyRecoveryLeaseToken: null, historyRecoveryLeaseUntil: null, historyRecoveryFailures: 0 });
+    } finally { release(); await blocker; await single.$disconnect(); }
+  });
   it('enforces the cumulative scan budget before persistence when a valid page plus durable manifests exceed 8MiB', async () => {
     const c=await fixture(),now=Date.now(),base=c.recoveredThroughAt!.getTime();
     await db.channelConnection.update({where:{id:c.id},data:{historyRecoveryCursor:{version:1,generation:c.lifecycleGeneration,checkpoint:c.recoveredThroughAt!.toISOString(),

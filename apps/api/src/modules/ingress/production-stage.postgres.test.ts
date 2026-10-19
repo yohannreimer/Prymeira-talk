@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promi
 import http from 'node:http';
 import { availableParallelism, freemem, loadavg, tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient, type Prisma } from '@prisma/client';
 import amqp from 'amqplib';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createExactEvolutionMediaFixture } from '../../test/evolution-media-fixture.js';
@@ -130,6 +130,7 @@ describe.skipIf(!databaseUrl || !brokerUrl)('ingress in the production stage (re
     const recoveryAt = Math.floor((Date.now() - 500_000) / 1000);
     let versionRequests = 0, firstSweepFinishedAt = 0;
     const counts = new Map<string, number>(), recoveredIds = recoveryConnections.map((c, i) => `${prefix}recovery-${i}`);
+    const recoveryMessages: WahaMessage[] = recoveredIds.map(id => ({ id: `false_15550001111@c.us_${id}`, from: '15550001111@c.us', fromMe: false, body: 'synthetic recovered fixture', timestamp: recoveryAt }));
     const provider = http.createServer((request, response) => {
       const url = new URL(request.url!, 'http://127.0.0.1');
       response.setHeader('content-type', 'application/json');
@@ -139,7 +140,7 @@ describe.skipIf(!databaseUrl || !brokerUrl)('ingress in the production stage (re
       if (connectionIndex < 0) { response.statusCode = 404; return response.end('{}'); }
       counts.set(session, (counts.get(session) ?? 0) + 1);
       const offset = Number(url.searchParams.get('offset'));
-      const rows: WahaMessage[] = offset ? [] : [{ id: `false_15550001111@c.us_${recoveredIds[connectionIndex]}`, from: '15550001111@c.us', fromMe: false, body: 'synthetic recovered fixture', timestamp: recoveryAt }];
+      const rows: WahaMessage[] = offset ? [] : [recoveryMessages[connectionIndex]!];
       response.setHeader('x-talk-recovery-pagination', '1'); response.setHeader('x-talk-recovery-raw-digest', historyDigest(rows));
       response.setHeader('x-talk-recovery-raw-count', String(rows.length)); response.setHeader('x-talk-recovery-next-offset', String(offset + rows.length)); response.setHeader('x-talk-recovery-exhausted', String(rows.length === 0));
       setTimeout(() => response.end(JSON.stringify(rows)), 100);
@@ -203,16 +204,54 @@ describe.skipIf(!databaseUrl || !brokerUrl)('ingress in the production stage (re
       clearInterval(sampler);
       await recovery;
       const firstTurnCounts = new Map(counts);
-      const yielded = await db.channelConnection.findMany({ where: { id: { in: recoveryConnections.map(c => c.id) } }, select: { id: true, historyRecoveryFailures: true, recoveredThroughAt: true, historyRecoveryNextAttemptAt: true, historyRecoveryLeaseUntil: true, historyRecoveryCursor: true } });
+      const yielded = await db.channelConnection.findMany({ where: { id: { in: recoveryConnections.map(c => c.id) } }, select: { id: true, historyRecoveryFailures: true, recoveredThroughAt: true, historyRecoveryNextAttemptAt: true, historyRecoveryLeaseToken: true, historyRecoveryLeaseUntil: true, historyRecoveryCursor: true } });
+      expect(yielded).toHaveLength(recoveryConnections.length);
       const firstTurnYields = (logs.join('').match(/Provider gap_recovery step failed/g) ?? []).length;
       expect(firstTurnYields).toBeLessThanOrEqual(3);
       const failureBlocks = logs.join('').split('Provider gap_recovery step failed').slice(1).map(block => block.split(/\r?\n}\r?\n/)[0]!);
       expect(failureBlocks).toHaveLength(firstTurnYields);
-      for (const block of failureBlocks) expect(block).toContain('55P03');
+      const contentionFailures = failureBlocks.map(block => {
+        const connectionId = block.match(/connectionId: '([a-f0-9-]+)'/)?.[1];
+        expect(recoveryConnections.some(c => c.id === connectionId), block).toBe(true);
+        const error = block.match(/(?:^|\r?\n)\s*error: ([\s\S]*)$/)?.[1]?.trim();
+        // Only the observed acquire timeout is supported; other P2028, driver and request errors fail.
+        const poolAcquire = error === "'Transaction API error: Unable to start a transaction in the given time.'";
+        const lockWait = /\b55P03\b/.test(error ?? '') && (error ?? '').includes('canceling statement due to lock timeout');
+        expect(poolAcquire || lockWait, block).toBe(true);
+        return { connectionId: connectionId!, kind: poolAcquire ? 'pool-acquire' : 'lock-wait' };
+      });
+      expect(new Set(contentionFailures.map(f => f.connectionId)).size).toBe(firstTurnYields);
       const isAdvanced = (c: typeof yielded[number]) => c.recoveredThroughAt!.getTime() > recoveryConnections.find(original => original.id === c.id)!.recoveredThroughAt!.getTime();
-      const intactCheckpoints = yielded.map(c => ({ before: recoveryConnections.find(original => original.id === c.id)!.recoveredThroughAt?.toISOString(), after: c.recoveredThroughAt?.toISOString(), nextAttemptAt: c.historyRecoveryNextAttemptAt?.toISOString() }));
-      const intact = yielded.every(c => isAdvanced(c) || (c.recoveredThroughAt!.getTime() === recoveryConnections.find(original => original.id === c.id)!.recoveredThroughAt!.getTime() && ((c.historyRecoveryNextAttemptAt && c.historyRecoveryNextAttemptAt.getTime() > began) || (!c.historyRecoveryNextAttemptAt && !c.historyRecoveryLeaseUntil && c.historyRecoveryFailures === 0 && c.historyRecoveryCursor === null))));
-      expect(intact, JSON.stringify({ began, intactCheckpoints })).toBe(true);
+      for (const c of yielded) {
+        const index = recoveryConnections.findIndex(original => original.id === c.id), original = recoveryConnections[index]!;
+        const failure = contentionFailures.find(f => f.connectionId === c.id);
+        expect(c.historyRecoveryLeaseToken, c.id).toBeNull(); expect(c.historyRecoveryLeaseUntil, c.id).toBeNull();
+        const untouched = c.recoveredThroughAt?.getTime() === original.recoveredThroughAt?.getTime()
+          && JSON.stringify(c.historyRecoveryCursor) === JSON.stringify(original.historyRecoveryCursor)
+          && c.historyRecoveryFailures === original.historyRecoveryFailures
+          && c.historyRecoveryNextAttemptAt?.getTime() === original.historyRecoveryNextAttemptAt?.getTime();
+        if (untouched) { expect(firstTurnCounts.get(original.sessionName) ?? 0, c.id).toBe(0); continue; }
+        expect(c.historyRecoveryNextAttemptAt!.getTime(), c.id).toBeGreaterThan(began);
+        if (isAdvanced(c)) {
+          expect(failure, c.id).toBeUndefined(); expect(c.historyRecoveryCursor, c.id).toBeNull(); expect(c.historyRecoveryFailures, c.id).toBe(0);
+          expect(c.recoveredThroughAt!.getTime()).toBe(Math.floor((original.recoveredThroughAt!.getTime() + 300_000) / 1000) * 1000);
+          continue;
+        }
+        // A claimed failure must release its lease and retain its original coverage plus durable backoff.
+        expect(c.recoveredThroughAt, c.id).toEqual(original.recoveredThroughAt);
+        expect(c.historyRecoveryFailures, c.id).toBe(failure ? original.historyRecoveryFailures + 1 : 0);
+        if (!failure || (firstTurnCounts.get(original.sessionName) ?? 0) > 0) expect(c.historyRecoveryCursor, c.id).not.toBeNull();
+        if (c.historyRecoveryCursor !== null) {
+          const cursor = c.historyRecoveryCursor as Prisma.JsonObject, message = recoveryMessages[index]!;
+          const fingerprint = historyDigest({ rawDigest: historyDigest([message]), rawCount: 1, messages: [[message.id, historyDigest(message)]] });
+          expect(cursor).toEqual({ version: 2, generation: original.lifecycleGeneration, checkpoint: original.recoveredThroughAt!.toISOString(),
+            from: Math.floor((original.recoveredThroughAt!.getTime() - 600_000) / 1000), to: Math.floor((original.recoveredThroughAt!.getTime() + 300_000) / 1000),
+            offset: expect.any(Number), pages: expect.any(Array), previousPages: cursor.previousPages === null ? null : [fingerprint], changedPasses: 0,
+            ...(cursor.partial ? { partial: { fingerprint, completed: expect.any(Number) } } : {}) });
+          expect([[], [fingerprint]]).toContainEqual(cursor.pages); expect(cursor.offset).toBe((cursor.pages as Prisma.JsonArray).length);
+          if (cursor.partial) { expect(cursor.offset).toBe(0); expect([0, 1]).toContain((cursor.partial as Prisma.JsonObject).completed); }
+        }
+      }
       const firstTurnRecovered = await db.canonicalMessageIdentity.count({ where: { workspaceId, rawId: { in: recoveredIds } } });
       // Only the synthetic fixture's due time is changed. The compiled runtime's next
       // scheduled turn must resume persisted metadata after contention has ended.
@@ -252,7 +291,7 @@ describe.skipIf(!databaseUrl || !brokerUrl)('ingress in the production stage (re
         perProvider: ['evolution', 'waha'].map(provider => ({ provider, ingressMs: quantiles(envelopes.filter(e => e.provider === provider).map(e => e.ingressMs)), applicationMs: quantiles(envelopes.filter(e => e.provider === provider).map(e => e.applicationMs)) })),
         finalizationMs: quantiles(envelopes.flatMap(e => e.applicationFinalizationMs === null ? [] : [e.applicationFinalizationMs])), visibilityDelayMs: quantiles(envelopes.flatMap(e => e.visibilityDelayMs === null ? [] : [e.visibilityDelayMs])),
         pollQueryMs: quantiles(pollTimings.map(p => p.durationMs)), pollGapMs: quantiles(pollTimings.flatMap(p => p.gapMs === null ? [] : [p.gapMs])),
-        sweep: { totalMs: sweepMs, overlapEndMs, observedContentionYields: firstTurnYields, advancedConnections: yielded.filter(isAdvanced).length, claimedBackoffConnections: yielded.filter(c => !isAdvanced(c) && !!c.historyRecoveryNextAttemptAt).length,
+        sweep: { totalMs: sweepMs, overlapEndMs, observedContentionYields: firstTurnYields, contentionFailures, advancedConnections: yielded.filter(isAdvanced).length, claimedBackoffConnections: yielded.filter(c => !isAdvanced(c) && !!c.historyRecoveryNextAttemptAt).length,
           untouchedConnections: yielded.filter(c => !c.historyRecoveryNextAttemptAt && !c.historyRecoveryLeaseUntil).length, firstTurnRuntimeRecovered, firstTurnPersistedIdentities: firstTurnRecovered, laterTurnRequired, laterTurnProgressProved },
         hostBefore, hostAtObservation: { loadAverage: loadavg(), freeBytes: freemem() }, resources, envelopes, pollTimings };
       const diagnosticPath = join(process.cwd(), '../../validation-artifacts', `load-observations-${Date.now()}.json`); await mkdir(join(process.cwd(), '../../validation-artifacts'), { recursive: true });
