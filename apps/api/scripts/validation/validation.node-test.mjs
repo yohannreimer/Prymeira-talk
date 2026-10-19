@@ -37,12 +37,52 @@ test('release manifest refuses to publish evidence from a different SHA or missi
   assert.equal(manifest.validatedSha, sha);
 });
 
-test('image publication and release require a successful exact-revision validation job', async () => {
-  const yaml = await readFile(new URL('../../../../.github/workflows/publish-images.yml', import.meta.url), 'utf8');
-  assert.match(yaml, /publish:\s*\n\s+needs: \[validate, provider-contract\]/);
-  assert.match(yaml, /ref: \$\{\{ github\.sha \}\}/);
+function assertWorkflowGate(yaml) {
   assert.match(yaml, /node apps\/api\/scripts\/validation\/run\.mjs/);
   assert.doesNotMatch(yaml, /continue-on-error:\s*true/);
+  if (!/^name: Isolated messaging qualification \(no publication\)$/m.test(yaml)) {
+    assert.match(yaml, /publish:\s*\n\s+needs: \[validate, provider-contract\]/);
+    assert.match(yaml, /ref: \$\{\{ github\.sha \}\}/);
+    return;
+  }
+  assert.match(yaml, /^name: Isolated messaging qualification \(no publication\)$/m);
+  assert.match(yaml, /^on:\n  workflow_dispatch:\n    inputs:/m);
+  assert.doesNotMatch(yaml, /^  (?:push|pull_request|schedule|workflow_call|workflow_run|release):/m);
+  assert.match(yaml, /^permissions:\n  contents: read\n\n/m);
+  assert.equal([...yaml.matchAll(/^\s*permissions:/gm)].length, 1);
+  assert.deepEqual([...yaml.matchAll(/^  ([\w-]+):$/gm)].filter(match => ['validate', 'exact-images', 'publish', 'release', 'deploy'].includes(match[1])).map(match => match[1]), ['validate', 'exact-images']);
+  const jobs = yaml.slice(yaml.indexOf('\njobs:\n'));
+  assert.deepEqual([...jobs.matchAll(/^  ([\w-]+):$/gm)].map(match => match[1]), ['validate', 'exact-images']);
+  for (const [, action] of yaml.matchAll(/\buses:\s*(\S+)/g))
+    assert.match(action, /^(?:actions\/(?:checkout|setup-node|upload-artifact)@v4|pnpm\/action-setup@v4)$/);
+  assert.doesNotMatch(yaml, /\b(?:secrets|environment|write-all|id-token|packages):|\$\{\{\s*secrets\.|:\s*write\b|\b(?:docker\s+(?:push|login)|git\s+push|gh\s+(?:release|api)|ssh|scp|curl|wget)\b|--push\b|\bpush:\s*true|login-action|registry-auth|production_environment/i);
+  assert.match(yaml, /candidate_sha:\n\s+description:[^\n]*\n\s+required: true/);
+  assert.match(yaml, /full_gate:\n\s+type: boolean\n\s+description:[^\n]*\n\s+default: true/);
+  assert.match(yaml, /^  CANDIDATE_SHA: \$\{\{ inputs\.candidate_sha \}\}$/m);
+  assert.match(yaml, /validate:\n\s+if: \$\{\{ inputs\.full_gate \}\}/);
+  const validation = jobs.slice(0, jobs.indexOf('\n  exact-images:'));
+  assert.match(validation, /name: Checkout exact revision\n\s+uses: actions\/checkout@v4\n\s+with:\n\s+ref: \$\{\{ inputs\.candidate_sha \}\}/);
+  assert.match(validation, /run: GITHUB_SHA="\$CANDIDATE_SHA" node apps\/api\/scripts\/validation\/run\.mjs/);
+  assert.match(jobs, /test "\$\(git rev-parse HEAD\)" = "\$CANDIDATE_SHA"/);
+}
+
+test('workflow either gates publication on exact-revision validation or permits only isolated manual qualification', async () => {
+  const yaml = await readFile(new URL('../../../../.github/workflows/publish-images.yml', import.meta.url), 'utf8');
+  assertWorkflowGate(yaml);
+});
+
+test('workflow gate retains publishing requirements and rejects unsafe isolated hooks or mismatched validation', async () => {
+  const publishing = 'jobs:\n  validate:\n    ref: ${{ github.sha }}\n    run: node apps/api/scripts/validation/run.mjs\n  publish:\n    needs: [validate, provider-contract]\n';
+  assert.doesNotThrow(() => assertWorkflowGate(publishing));
+  assert.throws(() => assertWorkflowGate(publishing.replace('[validate, provider-contract]', '[validate]')));
+  assert.throws(() => assertWorkflowGate(publishing.replace('github.sha', 'github.ref')));
+  const yaml = await readFile(new URL('../../../../.github/workflows/publish-images.yml', import.meta.url), 'utf8');
+  if (/^name: Isolated messaging qualification \(no publication\)$/m.test(yaml)) {
+    for (const suffix of ['\n  publish:\n    run: docker push example\n', '\n  publish:\n    needs: [validate, provider-contract]\n    ref: ${{ github.sha }}\n', '\n  release:\n    run: gh release create v1\n', '\n  external:\n    run: echo external\n', '\n    permissions:\n      contents: write\n', '\n    environment: production\n', '\n    run: docker login example\n', '\n    token: ${{ secrets.TOKEN }}\n'])
+      assert.throws(() => assertWorkflowGate(yaml + suffix));
+    for (const [before, after] of [['workflow_dispatch:', 'push:'], ['default: true', 'default: false'], ['GITHUB_SHA="$CANDIDATE_SHA"', 'GITHUB_SHA="different"'], ['ref: ${{ inputs.candidate_sha }}', 'ref: main']])
+      assert.throws(() => assertWorkflowGate(yaml.replace(before, after)));
+  }
 });
 
 

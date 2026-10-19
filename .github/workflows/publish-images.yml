@@ -13,6 +13,11 @@ on:
         description: Run the full source gate; disable only when qualifying unchanged source images after a complete gate
         default: true
 
+      profile_api:
+        type: boolean
+        description: Diagnostic CPU and PostgreSQL wait profiling; not uninstrumented qualification
+        default: false
+
 permissions:
   contents: read
 
@@ -185,6 +190,10 @@ jobs:
           docker image inspect talk-qualification-api --format '{{json .}}' > validation-artifacts/api-image.json
           docker run --rm --network none --entrypoint sh talk-qualification-api -ec 'node --version; ffmpeg -version; pdftotext -v; fc-match Helvetica; node -e "require(\"@prisma/client\")"' > validation-artifacts/api-runtime.log 2>&1
       - name: Exercise HTTP to broker to worker inside the exact API image
+        env:
+          TALK_QUAL_PROFILE_API: ${{ inputs.profile_api && '1' || '0' }}
+          TALK_QUAL_POSTGRES_ID: ${{ job.services.postgres.id }}
+          TALK_QUAL_RABBITMQ_ID: ${{ job.services.rabbitmq.id }}
         run: |
           set -eu
           cid=$(docker create --network none talk-qualification-api)
@@ -194,22 +203,38 @@ jobs:
           export TALK_QUAL_CONTAINER_LABEL="talk-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           export NODE_OPTIONS="--import=file://$GITHUB_WORKSPACE/.validation/orchestrator/.github/qualification/image-spawn.mjs"
           export DEBUG_REHEARSAL=1
+          unset TALK_VALIDATION_RUN_ID
           mkdir -p apps/api/tmp
           printf '%s\n' 'Resource samples in the original test measure Docker client processes in this run. They do not measure container RSS/CPU; do not interpret those fields as container resources.' > validation-artifacts/container-resource-boundary.txt
           cd apps/api
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          const profiled=process.env.TALK_QUAL_PROFILE_API==='1';
+          fs.writeFileSync(`${process.env.GITHUB_WORKSPACE}/validation-artifacts/image-execution-mode.json`,JSON.stringify({kind:profiled?'diagnostic-profile':'uninstrumented-image-qualification',cpuProfile:profiled,postgresWaitObserver:profiled,harnessRunId:null,sha:process.env.CANDIDATE_SHA,boundary:profiled?'Instrumented diagnostic execution; does not establish uninstrumented qualification.':'No diagnostic profiler or PostgreSQL observer enabled.'},null,2));
+          JS
           (
             for i in $(seq 1 180); do
               ids=$(docker ps -q --filter "label=talk.qual=$TALK_QUAL_CONTAINER_LABEL")
-              if [ -n "$ids" ]; then date -u +%FT%TZ; docker stats --no-stream --format '{{json .}}' $ids; fi
+              if [ -n "$ids" ]; then date -u +%FT%TZ; docker stats --no-stream --format '{{json .}}' $ids $TALK_QUAL_POSTGRES_ID $TALK_QUAL_RABBITMQ_ID; fi
               sleep 1
             done
           ) > "$GITHUB_WORKSPACE/validation-artifacts/api-container-stats.log" 2>&1 &
           sampler=$!
+          pg_sampler=
+          cleanup_samplers() {
+            kill "$sampler" ${pg_sampler:+"$pg_sampler"} 2>/dev/null || true
+            wait "$sampler" 2>/dev/null || true
+            if [ -n "$pg_sampler" ]; then wait "$pg_sampler" 2>/dev/null || true; fi
+          }
+          trap cleanup_samplers EXIT
+          if [ "$TALK_QUAL_PROFILE_API" = 1 ]; then
+            cp "$GITHUB_WORKSPACE/.validation/orchestrator/.github/qualification/observe-postgres.mjs" tmp/observe-postgres.mjs
+            node tmp/observe-postgres.mjs > "$GITHUB_WORKSPACE/validation-artifacts/postgres-observer.log" 2>&1 &
+            pg_sampler=$!
+          fi
           set +e
           pnpm exec vitest run src/modules/ingress/production-stage.postgres.test.ts -t 'qualifies 80 canonical' --maxWorkers=1 --fileParallelism=false --reporter=default --reporter=json --outputFile.json="$GITHUB_WORKSPACE/validation-artifacts/api-container-flow.tests.json"
           status=$?
-          kill "$sampler" 2>/dev/null || true
-          wait "$sampler" 2>/dev/null || true
           exit "$status"
       - name: Build and execute pinned real GOWS adapter contract without provider sessions
         if: ${{ !cancelled() }}

@@ -1,12 +1,14 @@
 const assert=require('node:assert/strict'),fs=require('node:fs'),{randomUUID}=require('node:crypto');
 const {PrismaClient,Prisma}=require('@prisma/client');
+const validator=require('class-validator');
 const url=new URL(process.env.DATABASE_CONNECTION_URI);assert.equal(url.hostname,'127.0.0.1');assert.equal(url.port,'55439');assert.equal(url.pathname,'/evolution_contract');
 const methods=JSON.parse(fs.readFileSync('/talk-methods.json','utf8')),AsyncFunction=Object.getPrototypeOf(async function(){}).constructor;
-const bind=name=>{const m=methods[name];return new AsyncFunction(...m.parameters,'be','H',m.body.slice(1,-1));};
+const bind=name=>{const m=methods[name],implementation=new AsyncFunction(...m.parameters,'be','H','Ga',m.body.slice(1,-1));return function(...args){return implementation.call(this,...args,validator);};};
 const db=new PrismaClient(),main=bind('fetchMessages'),chats=bind('fetchChats');
+const cleaner=methods.cleanMessageData,cleanMessageData=new Function(...cleaner.parameters,cleaner.body.slice(1,-1));
 (async()=>{try{
  const i1=await db.instance.create({data:{name:'synthetic-contract-'+randomUUID()}}),i2=await db.instance.create({data:{name:'synthetic-other-'+randomUUID()}});
- const context={instanceId:i1.id,prismaRepository:db,configService:{get:()=>({PROVIDER:'postgresql'})}},sdk={Prisma},normalize=()=>{throw Error('Phone normalization is outside this contract');};
+ const context={instanceId:i1.id,prismaRepository:db,configService:{get:()=>({PROVIDER:'postgresql'})},cleanMessageData},sdk={Prisma},normalize=()=>{throw Error('Phone normalization is outside this contract');};
  const T=1700000000,jid='15550001111@s.whatsapp.net',other='15550002222@s.whatsapp.net',dense='synthetic-dense@g.us';
  const row=(id,jid,stamp,instanceId=i1.id,fromMe=false)=>({key:{id,remoteJid:jid,fromMe},messageType:'conversation',message:{conversation:'synthetic contract fixture'},source:'web',messageTimestamp:stamp,instanceId,pushName:'Synthetic'});
  await db.message.createMany({data:[row('before',jid,T-1),row('lower',jid,T),row('middle-a',jid,T+1),row('middle-b',jid,T+1,i1.id,true),row('upper',jid,T+2),row('after',jid,T+3),row('other-chat',other,T+1),row('other-instance',jid,T+1,i2.id)]});

@@ -1,6 +1,6 @@
 import cp from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
-import { realpathSync } from 'node:fs';
+import { realpathSync, mkdirSync, lstatSync } from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 const original=cp.spawn;
@@ -15,8 +15,19 @@ cp.spawn=function(command,args=[],options={}){
  if(new URL(sealed.DATABASE_URL).pathname!=='/talk_rehearsal'||new URL(sealed.DATABASE_URL).port!=='55439'||new URL(sealed.INGRESS_AMQP_URL).pathname!=='/talk_test'||new URL(sealed.INGRESS_AMQP_URL).port!=='56739'||!path.resolve(sealed.TALK_MEDIA_STORE_PATH).startsWith(root+'/'))throw Error('Wrong owned fixture');
  const label=process.env.TALK_QUAL_CONTAINER_LABEL;if(!/^[a-zA-Z0-9-]+$/.test(label??''))throw Error('Invalid task label');
  const dockerArgs=['run','--rm','--pull','never','--name','talk-qual-'+randomUUID(),'--label','talk.qual='+label,'--network','host','--read-only','--tmpfs','/tmp:rw,size=128m','--cap-drop=ALL','--security-opt=no-new-privileges','--user',`${process.getuid()}:${process.getgid()}`,'--mount',`type=bind,src=${root},dst=${root}`];
+ let nodeArgs=args;
+ if(![undefined,'0','1'].includes(process.env.TALK_QUAL_PROFILE_API))throw Error('Invalid diagnostic profile opt-in');
+ if(process.env.TALK_QUAL_PROFILE_API==='1'){
+  const repo=realpathSync(path.resolve(process.cwd(),'../..'));
+  if(realpathSync(process.env.GITHUB_WORKSPACE??'')!==repo||realpathSync(process.cwd())!==path.join(repo,'apps/api'))throw Error('Expected current candidate repository');
+  const artifacts=path.join(repo,'validation-artifacts');if(realpathSync(artifacts)!==artifacts||lstatSync(artifacts).uid!==process.getuid())throw Error('Unowned or external artifact directory');
+  const profiles=path.join(artifacts,'api-profiles');try{mkdirSync(profiles,{mode:0o700});}catch(error){if(error.code!=='EEXIST')throw error;}
+  const stat=lstatSync(profiles);if(!stat.isDirectory()||stat.isSymbolicLink()||stat.uid!==process.getuid()||realpathSync(profiles)!==profiles)throw Error('Unowned or external diagnostic profile directory');
+  dockerArgs.push('--mount',`type=bind,src=${profiles},dst=/talk-profiles`);
+  nodeArgs=['--cpu-prof','--cpu-prof-dir=/talk-profiles',`--cpu-prof-name=${path.basename(args[0],'.js')}-${randomUUID()}.cpuprofile`,...args];
+ }
  for(const key of Object.keys(sealed))dockerArgs.push('--env',key);
- dockerArgs.push('--entrypoint','node',image,...args);
+ dockerArgs.push('--entrypoint','node',image,...nodeArgs);
  return original('docker',dockerArgs,{...options,env:{PATH:process.env.PATH,HOME:process.env.HOME,DOCKER_HOST:'unix:///var/run/docker.sock',...sealed}});
 };
 syncBuiltinESMExports();
