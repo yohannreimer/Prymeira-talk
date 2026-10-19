@@ -10,9 +10,10 @@ if (validation.sourceState !== 'clean-checkout') throw new Error('Release requir
 for (const required of ['typecheck', 'unit', 'api-build', 'web-build', 'disposable-migrations', 'postgres-rabbit-integration'])
   if (!validation.phases.includes(required)) throw new Error(`Missing validation evidence: ${required}`);
 const readDigest = async name => JSON.parse(await readFile(join(output, `image-${name}.json`), 'utf8'));
-const [api, web] = await Promise.all([readDigest('api'), readDigest('web')]);
-if (api.sha !== process.env.GITHUB_SHA || web.sha !== process.env.GITHUB_SHA) throw new Error('Image build revision mismatch');
+const [api, web, waha] = await Promise.all([readDigest('api'), readDigest('web'), readDigest('waha')]);
+if (api.sha !== process.env.GITHUB_SHA || web.sha !== process.env.GITHUB_SHA || waha.sha !== process.env.GITHUB_SHA || !/^sha256:[a-f0-9]{64}$/.test(waha.digest)) throw new Error('Image build revision mismatch');
 const manifest = releaseManifest({ sha: process.env.GITHUB_SHA, validatedSha: validation.sha, apiDigest: api.digest, webDigest: web.digest, imageOwner: process.env.GITHUB_REPOSITORY_OWNER, registry: process.env.REGISTRY });
+manifest.components.waha = { image: `${process.env.REGISTRY}/${process.env.GITHUB_REPOSITORY_OWNER.toLowerCase()}/prymeira-talk-waha-recovery`, digest: waha.digest };
 manifest.validation = validation;
 manifest.migrations = [];
 const migrations = join(root, 'apps/api/prisma/migrations');

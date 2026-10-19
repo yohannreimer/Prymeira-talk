@@ -39,7 +39,7 @@ describe('complete recovery windows', () => {
     const fetch = vi.fn(async (url: string) => url.includes('/limited/')
       ? new Response('not-read', { headers: { 'content-length': '1000' } }) : new Response('[]'));
     const waha = createWahaClient({ baseUrl: 'https://waha.example', apiKey: 'fixture', fetch: fetch as never, maxResponseBytes: 32 });
-    expect(await recoverGapsSweep(db, { waha }, { onError })).toEqual({ recovered: 0 });
+    expect(await recoverGapsSweep(db, { waha: { getChats: waha.getChats, getMessages: waha.getMessages } }, { onError })).toEqual({ recovered: 0 });
     expect(onError).toHaveBeenCalledWith(expect.objectContaining({ code: 'WAHA_RESPONSE_LIMIT' }), 'limited');
     expect(db.channelConnection.updateMany).toHaveBeenCalledOnce();
     expect(db.channelConnection.updateMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ id: 'healthy' }) }));

@@ -172,7 +172,7 @@ export async function createIngressRuntime(config: RuntimeConfig, consume: boole
         }
         // Conversations known only by a LID (Evolution history without a phone) get their number from WAHA.
         if (config.wahaHistoryImport && history.wahaLids && due('lids', 5 * 60_000)) await observer.run('lids', 'lid_resolution', () => resolveLidConversationsSweep(db, { lids: history.wahaLids! }, { ...scope, onError: warnFor('lid_resolution') }));
-        if (config.gapRecovery && due('gaps', 5 * 60_000)) { await observer.run('gaps', 'gap_recovery', () => recoverGapsSweep(db, history, { ...scope, deferWahaUntilImported: config.wahaHistoryImport, onError: warnFor('gap_recovery') })); }
+        if (config.gapRecovery && due('gaps', 30_000)) { await observer.run('gaps', 'gap_recovery', () => recoverGapsSweep(db, history, { ...scope, deferWahaUntilImported: config.wahaHistoryImport, onError: warnFor('gap_recovery') })); }
       }
       catch (error) { reportFailure('recertification_sweep', error); console.warn('Recertification sweep failed', error); }
       observer.flush();

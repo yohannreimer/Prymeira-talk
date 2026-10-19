@@ -3,7 +3,7 @@ import { PrismaClient } from '@prisma/client';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { HistoryRecord } from '../evolution/evolution-history.js';
 import type { WahaMessage } from '../waha/waha.client.js';
-import { importChatCanonical } from './channel-history-canonical.js';
+import { persistProviderMessages, importChatCanonical } from './channel-history-canonical.js';
 import { normalizeChatAddress } from '../messaging/whatsapp-identity.js';
 import { rolloutDiagnostics } from './rollout-diagnostics.js';
 import { pairedConnections, recoverGapsSweep, compareProviderHistories, importConnectionHistory, recoverConnectionGap, wahaChatAddress, wahaHistorySweep, type ProviderHistoryDeps } from './provider-history.js';
@@ -112,6 +112,33 @@ describe.skipIf(!databaseUrl)('provider history and gap recovery on PostgreSQL',
     expect((await db.message.findMany({ where: { workspaceId: f.workspaceId } })).map(m => m.body).sort()).toEqual(['agora', 'chegou ao vivo', 'perdida']);
     // A stale checkpoint (another worker moved it) does not move it backwards.
     expect(await recoverConnectionGap(db, sources, connection, { now: NOW })).toMatchObject({ advanced: false });
+  });
+
+  it('filtered recovery persists missed messages once, leaves held pages pending and fences changed sessions', async () => {
+    const f = await fixture(), checkpoint = new Date(NOW - 600_000);
+    const c = await db.channelConnection.update({ where: { id: f.waha.id }, data: { recoveredThroughAt: checkpoint } });
+    let valid = false;
+    const getRecoveryMessages = vi.fn(async ({ offset }: { offset: number }) => ({
+      messages: offset ? [] : [{ ...wa('FILTERED', 'synthetic filtered recovery', NOW - 500_000), from: valid ? CUS : '15550000003@c.us' }],
+      rawDigest: 'a'.repeat(64), rawCount: offset ? 0 : 1, nextOffset: 1, exhausted: offset > 0
+    }));
+    const source = { ...deps({}), waha: { getChats: vi.fn(), getMessages: vi.fn(), getRecoveryMessages } };
+    await expect(recoverConnectionGap(db, source, c, { now: NOW })).rejects.toMatchObject({ code: 'HISTORY_NORMALIZATION_HELD' });
+    expect((await db.channelConnection.findUniqueOrThrow({ where: { id: c.id } })).recoveredThroughAt).toEqual(checkpoint);
+    expect(await db.message.count({ where: { workspaceId: f.workspaceId } })).toBe(0);
+    valid = true;
+    const ready = await db.channelConnection.update({ where: { id: c.id }, data: { historyRecoveryNextAttemptAt: null } });
+    expect(await recoverConnectionGap(db, source, ready, { now: NOW })).toMatchObject({ advanced: true, recovered: 1 });
+    expect(source.waha.getChats).not.toHaveBeenCalled(); expect(source.waha.getMessages).not.toHaveBeenCalled();
+    const conversation = await db.conversation.findFirstOrThrow({ where: { workspaceId: f.workspaceId } });
+    expect(conversation.unreadCount).toBe(1);
+    const replay = await db.channelConnection.update({ where: { id: c.id }, data: { recoveredThroughAt: checkpoint, historyRecoveryNextAttemptAt: null } });
+    expect(await recoverConnectionGap(db, source, replay, { now: NOW })).toMatchObject({ advanced: true, recovered: 0 });
+    expect(await db.message.count({ where: { workspaceId: f.workspaceId } })).toBe(1);
+    expect((await db.conversation.findUniqueOrThrow({ where: { id: conversation.id } })).unreadCount).toBe(1);
+    await db.channelConnection.update({ where: { id: c.id }, data: { lifecycleGeneration: 2 } });
+    await expect(persistProviderMessages({ prisma: db, channel: f.target, connection: { id: c.id, provider: 'waha', lifecycleGeneration: 0, sessionName: c.sessionName }, mode: 'recovered_live', batchId: randomUUID(),
+      items: [{ receiptId: 'stale-window', timestampMs: NOW - 500_000, normalize: () => ({ kind: 'ignored', reason: 'provider_system_notice' }) }] })).rejects.toThrow('Recovery source changed');
   });
 
   it('imports a fresh WAHA-only channel despite pending Evolution history, then enables deferred gap recovery', async () => {

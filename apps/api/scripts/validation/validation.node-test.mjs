@@ -39,7 +39,7 @@ test('release manifest refuses to publish evidence from a different SHA or missi
 
 test('image publication and release require a successful exact-revision validation job', async () => {
   const yaml = await readFile(new URL('../../../../.github/workflows/publish-images.yml', import.meta.url), 'utf8');
-  assert.match(yaml, /publish:\s*\n\s+needs: validate/);
+  assert.match(yaml, /publish:\s*\n\s+needs: \[validate, provider-contract\]/);
   assert.match(yaml, /ref: \$\{\{ github\.sha \}\}/);
   assert.match(yaml, /node apps\/api\/scripts\/validation\/run\.mjs/);
   assert.doesNotMatch(yaml, /continue-on-error:\s*true/);
