@@ -406,7 +406,7 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
     const incoming = await revisionTuple(tx, probe, identity, event.currentRevision);
     return stored !== null && incoming !== null && equal(stored, incoming);
   }
-  const { reduceAction, recoverForMessage, reconcileRevisionInTransaction, reconcileSnapshotInTransaction, reconciliationFrontierInTransaction, recoverPendingInTransaction } = createCanonicalReducers({
+  const { reduceAction, recoverForMessage, unfinishedContent, reconcileRevisionInTransaction, reconcileSnapshotInTransaction, reconciliationFrontierInTransaction, recoverPendingInTransaction } = createCanonicalReducers({
     digest, lockAndScope, resolveActionTarget, revisionTuple, address, graph, pendingTargetWhere
   });
   async function persistObservationInTransaction(tx: Tx, event: NormalizedMessagingEvent, options: CanonicalStoreOptions, replay?: { observation: CanonicalObservation; staleFact: boolean; known: boolean }): Promise<CanonicalStoreResult> {
@@ -427,10 +427,46 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
       const { quoted: q, reaction: r, ...content } = record(data.content);
       return data.content === undefined ? data : { ...data, content };
     };
-    const previous = sameReceipts.find(r => equal(envelope(r.payload), envelope(event)));
+    const factWithoutMappings = (value: unknown) => { const { addressMappings: ignored, ...fact } = envelope(value); return fact; };
+    // History can acquire a verified LID proof after its first read. That proof is
+    // not a new message/content revision. Only this exact history receipt, same
+    // physical generation and otherwise identical facts qualify for enrichment.
+    const mappingRefresh = c.provider === 'waha' && event.kind === 'message' && !event.providerEventId
+      && ['history', 'recovered_live'].includes(c.mode) && sameReceipts.length > 0
+      && sameReceipts.every(r => r.kind === 'message' && ['history', 'recovered_live'].includes(r.mode)
+        && r.lifecycleGeneration === c.lifecycleGeneration && (r.state === 'resolved' || r.reason === 'receipt_key_conflict')
+        && equal(factWithoutMappings(r.payload), factWithoutMappings(event)))
+      && sameReceipts.some(r => r.reason === 'receipt_key_conflict' || !equal(record(r.payload).addressMappings, event.addressMappings));
+    const previous = sameReceipts.find(r => equal(envelope(r.payload), envelope(event))) ?? (mappingRefresh ? sameReceipts[0] : undefined);
     const receiptConflict = sameReceipts.length > 0 && !previous;
     const result: CanonicalStoreResult = { outcome: 'held', observationId: '', messageId: null, conversationId: null, chatId: null, identityId: null,
       allowOperationalEffects: false, reconciliationReasons: [], changes: [] };
+    if (mappingRefresh && !replay && event.kind === 'message') {
+      const anchor = sameReceipts.find(r => r.identityId !== null) ?? previous!;
+      const proofs = [...sameReceipts.flatMap(r => (r.payload as unknown as MessageEvent).addressMappings), ...event.addressMappings];
+      // Validate the UNION: replacing a phone proof with a contradictory one must
+      // keep the address family in review, rather than erasing the earlier proof.
+      const conflict = await mappings(tx, { context: c, addressMappings: proofs }, anchor.id);
+      if (conflict) {
+        await tx.canonicalObservation.update({ where: { id: anchor.id }, data: { state: 'held', reason: conflict } });
+        return { ...result, observationId: anchor.id, reconciliationReasons: [conflict] };
+      }
+      const repaired = await persistObservationInTransaction(tx, event, options, { observation: anchor, staleFact: false, known: true });
+      if (repaired.outcome === 'held' || !repaired.identityId) return repaired;
+      for (const old of sameReceipts.filter(r => r.reason === 'receipt_key_conflict')) {
+        await tx.canonicalObservation.update({ where: { id: old.id }, data: { state: 'resolved', reason: null, identityId: repaired.identityId,
+          resolutionEvidence: json({ kind: 'verified_address_mapping_enrichment', previousEvidence: old.resolutionEvidence,
+            addressMappings: proofs, verifiedBy: c }) } });
+      }
+      const identity = await tx.canonicalMessageIdentity.findUniqueOrThrow({ where: { id: repaired.identityId } });
+      if (identity.contentState === 'pending_reconciliation' && !await unfinishedContent(tx, identity)) {
+        const message = await tx.message.findUniqueOrThrow({ where: { id: identity.messageId }, select: { metadata: true } });
+        await tx.canonicalMessageIdentity.update({ where: { id: identity.id }, data: { contentState: record(message.metadata).deletedAt ? 'deleted' : 'ready' } });
+      }
+      repaired.allowOperationalEffects = false;
+      repaired.changes.push('verified_address_mapping_enriched');
+      return repaired;
+    }
     if (previous && !replay) {
       result.observationId = previous.id;
       if (previous.identityId) {
