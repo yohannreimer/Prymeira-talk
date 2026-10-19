@@ -5,15 +5,16 @@ const assert = require('node:assert/strict');
 const http = require('node:http');
 const { once } = require('node:events');
 const { WhatsappSessionGoWSCore } = require('/app/dist/core/engines/gows/session.gows.core');
+const { messages } = require('/app/dist/core/engines/gows/grpc/gows');
 const session = Object.create(WhatsappSessionGoWSCore.prototype);
-session.session = { id: 'synthetic' };
+session.session = new messages.Session({ id: 'synthetic' });
 session.media = { api: {} };
 session.processIncomingMessage = async row => row.visible ? { id: row.id, timestamp: 1 } : null;
 session.client = { GetMessages: (request, callback) => {
   assert.equal(request.filters.timestampGte.value, 1);
   assert.equal(request.filters.timestampLte.value, 2);
   const rows = request.pagination.offset === 0 ? [{ id: 'control', visible: false }, { id: 'message', visible: true }] : [];
-  setTimeout(() => callback(null, { toObject: () => ({ elements: rows.map(row => ({ data: JSON.stringify(row) })) }) }), 5);
+  setTimeout(() => callback(null, new messages.JsonList({ elements: rows.map(row => new messages.Json({ data: JSON.stringify(row) })) })), 5);
 } };
 (async () => {
   const server = http.createServer(async (request, response) => {
@@ -21,7 +22,7 @@ session.client = { GetMessages: (request, callback) => {
       const offset = Number(new URL(request.url, 'http://fixture').searchParams.get('offset') ?? 0);
       const result = await session.getChatMessages('all', { offset, limit: 50, sortOrder: 'asc', downloadMedia: false }, { 'filter.timestamp.gte': 1, 'filter.timestamp.lte': 2 });
       response.setHeader('content-type', 'application/json'); response.end(JSON.stringify(result));
-    } catch (error) { response.statusCode = 500; response.end(String(error)); }
+    } catch (error) { response.statusCode = 500; response.end(error.stack ?? String(error)); }
   });
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   try {
