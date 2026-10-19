@@ -187,6 +187,9 @@ jobs:
       - name: Exercise HTTP to broker to worker inside the exact API image
         run: |
           set -eu
+          cid=$(docker create --network none talk-qualification-api)
+          docker cp "$cid:/app/dist" apps/api/dist
+          docker rm "$cid"
           export TALK_QUAL_API_IMAGE="$(docker image inspect talk-qualification-api --format '{{.Id}}')"
           export TALK_QUAL_CONTAINER_LABEL="talk-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           export NODE_OPTIONS="--import=file://$GITHUB_WORKSPACE/.validation/orchestrator/.github/qualification/image-spawn.mjs"
@@ -194,7 +197,20 @@ jobs:
           mkdir -p apps/api/tmp
           printf '%s\n' 'Resource samples in the original test measure Docker client processes in this run. They do not measure container RSS/CPU; do not interpret those fields as container resources.' > validation-artifacts/container-resource-boundary.txt
           cd apps/api
+          (
+            for i in $(seq 1 180); do
+              ids=$(docker ps -q --filter "label=talk.qual=$TALK_QUAL_CONTAINER_LABEL")
+              if [ -n "$ids" ]; then date -u +%FT%TZ; docker stats --no-stream --format '{{json .}}' $ids; fi
+              sleep 1
+            done
+          ) > "$GITHUB_WORKSPACE/validation-artifacts/api-container-stats.log" 2>&1 &
+          sampler=$!
+          set +e
           pnpm exec vitest run src/modules/ingress/production-stage.postgres.test.ts -t 'qualifies 80 canonical' --maxWorkers=1 --fileParallelism=false --reporter=default --reporter=json --outputFile.json="$GITHUB_WORKSPACE/validation-artifacts/api-container-flow.tests.json"
+          status=$?
+          kill "$sampler" 2>/dev/null || true
+          wait "$sampler" 2>/dev/null || true
+          exit "$status"
       - name: Build and execute pinned real GOWS adapter contract without provider sessions
         run: |
           set -eu
