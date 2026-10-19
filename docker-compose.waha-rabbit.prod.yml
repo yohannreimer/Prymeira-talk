@@ -11,10 +11,10 @@
 # alias `postgres` resolves to another stack's PostgreSQL.
 services:
   waha:
-    # Engine GOWS (Go/whatsmeow, no browser: a fraction of WPP's memory), pinned by digest. Talk reads both engines.
-    # Fallback to WPP (WhatsApp Web in Chrome): WAHA_IMAGE=devlikeapro/waha:chrome-2026.9.1@sha256:23d0344ea7dd3a1190d9ee5c78efebd27eb8bb41bdc6cdc10c2e2ce186ce70d5
-    # and WAHA_ENGINE=WPP. Either switch needs "Desconectar WAHA" first and a new WAHA QR after (a session belongs to one engine).
-    image: ${WAHA_IMAGE:-devlikeapro/waha:gows-2026.9.1@sha256:d2056b8dec41b218b54f431b8b4eb7d148346d530bb3658295ecb882944e9a18}
+    # Qualified GOWS image with raw-pagination metadata, published with the same validated SHA as the worker.
+    # Its vendor base is pinned in infra/waha-recovery/Dockerfile. For production use the immutable
+    # components.waha digest from the release manifest via WAHA_IMAGE. A plain vendor/WPP image cannot certify recovery.
+    image: ${WAHA_IMAGE:-ghcr.io/${GHCR_OWNER:-yohannreimer}/prymeira-talk-waha-recovery:${IMAGE_TAG:-latest}}
     logging:
       driver: json-file
       options:
