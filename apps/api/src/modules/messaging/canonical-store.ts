@@ -11,7 +11,7 @@ import { createCanonicalReducers, type ActionEvent } from './canonical-reducers.
 import { json, stable, equal, sha, scopeOf, nativeLookupTuple } from './canonical-values.js';
 import { enrichPresentation, mergeStructuredContent } from './canonical-presentation.js';
 import { collectOutboundProofSetInTransaction } from './outbound-proof-set.js';
-import { Prisma, type PrismaClient, type CanonicalChat, type CanonicalMessageIdentity, type CanonicalNativeAlias } from '@prisma/client';
+import { Prisma, type PrismaClient, type Message, type CanonicalChat, type CanonicalMessageIdentity, type CanonicalNativeAlias } from '@prisma/client';
 import type { NormalizedMessagingEvent, TrustedMessagingContext } from './normalized-event.js';
 import { normalizeChatAddress, record, type WhatsAppMessageKey } from './whatsapp-identity.js';
 import { buildPhoneLookupCandidates, normalizePhoneForStorage } from '../contacts/phone-normalization.js';
@@ -24,6 +24,8 @@ export interface CanonicalStoreOptions {
   recoveredLiveEligible?: boolean;
   /** Exact provider lookup supplied by a trusted caller. No body/time or global raw-ID adoption. */
   adoption?: { messageId: string; key: WhatsAppMessageKey; source: 'provider_exact_lookup' };
+  /** Owned GOWS history snapshot: template's native main text, before the UI renderer adds button labels. */
+  wahaTemplateSnapshot?: { nativeId: string; body: string };
 }
 export interface CanonicalStoreResult {
   outcome: 'created' | 'duplicate' | 'enriched' | 'held'; observationId: string; messageId: string | null;
@@ -428,15 +430,32 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
       return data.content === undefined ? data : { ...data, content };
     };
     const factWithoutMappings = (value: unknown) => { const { addressMappings: ignored, ...fact } = envelope(value); return fact; };
+    const matchesTemplateSnapshot = (saved: Message | null, revision: unknown) => {
+      const proof = options.wahaTemplateSnapshot, metadata = record(saved?.metadata);
+      return event.kind === 'message' && c.provider === 'waha' && ['history', 'recovered_live'].includes(c.mode)
+        && typeof proof?.nativeId === 'string' && proof.nativeId === event.key.nativeId && event.content.type === 'text'
+        && event.currentRevision === null && revision === null && saved?.type === 'template' && typeof saved.body === 'string'
+        && saved.body === proof.body && !metadata.editedAt && !metadata.deletedAt;
+    };
+    let preservedTemplateMessageId: string | null = null;
+    if (event.kind === 'message' && c.provider === 'waha' && ['history', 'recovered_live'].includes(c.mode)
+      && options.wahaTemplateSnapshot?.nativeId === event.key.nativeId && event.content.type === 'text' && event.currentRevision === null) {
+      const identityId = sameReceipts.find(r => r.identityId)?.identityId;
+      const identity = identityId ? await tx.canonicalMessageIdentity.findFirst({ where: { ...scope, id: identityId } }) : null;
+      const saved = identity ? await tx.message.findUnique({ where: { id: identity.messageId } }) : null;
+      if (saved && matchesTemplateSnapshot(saved, identity?.currentRevision)) preservedTemplateMessageId = saved.id;
+    }
     // History can acquire a verified LID proof after its first read. That proof is
     // not a new message/content revision. Only this exact history receipt, same
     // physical generation and otherwise identical facts qualify for enrichment.
     const mappingRefresh = c.provider === 'waha' && event.kind === 'message' && !event.providerEventId
       && ['history', 'recovered_live'].includes(c.mode) && sameReceipts.length > 0
       && sameReceipts.every(r => r.kind === 'message' && ['history', 'recovered_live'].includes(r.mode)
-        && r.lifecycleGeneration === c.lifecycleGeneration && (r.state === 'resolved' || r.reason === 'receipt_key_conflict')
+        && r.lifecycleGeneration === c.lifecycleGeneration && (r.state === 'resolved' || r.reason === 'receipt_key_conflict'
+          || (preservedTemplateMessageId !== null && r.reason === 'revision_reconciliation_required'))
         && equal(factWithoutMappings(r.payload), factWithoutMappings(event)))
-      && sameReceipts.some(r => r.reason === 'receipt_key_conflict' || !equal(record(r.payload).addressMappings, event.addressMappings));
+      && sameReceipts.some(r => r.reason === 'receipt_key_conflict' || (preservedTemplateMessageId !== null && r.reason === 'revision_reconciliation_required')
+        || !equal(record(r.payload).addressMappings, event.addressMappings));
     const previous = sameReceipts.find(r => equal(envelope(r.payload), envelope(event))) ?? (mappingRefresh ? sameReceipts[0] : undefined);
     const receiptConflict = sameReceipts.length > 0 && !previous;
     const result: CanonicalStoreResult = { outcome: 'held', observationId: '', messageId: null, conversationId: null, chatId: null, identityId: null,
@@ -453,9 +472,10 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
       }
       const repaired = await persistObservationInTransaction(tx, event, options, { observation: anchor, staleFact: false, known: true });
       if (repaired.outcome === 'held' || !repaired.identityId) return repaired;
-      for (const old of sameReceipts.filter(r => r.reason === 'receipt_key_conflict')) {
+      for (const old of sameReceipts.filter(r => r.reason === 'receipt_key_conflict' || (preservedTemplateMessageId !== null && r.reason === 'revision_reconciliation_required'))) {
         await tx.canonicalObservation.update({ where: { id: old.id }, data: { state: 'resolved', reason: null, identityId: repaired.identityId,
-          resolutionEvidence: json({ kind: 'verified_address_mapping_enrichment', previousEvidence: old.resolutionEvidence,
+          resolutionEvidence: json({ kind: preservedTemplateMessageId ? 'verified_template_presentation_preserved' : 'verified_address_mapping_enrichment', previousEvidence: old.resolutionEvidence,
+            ...(preservedTemplateMessageId ? { nativeTemplateSnapshot: { nativeId: options.wahaTemplateSnapshot!.nativeId, digest: sha(stable(options.wahaTemplateSnapshot)) } } : {}),
             addressMappings: proofs, verifiedBy: c }) } });
       }
       const identity = await tx.canonicalMessageIdentity.findUniqueOrThrow({ where: { id: repaired.identityId } });
@@ -583,12 +603,16 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
       const metadata = record(stored.metadata);
       const local = await tx.outboundIntent.findUnique({ where: { messageId: identity.messageId } });
       const revisionMatches = await sameRevision(tx, identity, event);
+      // GOWS renders native templates as text plus button/footer labels. The owned
+      // snapshot confirms the exact native id and unchanged MAIN text; preserve all
+      // authored template fields rather than replacing them with that lossy rendering.
+      const templateEcho = matchesTemplateSnapshot(stored, identity.currentRevision);
       const localCaption = record(metadata.attachment).caption;
       const captionConflict = typeof localCaption === 'string' && typeof event.attachment.caption === 'string' && localCaption !== event.attachment.caption;
       const structuredConflict = local && mergeStructuredContent(metadata, event.content, equal).conflict;
       const textConflict = stored.type === 'text' && !event.content.contactCards && !event.content.location
         && stored.body !== null && event.content.body !== null && stored.body !== event.content.body;
-      if (local && (structuredConflict || captionConflict || stored.type !== event.content.type || textConflict)) {
+      if (local && !templateEcho && (structuredConflict || captionConflict || stored.type !== event.content.type || textConflict)) {
         result.outcome = 'held'; result.reconciliationReasons.push('content_reconciliation_required');
         await tx.canonicalMessageIdentity.update({ where: { id: identity.id }, data: { contentState: 'pending_reconciliation' } });
       }
@@ -606,7 +630,7 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
         result.outcome = 'held'; result.reconciliationReasons.push('revision_reconciliation_required');
         await tx.canonicalMessageIdentity.update({ where: { id: identity.id }, data: { contentState: 'pending_reconciliation' } });
       }
-      if (!local && !metadata.deletedAt && ((!revisionMatches && !(metadata.editedAt && event.currentRevision === null)) || (!metadata.editedAt && stored.type !== event.content.type))) {
+      if (!local && !metadata.deletedAt && ((!revisionMatches && !(metadata.editedAt && event.currentRevision === null)) || (!metadata.editedAt && stored.type !== event.content.type && !templateEcho))) {
         result.outcome = 'held';
         result.reconciliationReasons.push('revision_reconciliation_required');
         await tx.canonicalMessageIdentity.update({ where: { id: identity.id }, data: { contentState: 'pending_reconciliation' } });

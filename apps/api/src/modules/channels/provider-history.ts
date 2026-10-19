@@ -71,7 +71,11 @@ export function wahaItems(session: string, messages: WahaMessage[], lidMappings:
   return messages.flatMap(message => {
     const id = serialized(message.id), timestampMs = seconds(message.timestamp), type = record(message._data).type;
     if (!id || timestampMs === null || isWahaNotice(record(message))) return [];
+    const raw = record(message._data), native = record(raw.Message);
+    const template = raw.Info && native.templateMessage && typeof message.body === 'string'
+      ? { nativeId: id, body: message.body } : undefined;
     return [{ receiptId: id, timestampMs, fingerprint: historyDigest(message), originalType: typeof type === 'string' ? type : undefined,
+      ...(template ? { wahaTemplateSnapshot: template } : {}),
       normalize: context => normalizeWahaEvent(context, { event: 'message.any', session, payload: message }, { verifiedLidMappings: lidMappings }) }];
   });
 }

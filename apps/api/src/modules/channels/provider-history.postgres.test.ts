@@ -3,6 +3,7 @@ import { PrismaClient } from '@prisma/client';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { HistoryRecord } from '../evolution/evolution-history.js';
 import type { WahaMessage } from '../waha/waha.client.js';
+import { normalizeWahaEvent } from '../waha/waha-normalizer.js';
 import { persistProviderMessages, importChatCanonical } from './channel-history-canonical.js';
 import { normalizeChatAddress } from '../messaging/whatsapp-identity.js';
 import { rolloutDiagnostics } from './rollout-diagnostics.js';
@@ -139,6 +140,28 @@ describe.skipIf(!databaseUrl)('provider history and gap recovery on PostgreSQL',
     await db.channelConnection.update({ where: { id: c.id }, data: { lifecycleGeneration: 2 } });
     await expect(persistProviderMessages({ prisma: db, channel: f.target, connection: { id: c.id, provider: 'waha', lifecycleGeneration: 0, sessionName: c.sessionName }, mode: 'recovered_live', batchId: randomUUID(),
       items: [{ receiptId: 'stale-window', timestampMs: NOW - 500_000, normalize: () => ({ kind: 'ignored', reason: 'provider_system_notice' }) }] })).rejects.toThrow('Recovery source changed');
+  });
+  it('bounded GOWS recovery confirms an existing template without downgrading it or blocking its window', async () => {
+    const f = await fixture(), checkpoint = new Date(NOW - 600_000);
+    const c = await db.channelConnection.update({ where: { id: f.waha.id }, data: { recoveredThroughAt: checkpoint } });
+    const m = wa('TEMPLATE', 'Original template', NOW - 500_000);
+    await persistProviderMessages({ prisma: db, channel: f.target, connection: { id: c.id, provider: 'waha' }, mode: 'history', batchId: randomUUID(),
+      items: [{ receiptId: m.id, timestampMs: NOW - 500_000, normalize: context => {
+        const normalized = normalizeWahaEvent(context, { event: 'message.any', session: c.sessionName, payload: m });
+        if (normalized.kind !== 'accepted' || normalized.event.kind !== 'message') throw Error('Invalid template fixture');
+        return { kind: 'accepted', event: { ...normalized.event, content: { ...normalized.event.content, type: 'template' } } };
+      } }] });
+    const before = await db.message.findFirstOrThrow({ where: { workspaceId: f.workspaceId } });
+    const gows = { ...m, _data: { Info: { Chat: CUS, IsFromMe: false }, Message: { templateMessage: { hydratedTemplate: {
+      hydratedContentText: 'Original template', hydratedButtons: [{ index: 1, quickReplyButton: { displayText: 'Confirm', id: 'fixture' } }]
+    } } } } };
+    const getRecoveryMessages = vi.fn(async ({ offset }: { offset: number }) => ({ messages: offset ? [] : [gows], rawDigest: 'a'.repeat(64), rawCount: offset ? 0 : 1, nextOffset: 1, exhausted: offset > 0 }));
+    const source = { ...deps({}), waha: { getChats: vi.fn(), getMessages: vi.fn(), getRecoveryMessages } };
+    expect(await recoverConnectionGap(db, source, c, { now: NOW })).toMatchObject({ advanced: true, recovered: 0 });
+    expect(await db.message.findUniqueOrThrow({ where: { id: before.id } })).toEqual(before);
+    expect(await db.message.count({ where: { workspaceId: f.workspaceId } })).toBe(1);
+    expect(await db.canonicalObservation.count({ where: { workspaceId: f.workspaceId, state: 'held' } })).toBe(0);
+    expect((await db.conversation.findFirstOrThrow({ where: { workspaceId: f.workspaceId } })).unreadCount).toBe(0);
   });
 
   it('imports a fresh WAHA-only channel despite pending Evolution history, then enables deferred gap recovery', async () => {
