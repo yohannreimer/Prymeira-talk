@@ -1,8 +1,9 @@
+import { observeOperationalOperation, reportOperationalException } from '../../observability/operation-observer.js';
 import { enterCanonicalWorkspaceTransaction } from "../messaging/canonical-boundary.js";
 import { replayProspectingFollowupObservations } from "../prospecting/prospecting-followup-observation.js";
 import type { ConversationFollowupsObserver } from "../followups/conversation-followups.service.js";
 import { randomUUID } from "node:crypto";
-import { AGENT_REPLY_LEASE_MS, recoverStaleAgentReplyClaim, type AgentReplyClaim } from "./agent-reply-claim.js";
+import { AGENT_REPLY_LEASE_MS, recoverStaleAgentReplyClaim, type AgentReplyClaim, type RecoveredReplyFailureHandoff } from "./agent-reply-claim.js";
 import { autonomousAgentAllowed, findProspectingReservation } from "../prospecting/prospecting-policy.js";
 import {
   DEFAULT_AGENT_REPLY_WAIT_SECONDS,
@@ -54,7 +55,7 @@ export interface AgentReplySchedulerPrismaLike {
   };
   aiAgentPendingReply: {
     upsert(args: unknown): Promise<unknown>;
-    findUnique?(args: unknown): Promise<{ lastMessageId: string; status: string; scheduledAt?: Date; prospectingGeneration?: string | null } | null>;
+    findUnique?(args: unknown): Promise<{ lastMessageId: string; status: string; agentId?: string; sessionId?: string | null; scheduledAt?: Date; prospectingGeneration?: string | null } | null>;
     findMany(args: unknown): Promise<PendingReplyRecord[]>;
     update(args: unknown): Promise<unknown>;
     updateMany(args: unknown): Promise<{ count: number }>;
@@ -62,6 +63,11 @@ export interface AgentReplySchedulerPrismaLike {
 }
 
 export interface AgentReplySchedulerRuntime {
+  notifyReplyFailureHandoff?(input: RecoveredReplyFailureHandoff): Promise<void>;
+  handoffForReplyFailure?(input: {
+    workspaceId: string; conversationId: string; agentId: string; messageId: string;
+    sessionId?: string | null; replyClaim?: AgentReplyClaim; reason: string;
+  }): Promise<void>;
   runForMessage(input: {
     workspaceId: string;
     agentId: string;
@@ -71,10 +77,12 @@ export interface AgentReplySchedulerRuntime {
     instruction?: string | null;
     prospectingGeneration?: string | null;
     replyClaim?: AgentReplyClaim;
+    sessionId?: string | null;
   }): Promise<{
     status: "completed" | "handoff_requested" | "skipped" | "failed";
     runId?: string;
     message?: string;
+    retryable?: boolean;
   }>;
 }
 
@@ -84,12 +92,21 @@ export function createAgentReplyScheduler(input: {
   prisma: AgentReplySchedulerPrismaLike;
   agentRuntime: AgentReplySchedulerRuntime;
   followupService?: ConversationFollowupsObserver;
+  /**
+   * The buyer agent (Orçamentos) takes the messages of a supplier asked for a quote, so the workspace's sales
+   * agent never answers a supplier. Returns true when it took the message.
+   */
+  purchaseInbound?: { claimInbound(input: { workspaceId: string; conversationId: string; messageId: string }): Promise<boolean> };
   debounceMs?: number;
   pollIntervalMs?: number;
   batchSize?: number;
+  maxGenerationAttempts?: number;
+  generationBackoffMs?: number;
 }) {
   const pollIntervalMs = input.pollIntervalMs ?? 5_000;
   const batchSize = input.batchSize ?? 20;
+  const maxGenerationAttempts = input.maxGenerationAttempts ?? 3;
+  const generationBackoffMs = input.generationBackoffMs ?? 30_000;
   let timer: NodeJS.Timeout | null = null;
   const wakeTimers = new Set<NodeJS.Timeout>();
   let isProcessing = false;
@@ -100,6 +117,11 @@ export function createAgentReplyScheduler(input: {
     messageId: string;
     now?: Date;
   }) {
+    if (input.purchaseInbound && await input.purchaseInbound.claimInbound({
+      workspaceId: scheduleInput.workspaceId, conversationId: scheduleInput.conversationId, messageId: scheduleInput.messageId
+    })) {
+      return { scheduled: false as const };
+    }
     const conversation = await input.prisma.conversation.findUnique({
       where: {
         workspaceId_id: {
@@ -126,10 +148,10 @@ export function createAgentReplyScheduler(input: {
     // latest persisted customer message instead of overwriting it with the first.
     const reservation = await findProspectingReservation(input.prisma, scheduleInput.workspaceId, scheduleInput.conversationId);
     const messageId = reservation?.latestInboundMessageId ?? scheduleInput.messageId;
-    if (reservation && input.prisma.aiAgentPendingReply.findUnique) {
+    if (input.prisma.aiAgentPendingReply.findUnique) {
       const existing = await input.prisma.aiAgentPendingReply.findUnique({ where: { workspaceId_conversationId: {
         workspaceId: scheduleInput.workspaceId, conversationId: scheduleInput.conversationId } } });
-      if (existing?.lastMessageId === messageId && existing.prospectingGeneration === reservation.generation) {
+      if (existing?.lastMessageId === messageId && existing.agentId === conversation.activeAgentSession.agentId && existing.sessionId === conversation.activeAgentSession.id && existing.prospectingGeneration === (reservation?.generation ?? null)) {
         if (existing.status === 'pending' && existing.scheduledAt) scheduleWake(existing.scheduledAt, new Date());
         return { scheduled: false as const };
       }
@@ -160,7 +182,7 @@ export function createAgentReplyScheduler(input: {
         workspaceId: scheduleInput.workspaceId,
         conversationId: scheduleInput.conversationId,
         agentId: session.agentId,
-        ...(reservation ? { prospectingGeneration: reservation.generation } : {}),
+        prospectingGeneration: reservation?.generation ?? null,
         sessionId: session.id,
         lastMessageId: messageId,
         instruction,
@@ -169,12 +191,13 @@ export function createAgentReplyScheduler(input: {
       },
       update: {
         agentId: session.agentId,
-        ...(reservation ? { prospectingGeneration: reservation.generation } : {}),
+        prospectingGeneration: reservation?.generation ?? null,
         sessionId: session.id,
         lastMessageId: messageId,
         instruction,
         scheduledAt,
         status: "pending",
+        attempts: 0,
         lockedAt: null,
         claimToken: null,
         lastError: null
@@ -219,13 +242,14 @@ export function createAgentReplyScheduler(input: {
     const now = processInput.now ?? new Date();
 
     try {
-      // Stale processing claims are recoverable only before any network dispatch.
-      // A persisted sending/uncertain delivery is never retried automatically.
+      // Interrupted claims cannot prove whether business actions already ran.
+      // Recover confirmed dispatches; hand all other stale executions to a human.
       const stale = await input.prisma.aiAgentPendingReply.findMany({ where: { status: "processing",
         lockedAt: { lte: new Date(now.getTime() - AGENT_REPLY_LEASE_MS) } }, take: batchSize });
       for (const reply of stale) {
         if (reply.status !== "processing") continue;
-        await recoverStaleAgentReplyClaim(input.prisma, reply, now);
+        const recovered = await recoverStaleAgentReplyClaim(input.prisma, reply, now);
+        if (recovered?.handoff) await input.agentRuntime.notifyReplyFailureHandoff?.(recovered.handoff);
       }
       await replayProspectingFollowupObservations(input.prisma, input.followupService, batchSize);
       const pendingReplies = await input.prisma.aiAgentPendingReply.findMany({
@@ -248,17 +272,27 @@ export function createAgentReplyScheduler(input: {
         }, AGENT_REPLY_LEASE_MS / 3);
         heartbeat.unref?.();
         try {
-          const run = await input.agentRuntime.runForMessage({ workspaceId: pendingReply.workspaceId,
+          const run = await observeOperationalOperation('agent_scheduler', () => input.agentRuntime.runForMessage({ workspaceId: pendingReply.workspaceId,
             agentId: pendingReply.agentId, conversationId: pendingReply.conversationId,
+            sessionId: pendingReply.sessionId,
             messageId: pendingReply.lastMessageId, trigger: "automation", replyClaim: { id: pendingReply.id, token },
             ...(pendingReply.prospectingGeneration ? { prospectingGeneration: pendingReply.prospectingGeneration } : {}),
-            instruction: pendingReply.instruction ?? null });
-          const status = run.status === "failed" || run.status === "skipped" ? run.status : "completed";
+            instruction: pendingReply.instruction ?? null }));
+          const retry = run.status === 'failed' && run.retryable === true && pendingReply.attempts + 1 < maxGenerationAttempts;
+          const status = retry ? 'pending' : run.status === "failed" || run.status === "skipped" ? run.status : "completed";
+          if (run.status === 'failed' && !retry) await handoff(pendingReply, token, run.message ?? 'AI reply failed; human review required.');
+          const scheduledAt = retry ? new Date(now.getTime() + generationBackoffMs * 2 ** pendingReply.attempts) : undefined;
           await input.prisma.aiAgentPendingReply.updateMany({ where: ownership,
             data: { status, claimToken: null, lockedAt: null,
-              lastError: status === "failed" || status === "skipped" ? run.message ?? `Agent reply ${run.status}.` : null } });
+              ...(scheduledAt ? { scheduledAt } : {}),
+              lastError: retry || status === "failed" || status === "skipped" ? run.message ?? `Agent reply ${run.status}.` : null } });
+          if (scheduledAt) scheduleWake(scheduledAt, now);
           results.push({ id: pendingReply.id, status: run.status, runId: run.runId });
         } catch (error) {
+          reportOperationalException('agent_scheduler', error);
+          // A thrown runtime error has no pre-dispatch certificate. It must not
+          // enter automatic retry even when it looks like a network timeout.
+          await handoff(pendingReply, token, error instanceof Error ? error.message : 'AI reply processing failed.');
           await input.prisma.aiAgentPendingReply.updateMany({ where: ownership, data: { status: "failed", claimToken: null,
             lockedAt: null, lastError: error instanceof Error ? error.message : "Agent reply processing failed." } });
           results.push({ id: pendingReply.id, status: "failed" });
@@ -266,9 +300,18 @@ export function createAgentReplyScheduler(input: {
       }
 
       return results;
+    } catch (error) {
+      reportOperationalException('agent_scheduler', error);
+      throw error;
     } finally {
       isProcessing = false;
     }
+  }
+
+  async function handoff(reply: PendingReplyRecord, token: string, reason: string) {
+    await input.agentRuntime.handoffForReplyFailure?.({ workspaceId: reply.workspaceId,
+      conversationId: reply.conversationId, agentId: reply.agentId, messageId: reply.lastMessageId,
+      sessionId: reply.sessionId, replyClaim: { id: reply.id, token }, reason });
   }
 
   function start() {
@@ -277,7 +320,7 @@ export function createAgentReplyScheduler(input: {
     }
 
     timer = setInterval(() => {
-      void processDueReplies();
+      void processDueReplies().catch(() => undefined);
     }, pollIntervalMs);
     timer.unref?.();
   }
@@ -303,7 +346,7 @@ export function createAgentReplyScheduler(input: {
     const delayMs = Math.max(0, scheduledAt.getTime() - now.getTime() + 100);
     const wakeTimer = setTimeout(() => {
       wakeTimers.delete(wakeTimer);
-      void processDueReplies();
+      void processDueReplies().catch(() => undefined);
     }, delayMs);
     wakeTimers.add(wakeTimer);
     wakeTimer.unref?.();

@@ -1,0 +1,106 @@
+import { choice, noul, type JevClient, type JevQuestion } from "../../core/jev.js";
+import { CRITERIO_INVENTA, PERGUNTA_INVENTA, type Judge } from "../../core/review.js";
+import type { FichaDoAtendimento } from "./tipos.js";
+
+type Requisito = { id: string; exigencia: string; pergunta: JevQuestion & { type: "choice" }; falhas: Record<string, string> };
+
+/** Review concrete obligations, never veto a reply with an unexplained overall adherence score. */
+export function createJuizDeAtendimento(jev: JevClient): Judge {
+  return async input => {
+    const ficha = input.ficha as FichaDoAtendimento;
+    const perguntas = (ficha.perguntas ?? []).filter(p => p.status === "respondida" || p.status === "sem_base");
+    const requisitos: Requisito[] = [];
+    const add = (id: string, exigencia: string, criteria: Record<string, string>, falhas: Record<string, string>) => {
+      requisitos.push({ id, exigencia, falhas, pergunta: { type: "choice", instructions: `${exigencia} Escolha somente uma falha concreta presente na mensagem, não uma preferência de estilo. Paráfrases fiéis e unidades equivalentes valem. Oferta de catálogo/vendedor é opcional e sua ausência não é falha. Não exija copiar todos os trechos nem ressalvas não perguntadas. Condições essenciais de encomenda são informadas na etapa certa. O registro da especificação desejada não é garantia de fornecimento da combinação.`, criteria } });
+    };
+    const fatos: Record<string, string> = { preco: "preço", prazo: "prazo", estoque: "estoque ou pronta entrega", medida: "medida ou formato", pedido_minimo: "pedido mínimo", produto_material: "produto ou material", outro_fato: "outro fato concreto" };
+    add("afirmacao_sem_base", PERGUNTA_INVENTA + " O pedido do cliente comprova o que ele quer, não que a empresa fornece aquela liga, norma, acabamento ou combinação exata. Quando a base autoriza só a família, não garantir estoque nem combinação exata. Registrar ou repetir uma especificação como SOLICITAÇÃO do cliente não é prometer que ela está confirmada. Não exigir ressalvas sobre vendedor/confirmação se a mensagem só registra o pedido ou confirma a família. A base que confirma produto específico prevalece sobre a regra genérica de material. Diferencie cobertura de cidade já listada de frete/prazo a confirmar. Identifique a categoria de uma afirmação sem suporte. Leia todas as fontes; não confunda paráfrase ou condição verdadeira da base com invenção.",
+      { nenhuma: "Toda afirmação está apoiada em uma fonte, é paráfrase fiel ou não há afirmação factual.", ...Object.fromEntries(Object.entries(fatos).map(([id, nome]) => [id, `A mensagem afirma ${nome} sem suporte em nenhuma fonte.`])) },
+      Object.fromEntries(Object.entries(fatos).map(([id, nome]) => [id, `A mensagem afirma ${nome} sem suporte nas fontes. Retire ou corrija essa afirmação usando apenas as evidências disponíveis.`])));
+    add("repeticao", "Compare a candidata com as mensagens anteriores da empresa e a última mensagem do contato. Repetir informação é necessário quando o cliente perguntou novamente (prazo, mínimo, produto etc.), pediu confirmação/correção, ou aceitou uma etapa e ainda falta um dado. Uma pergunta anterior sem resposta pode ser retomada ao avançar essa etapa; não confunda isso com repetição inútil. Só vete repetição desnecessária: uma afirmação já comunicada que não responde a nova dúvida, não contextualiza uma mudança e não ajuda uma pendência atual. Não exija trocar palavras de uma resposta necessária.",
+      { nenhuma: "Não há repetição desnecessária, ou a informação/pergunta repetida é necessária ao conteúdo novo do contato.", desnecessaria: "Repete informação anterior sem relação necessária com a dúvida ou pendência atual." },
+      { desnecessaria: "Retire apenas as informações anteriores sem relação com a última mensagem. Preserve a resposta ao que o cliente perguntou novamente e a pergunta sobre dado ainda pendente." });
+    const repasse = Boolean(input.jogada.avisarHumano);
+    if (!repasse) add("conduz_prequalificacao", "Durante a coleta, o agente representa a empresa: responde e faz a próxima pergunta. Não deve terceirizar a conversa com vendedor/comercial/responsável, prometer consultar ou acrescentar ressalvas de confirmação/avaliação não perguntadas. Pode reconhecer brevemente um fato realmente perguntado e desconhecido sem citar outra pessoa. Condições essenciais de encomenda são relevantes; não inventar certeza para evitar ressalvas.",
+      { adequada: "Conduz a qualificação sem terceirizar nem recitar ressalvas desnecessárias.", terceiriza: "Cita vendedor/comercial/responsável ou confirmação/avaliação como ressalva ou saída durante a coleta.", ressalva_desnecessaria: "Acrescenta ressalvas não perguntadas, desviando da resposta e próxima pergunta." },
+      {terceiriza: "Continue você a pré-qualificação. Retire menções a vendedor/avaliação/confirmação rotineira e pergunte o próximo dado necessário. Divergências ficam no resumo interno.", ressalva_desnecessaria:"Retire as ressalvas não perguntadas. Responda o que sabe e pergunte o próximo dado necessário."});
+    if (!repasse) add("proxima_etapa", "A pergunta ao cliente é o próximo dado necessário? Coletar detalhes técnicos ausentes antes de cadastro: espessura sozinha não informa comprimento/largura de chapa; designação genérica de perfil pode ter variantes, deve esclarecer quando necessária. Não repetir dados já fornecidos nem pedir ao cliente que confirme nossa disponibilidade, nosso frete ou nossa capacidade técnica. Aceite de condições pode vir antes da técnica; se os dados técnicos bastam, cadastro é adequado. Se o pedido inteiro não é atendido (produto recusado ou destino fora da região), não continue pedindo medidas, cadastro ou aceite de condições. Em pedido misto, pode qualificar somente os itens atendidos.",
+      {adequada:"Pergunta adequada à etapa, ou nenhuma pergunta adicional é necessária.", cadastro_antecipado:"Pede cadastro, mas ainda falta um detalhe técnico essencial do pedido.", repete_dado:"Pede um dado que o cliente já informou sem dúvida real.", tarefa_interna:"Pede ao cliente uma confirmação que é tarefa interna da empresa.", insiste_apos_recusa:"Continua qualificando um pedido que acabou de recusar integralmente."},
+      {cadastro_antecipado:"Antes do cadastro, pergunte o detalhe técnico ainda ausente (dimensões completas da chapa ou variante exata do perfil quando necessária).",repete_dado:"Reutilize os dados já informados e pergunte apenas o que falta.",tarefa_interna:"Verificações internas vão nas divergências. Pergunte apenas um dado que o cliente pode fornecer.", insiste_apos_recusa:"Responda somente a recusa de produto/região e encerre sem perguntar medidas, condições ou cadastro desse pedido."});
+    add("condicoes_do_item", "Mínimo, prazo e pagamento afirmados pertencem especificamente à família e modalidade do item atual nas fontes? Condições de encomenda não se aplicam automaticamente à linha de estoque nem a outro produto. Se a base não informa uma condição para este item, omita-a quando não perguntada ou reconheça que não está definida se perguntada.",
+      {corretas:"As condições afirmadas correspondem ao item/modalidade, ou não há condições afirmadas.", outra_linha:"Aplica condição de outro produto/modalidade, ou generaliza encomenda para linha de estoque."},
+      {outra_linha:"Retire condições de outra família/modalidade. Use somente o mínimo, prazo e pagamento explicitamente aplicáveis a este item; não generalize as regras de encomenda para itens de estoque."});
+    if (input.jogada.tipo === "prequalificacao_pronta") add("repasse_pronto", "O pedido tem os dados necessários à pré-qualificação conforme a base: aceite das condições aplicáveis, especificações solicitadas, quantidade, logística e cadastro exigido? Divergências que só se resolvem no orçamento não impedem concluir. Não exigir preço, frete ou estoque final antes de encaminhar. Não concluir se falta dado obrigatório do cliente.",
+      {pronto:"Os dados necessários já constam da conversa; pode encaminhar ao orçamento.", incompleto:"Ainda falta dado obrigatório que o cliente pode fornecer."},
+      {incompleto:"Não conclua a pré-qualificação ainda. Colete os dados obrigatórios faltantes antes de encaminhar."});
+    perguntas.forEach((p, i) => {
+      const fontes = [p.resposta, ...(p.maisRespostas ?? [])].filter(c => c != null);
+      const evidencia = fontes.map(c => `${c.trechoId}: "${c.citacao}"`).join("; ");
+      const contexto = `${p.id}: "${p.texto}". Evidências: ${evidencia || "sem base"}.`;
+      add(`resposta_${i + 1}`, `Atender à pergunta ${contexto} Quando a ficha vincula esta pergunta a um trecho específico, usar o nome do produto desse trecho em vez das palavras do cliente não constitui troca por si só. Para produto_diferente, identifique incompatibilidade concreta de material, família, acabamento ou medida entre o pedido e a resposta; diferença de nome, sinônimo ou ausência de repetição exata não basta. Se ela já foi respondida na conversa e não há nova dúvida, não exija repetição. Se o cliente perguntou novamente, responda de novo só o que ele pediu. Regras explícitas de recusa, consulta e região atendida são evidência suficiente para o assunto correspondente; não exija um trecho de outra família, variante ou cidade. Se está sem base, não inventar; reconhecer o assunto ainda indefinido quando perguntado e continuar a pré-qualificação. Durante a coleta, não exigir menção de vendedor, confirmação ou repasse. Uma divergência específica registrada na ficha pode aguardar o orçamento; não é obrigação anunciá-la ao cliente sem pergunta direta.`,
+        { atendida: "Responde ao que foi perguntado com a informação relevante, ou já estava respondido sem nova dúvida.", sem_resposta: "A pergunta ou parte essencial dela ficou sem resposta; só houve saudação, oferta, pergunta devolvida ou desvio.", produto_diferente: "Há incompatibilidade concreta entre produto/material pedido e respondido, não apenas o uso do nome que aparece na evidência vinculada à pergunta.", sem_encaminhamento: "Não existe base para responder e fingiu que respondeu, desviando de uma pergunta direta sem reconhecer o assunto indefinido ou coletar o dado necessário." },
+        { sem_resposta: `Faltou responder à pergunta ${contexto}`, produto_diferente: `A resposta troca o produto/material de ${contexto} Corrija a correspondência ou explique o que depende de confirmação.`, sem_encaminhamento: `Faltou reconhecer o assunto ainda indefinido e continuar a qualificação em ${contexto}` });
+      if (p.status === "respondida" && fontes.some(c => /sob encomenda/i.test(c.citacao))) {
+        add(`encomenda_${i + 1}`, `Preservar a condição de fornecimento sob encomenda ao responder ${contexto} Verifique o histórico inteiro: se já foi dita para este item, não exija de novo em cada pergunta de prazo ou mínimo; uma nova confirmação de fornecimento só precisa repetir essa condição se houver mudança relevante.`,
+          { preservada: "A mensagem informa sob encomenda, por encomenda ou equivalente.", nao_se_aplica: "Não confirma fornecimento (recusa ou encaminha uma dúvida), ou essa condição já foi dita sem nova dúvida.", omitida: "Confirma fornecimento sem informar a condição sob encomenda, que ainda não foi dita." },
+          { omitida: `Em ${p.id}, faltou informar que o fornecimento é sob encomenda. Fonte: ${evidencia}.` });
+      }
+    });
+    if (/deixar o pedido pronto para orçar/i.test(input.jogada.instrucao)) {
+      for (const dado of ["medida", "quantidade", "cidade"]) {
+        add(`dado_${dado}`, `Pedir ${dado} para preparar o orçamento SOMENTE se ainda falta na conversa. Uma pergunta anterior sem resposta pode ser retomada quando o cliente aceita continuar, mas não cobre todas as perguntas de uma vez: um pedido de detalhe técnico ainda pendente é próximo passo suficiente; cidade/quantidade podem esperar esse detalhe ou a viabilidade do pedido. Não exigir nova pergunta se o dado já foi informado, já foi perguntado e aguarda resposta, não se aplica ao pedido, ou a mensagem está na etapa de aceite das condições antes dos dados técnicos. Oferta de catálogo/vendedor não substitui a coleta.`,
+          { cumprido: `A mensagem pede ${dado} que ainda faltava.`, nao_se_aplica: "O dado já existe, já foi perguntado e aguarda resposta, não é necessário nesta etapa, ou foi oferecido outro próximo passo permitido.", faltou: `O dado ${dado} falta para orçar e a mensagem não pede nem oferece outro próximo passo permitido.` },
+          { faltou: `Faltou pedir ${dado}, que ainda não foi informado e é necessário para preparar o orçamento.` });
+      }
+    }
+    if (!perguntas.length) add("resposta_atual", "Responder ou reconhecer o conteúdo novo da última mensagem. Se for só saudação, uma saudação basta.",
+      { atendida: "Responde ou reconhece o que o contato disse.", sem_resposta: "Ignora a pergunta ou informação nova do contato." },
+      { sem_resposta: `Faltou responder ou reconhecer a última mensagem: "${input.historico.at(-1)?.texto ?? ""}".` });
+    const answers = await jev.ask({ pedido: input.pedidoTexto ?? "", ficha: input.fichaTexto, jogada: input.jogada.instrucao,
+      outrasFontes: input.fontesExtras ?? "", perguntas, ultimasMensagens: input.historico.slice(-8), mensagemCandidata: input.texto },
+      { inventa: { type: "noul", instructions: PERGUNTA_INVENTA, criteria: CRITERIO_INVENTA }, ...Object.fromEntries(requisitos.map(r => [r.id, r.pergunta])) });
+    const verificacoes = requisitos.map(r => {
+      const resultado = choice(answers[r.id]);
+      if (!resultado || !Object.hasOwn(r.pergunta.criteria, resultado)) throw new Error(`JEV_REQUIREMENT_INVALID_${r.id}`);
+      return { id: r.id, exigencia: r.exigencia, resultado, ok: !Object.hasOwn(r.falhas, resultado), motivo: r.falhas[resultado] ?? null };
+    });
+    const notas = { inventa: noul(answers.inventa) };
+    const faltas = verificacoes.filter(v => !v.ok);
+    return faltas.length
+      ? { ok: false, regra: "juiz_requisito", motivo: faltas.map(v => `[${v.id}] ${v.motivo}`).join("\n"), notas, verificacoes }
+      : { ok: true, notas, verificacoes };
+  };
+}
+
+/** Concrete defects only: useful reactivation does not require new information or a fresh promise to reply. */
+export function createJuizDeFollowup(jev: JevClient): Judge {
+  const falhas: Record<string, string> = {
+    contradiz_negociacao: "A mensagem altera uma condição informada pelo vendedor nesta negociação. Preserve o combinado, mesmo quando difere da base geral.",
+    etapa_antecipada: "A mensagem pede medida ou cadastro antes de saber se a alternativa atende. Pergunte primeiro só pela viabilidade da alternativa.",
+    cobra_empresa: "A pendência é da empresa: falta responder ou enviar o que o cliente pediu. Gere lembrete interno, sem cobrar avaliação de algo não entregue.",
+    insiste_recusa: "A mensagem insiste na oferta após recusa expressa, compra resolvida ou pedido para parar. Não reapresente a alternativa recusada.",
+    sem_contexto: "Faltou retomar o item, proposta ou decisão concreta em aberto. Faça uma pergunta simples sobre a compra.",
+    inventa: "A mensagem inventa preço, estoque atual, prazo, desconto, condição ou equivalência técnica. Retire a afirmação sem suporte.",
+    repete_dado: "A mensagem cobra um dado já informado. Use o histórico e pergunte apenas o que ainda falta.",
+    terceiriza: "A mensagem desvia para vendedor ou catálogo sem retomar a negociação. Pergunte diretamente sobre o pedido.",
+    repete_mensagem: "A mensagem repete a mesma cobrança sem mudar a abordagem. Preserve o assunto e faça uma retomada diferente.",
+    contato_interno: "O contato não é cliente nesta conversa. Não envie retomada comercial."
+  };
+  return async ({ texto, jogada, historico, fichaTexto, pedidoTexto, fontesExtras }) => {
+    const exigencia = `Revise a retomada de uma venda parada e escolha uma falha concreta, ou adequada.
+Silêncio, cobranças anteriores sem resposta, agradecimento pelo orçamento e 'vou ver e aviso' NÃO encerram a compra. Retomar o mesmo produto com outra abordagem é o objetivo, não repetição indevida. Não exija novidade, urgência, desconto ou promessa de resposta para permitir follow-up. O sistema controla cadência e limite: avalie conteúdo, não invente intervalo.
+A condição informada pelo vendedor nesta negociação prevalece sobre a base geral; 500 kg informados pelo vendedor não podem ser corrigidos para 1.000 kg. Não exija mencionar vendedor nem confirmação. Não deduza estoque atual de oferta antiga. Cada condição pertence ao produto/modalidade informado: mínimo de tubos não vale automaticamente para perfis, e não se pode somar perfil U com tubo para atingir 500 kg sem autorização explícita. Isso é contradiz_negociacao, mesmo se a ficha ou a jogada tiver resumido errado: o histórico original prevalece sobre essas interpretações.
+Pedido detalhado de cotação ainda sem orçamento respondido gera lembrete interno, mesmo se a última mensagem da empresa só informou mínimo genérico, disse "registrei" ou ofereceu catálogo/vendedor. Isso não obriga o cliente a pedir novamente para seguir. Só cobre dado essencial ausente ou aceite explicitamente perguntado e não respondido. Para quem pediu retalho, confirmar se chapa inteira serve é válido, sem pedir medidas antes desse aceite; orçamento enviado e agradecido permite retomada. Aprovação com pagamento ainda indefinido mantém essa decisão em aberto. Cortesia não é fechamento. Uma alternativa recusada não deve ser oferecida de novo, mas o pedido original pode continuar se ainda houver caminho de compra. Não presuma equivalência entre vigas ou materiais.
+Se o vendedor ofereceu uma alternativa e perguntou se atende, o silêncio mantém essa decisão aberta: uma nova pergunta contextual sobre a alternativa é válida, sem presumir equivalência técnica. Não vete só porque o item original estava indisponível ou a pergunta já foi feita; retomar uma decisão sem resposta é o objetivo. Vete afirmar equivalência sem prova ou insistir após recusa expressa. Recusa de uma oferta posterior não encerra os outros itens de uma cotação anterior: retomar os itens ainda abertos, não recusados e não declarados indisponíveis é válido, mesmo sem sinal recente de interesse. Não cobre a alternativa recusada nem afirme disponibilidade do item que acabou.
+A mensagem deve citar o assunto real e facilitar uma resposta. Não peça dado já informado nem o significado de um 'obrigado'. Uma pergunta sobre condição ainda não aceita é válida; pergunta com premissa inventada também é invenção. Não vete por preferência de estilo.`;
+    const criteria = { adequada: "Retomada útil, contextual, fiel à negociação e sem falha concreta.", ...falhas };
+    const answers = await jev.ask({ pedido: pedidoTexto ?? "", ficha: fichaTexto, jogada: jogada.instrucao,
+      outrasFontes: fontesExtras ?? "", ultimasMensagens: historico.slice(-200), mensagemCandidata: texto },
+      { retomada: { type: "choice", instructions: exigencia, criteria } });
+    const resultado = choice(answers.retomada);
+    if (!resultado || !Object.hasOwn(criteria, resultado)) throw new Error("JEV_FOLLOWUP_VERDICT_INVALID");
+    const motivo = falhas[resultado] ?? null;
+    const verificacoes = [{ id: "retomada", exigencia, resultado, ok: resultado === "adequada", motivo }];
+    return motivo ? { ok: false, regra: "juiz_retomada", motivo, verificacoes } : { ok: true, verificacoes };
+  };
+}

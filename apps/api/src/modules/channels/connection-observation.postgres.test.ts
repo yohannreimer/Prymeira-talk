@@ -29,7 +29,7 @@ describe.skipIf(!url)('connection observations on PostgreSQL', () => {
       await db.$transaction(tx => applyAuthenticatedConnectionObservation(tx, event));
       return db.channelConnection.findUniqueOrThrow({ where: { id: connection.id } });
     };
-    return { observe };
+    return { observe, readChannel: () => db.channel.findUniqueOrThrow({ where: { id: channel.id } }) };
   }
 
   it('Vendas 06 on 05/10: connecting then open as the same account puts the primary back in use', async () => {
@@ -45,7 +45,10 @@ describe.skipIf(!url)('connection observations on PostgreSQL', () => {
   it('keeps it out of use when it opens as another account or says nothing about the account', async () => {
     const other = await fixture('554789126453');
     await other.observe({ state: 'connecting' });
-    expect(await other.observe({ state: 'open', wuid: '554700000000@s.whatsapp.net' })).toMatchObject({ status: 'connected', eligible: false, verifiedPhoneNumber: '554789126453' });
+    expect(await other.observe({ state: 'open', wuid: '554700000000@s.whatsapp.net' })).toMatchObject({ status: 'connected', eligible: false, verifiedPhoneNumber: '554700000000' });
+    expect(await other.readChannel()).toMatchObject({ status: 'disconnected', verifiedMessagingPhoneNumber: '554789126453' });
+    // A repeated observation of the wrong account cannot replace the expected identity.
+    expect(await other.observe({ state: 'open', wuid: '554700000000@s.whatsapp.net' })).toMatchObject({ eligible: false });
     const silent = await fixture('554789126453');
     await silent.observe({ state: 'connecting' });
     expect(await silent.observe({ state: 'open' })).toMatchObject({ status: 'connected', eligible: false });

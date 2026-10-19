@@ -6,6 +6,8 @@ import type {
   AgentToolExecutorTransactionLike
 } from "./agent-tool-executor.js";
 import type { AgentProvider } from "./provider-gateway.js";
+import * as harnessModelHelpers from "../harness/core/model.js";
+import * as monitoring from '../../observability/glitchtip.js';
 
 const now = new Date("2026-06-23T18:00:00.000Z");
 
@@ -821,7 +823,7 @@ describe("createAgentRuntime", () => {
 
     await runtime.runForMessage({ workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation, messageId: ids.message, trigger: "automation" });
 
-    expect(fetchMedia).toHaveBeenCalledWith({ instanceName: "instancia", id: "wamid-image" });
+    expect(fetchMedia).toHaveBeenCalledWith(expect.objectContaining({ instanceName: "instancia", id: "wamid-image", workspaceId: ids.workspace }));
     expect(provider.generate).toHaveBeenCalledWith(expect.objectContaining({
       userPrompt: expect.stringContaining("Ø 10,0 mm - 215 barras (image/jpeg)")
     }));
@@ -3270,5 +3272,181 @@ it("continues after a material answer without requiring a document for its own p
     expect(aiAgentFindFirst).toHaveBeenCalledTimes(2);
     expect(provider.generate).not.toHaveBeenCalled();
     expect(prisma.aiAgentRun.create).not.toHaveBeenCalled();
+  });
+
+  it('reports a caught generation failure while preserving the current human handoff', async () => {
+    const report = vi.spyOn(monitoring, 'reportFailure').mockReturnValue(true);
+    try {
+      const error = new TypeError("ownKeys trap did not include '$on' PRIVATE_FIXTURE");
+      const prisma = buildPrisma();
+      const runtime = createAgentRuntime({ prisma, provider: { generate: vi.fn().mockRejectedValue(error) } });
+      const result = await runtime.runForMessage({ workspaceId: ids.workspace, agentId: ids.agent,
+        conversationId: ids.conversation, messageId: ids.message, trigger: 'automation' });
+      expect(result.status).toBe('handoff_requested');
+      expect(prisma.message.create).not.toHaveBeenCalled();
+      expect(report).toHaveBeenCalledOnce();
+      expect(report.mock.calls[0]?.[2]?.diagnostic).toMatchObject({ type: 'TypeError', code: 'PRISMA_PROXY_OWN_KEYS',
+        component: 'agents', operation: 'run_for_message', impact: 'operation_failed', recovery: 'unknown' });
+      expect(JSON.stringify(report.mock.calls)).not.toMatch(/PRIVATE_FIXTURE|workspace_a|5511999999999/);
+    } finally { report.mockRestore(); }
+  });
+});
+
+describe("createAgentRuntime with a reusable commercial harness", () => {
+  it("does not replace a session started by the website or another agent", async () => {
+    const prisma = buildPrisma({
+      aiAgent: { findFirst: vi.fn().mockResolvedValue({ ...baseAgent, behaviorConfig: { harness: { agente: "comercial", empresa: "Oficina Aurora", canais: [baseConversation.channelId] } } }) },
+      conversation: { findUnique: vi.fn().mockResolvedValue({ ...baseConversation, activeAgentSessionId: "existing-website-session" }), update: vi.fn() }
+    });
+    const result = await createAgentRuntime({ prisma, provider: buildProvider({ confidence: 1, reply: "", actions: [], handoff: { required: false, reason: null } }) }).activateForMessage({ workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation, messageId: ids.message });
+    expect(result.status).toBe("skipped");
+    expect(prisma.aiAgentSession.upsert).not.toHaveBeenCalled();
+    expect(prisma.conversation.update).not.toHaveBeenCalled();
+  });
+  const slot = { startsAt: "2026-06-24T10:30:00-03:00", label: "quarta-feira, 24/06 às 10:30" };
+  const meeting = { eventId: "ev-commercial", startsAt: slot.startsAt, label: slot.label, meetLink: "https://meet.google.com/abc-defg-hij", htmlLink: null };
+  async function runCommercial(options: { body?: string; booking?: "booked" | "unavailable" | "failed"; channels?: string[] } = {}) {
+    const body = options.body ?? "quarta às 10:30";
+    const selecting = !options.body;
+    const agent = { ...baseAgent, systemPrompt: "Você é Rui, da Oficina Aurora. Explique os serviços aprovados.",
+      allowedActions: ["send_message", "create_internal_note", "request_handoff", "schedule_meeting"],
+      behaviorConfig: { harness: { agente: "comercial", empresa: "Oficina Aurora", canais: options.channels ?? [baseConversation.channelId] } } };
+    const prisma = buildPrisma({ aiAgent: { findFirst: vi.fn().mockResolvedValue(agent) }, aiKnowledgeSource: { findMany: vi.fn().mockResolvedValue([
+      { id: "service", title: "Serviços", content: "Manutenção de máquinas.", metadata: { approvalStatus: "confirmed" } }
+    ]) } });
+    vi.mocked(prisma.message.findFirst).mockResolvedValue({ ...baseMessage, body });
+    vi.mocked(prisma.message.findMany).mockResolvedValue([{ ...baseMessage, body }]);
+    const model = harnessModelHelpers.createScriptedModel("commercial-test", request => {
+      if (request.tools?.some(t => t.name === "responder")) return { content: null, toolCalls: [harnessModelHelpers.toolCall("responder", { texto: selecting ? "Vou reservar esse horário." : "Fazemos manutenção de máquinas." })] };
+      if (request.messages.some(m => m.role === "tool")) return { content: null, toolCalls: [] };
+      return { content: null, toolCalls: [harnessModelHelpers.toolCall("registrar_contexto", { intencao: selecting ? "agendar" : "duvida", assunto: null, empresa: null, rotina: null }),
+        ...(selecting ? [harnessModelHelpers.toolCall("escolher_horario", { startsAt: slot.startsAt, trecho: body })] : [])] };
+    });
+    const complete = vi.spyOn(model, "complete");
+    const meetingScheduler = { availability: vi.fn().mockResolvedValue({ durationMinutes: 15, timeZone: "America/Sao_Paulo", availableSlots: [slot], bookedMeeting: null }),
+      book: options.booking === "failed" ? vi.fn().mockRejectedValue(new Error("Calendar unavailable")) : vi.fn().mockResolvedValue(options.booking === "unavailable"
+        ? { status: "unavailable", reason: "occupied", availableSlots: [slot] } : { status: "booked", meeting, replacedEventIds: [] }) };
+    const provider = buildProvider({ confidence: 1, reply: "Motor anterior.", actions: [], handoff: { required: false, reason: null } });
+    const result = await createAgentRuntime({ prisma, provider, meetingScheduler, harness: { modelFactory: () => model } }).runForMessage({ workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation, messageId: ids.message, trigger: "automation" });
+    return { result, prisma, meetingScheduler, complete, provider };
+  }
+  it("uses the shared core and the agent's own company and sources", async () => {
+    const { result, complete, provider, meetingScheduler } = await runCommercial({ body: "O que vocês fazem?" });
+    expect(result.status).toBe("completed");
+    expect(provider.generate).not.toHaveBeenCalled();
+    expect(meetingScheduler.book).not.toHaveBeenCalled();
+    const prompts = JSON.stringify(complete.mock.calls);
+    expect(prompts).toContain("Oficina Aurora");
+    expect(prompts).toContain("Manutenção de máquinas");
+    expect(prompts).not.toMatch(/Villefer|catálogo|pedido mínimo/);
+  });
+  it("reserves through Calendar and replaces the writer's text with the real confirmation", async () => {
+    const { result, prisma, meetingScheduler } = await runCommercial();
+    expect(result.status).toBe("completed");
+    expect(meetingScheduler.book).toHaveBeenCalledWith(expect.objectContaining({ startsAt: slot.startsAt, conversationId: ids.conversation }));
+    expect(prisma.message.create).toHaveBeenCalledWith({ data: expect.objectContaining({ body: `Fechado! Sua conversa ficou marcada para ${slot.label}.\n\nLink da call: ${meeting.meetLink}` }) });
+    expect(prisma.aiAgentSession.update).toHaveBeenLastCalledWith(expect.objectContaining({ data: expect.objectContaining({ metadata: { harness: expect.objectContaining({ agente: "comercial", ficha: expect.objectContaining({ horario: null }) }) } }) }));
+  });
+  it.each(["unavailable", "failed"] as const)("never sends a false booking confirmation when Calendar is %s", async booking => {
+    const { prisma } = await runCommercial({ booking });
+    expect(JSON.stringify(vi.mocked(prisma.message.create).mock.calls)).not.toMatch(/ficou marcada|meet.google.com|Vou reservar/);
+  });
+  it("does not select the harness outside its explicit channels", async () => {
+    const { complete, provider } = await runCommercial({ body: "O que fazem?", channels: ["other-channel"] });
+    expect(complete).not.toHaveBeenCalled();
+    expect(provider.generate).toHaveBeenCalled();
+  });
+});
+
+describe("createAgentRuntime with the harness attendance agent", () => {
+  const channelId = baseConversation.channelId;
+  const catalogSource = {
+    id: "knowledge_catalog",
+    title: "Catálogo Villefer em PDF",
+    content: "Catálogo oficial aprovado para envio.",
+    fileUrl: "https://villefer.com.br/catalogo.pdf",
+    fileName: "catalogo.pdf",
+    mimeType: "application/pdf",
+    status: "ready"
+  };
+  const harnessAgent = (canais: string[]) => ({
+    ...baseAgent,
+    allowedActions: ["send_message", "send_attachment", "request_handoff"],
+    behaviorConfig: { harness: { agente: "atendimento", canais } }
+  });
+  // One model plays reader and writer, as in production: the writer's request offers "responder".
+  const scriptedModel = (write: Record<string, unknown> & { tool: "responder" | "pedir_humano" }) => {
+    const { createScriptedModel, toolCall } = harnessModelHelpers;
+    return createScriptedModel("luna-test", (request) => {
+      if (request.tools?.some((tool) => tool.name === "responder")) {
+        const { tool, ...args } = write;
+        return { content: null, toolCalls: [toolCall(tool, args)] };
+      }
+      return request.messages.some((entry) => entry.role === "tool")
+        ? { content: null, toolCalls: [] }
+        : { content: null, toolCalls: [toolCall("enviar_anexo", { anexoId: "catalogo" })] };
+    });
+  };
+  const run = async (input: { canais: string[]; model: ReturnType<typeof scriptedModel>; body: string }) => {
+    const prisma = buildPrisma({
+      aiAgent: { findFirst: vi.fn().mockResolvedValue(harnessAgent(input.canais)) },
+      aiKnowledgeSource: { findMany: vi.fn().mockResolvedValue([catalogSource]) }
+    });
+    vi.mocked(prisma.message.findFirst).mockResolvedValue({ ...baseMessage, body: input.body });
+    vi.mocked(prisma.message.findMany).mockResolvedValue([...baseConversationMessages.slice(0, 2), { ...baseMessage, body: input.body }]);
+    const provider = buildProvider({ confidence: 0.9, reply: "Resposta do motor atual.", actions: [], handoff: { required: false, reason: null } });
+    const replyPreflight = { evaluate: vi.fn(), audit: vi.fn() };
+    const sendText = vi.fn().mockResolvedValue({ providerMessageId: "evo-text" });
+    const sendMedia = vi.fn().mockResolvedValue({ providerMessageId: "evo-media" });
+    const result = await createAgentRuntime({
+      prisma, provider, replyPreflight: replyPreflight as never,
+      evolution: { mode: "real", client: { sendText, sendMedia } },
+      harness: { modelFactory: () => input.model }
+    }).runForMessage({ workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation, messageId: ids.message, trigger: "automation" });
+    return { result, prisma, provider, replyPreflight, sendText, sendMedia };
+  };
+
+  it("answers on the listed channel and sends the approved catalogue the contact asked for", async () => {
+    const { result, prisma, provider, replyPreflight, sendText, sendMedia } = await run({
+      canais: [channelId],
+      body: "me manda o catálogo",
+      model: scriptedModel({ tool: "responder", texto: "Claro! Segue o catálogo da Villefer em PDF. Qual produto você procura?" })
+    });
+    expect(result.status).toBe("completed");
+    expect(provider.generate).not.toHaveBeenCalled();
+    expect(replyPreflight.evaluate).not.toHaveBeenCalled();
+    expect(sendText).toHaveBeenCalledWith(expect.objectContaining({ text: "Claro! Segue o catálogo da Villefer em PDF. Qual produto você procura?" }));
+    expect(sendMedia).toHaveBeenCalledWith(expect.objectContaining({ media: "https://villefer.com.br/catalogo.pdf", fileName: "catalogo.pdf" }));
+    // The record survives to the next message in the session metadata.
+    expect(prisma.aiAgentSession.update).toHaveBeenLastCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ metadata: { harness: expect.objectContaining({ ficha: expect.objectContaining({ anexosEnviados: ["catalogo"] }) }) } })
+    }));
+  });
+
+  it("keeps its own hand-over message and still sends the catalogue with it", async () => {
+    const { result, sendText, sendMedia, provider } = await run({
+      canais: [channelId],
+      body: "me manda o catálogo, quero fechar o pedido hoje",
+      model: scriptedModel({
+        tool: "pedir_humano",
+        motivo: "fechar_pedido",
+        detalhe: "Quer fechar o pedido hoje.",
+        mensagemAoContato: "Segue o catálogo em PDF. Um vendedor continua com você por aqui para fechar o pedido."
+      })
+    });
+    expect(result.status).toBe("handoff_requested");
+    expect(provider.generate).not.toHaveBeenCalled();
+    expect(sendText).toHaveBeenCalledWith(expect.objectContaining({ text: "Segue o catálogo em PDF. Um vendedor continua com você por aqui para fechar o pedido." }));
+    expect(sendMedia).toHaveBeenCalledWith(expect.objectContaining({ media: "https://villefer.com.br/catalogo.pdf" }));
+  });
+
+  it("leaves other channels with the current engine", async () => {
+    const model = scriptedModel({ tool: "responder", texto: "não deveria responder" });
+    const complete = vi.spyOn(model, "complete");
+    const { result, provider, sendText } = await run({ canais: ["outro-canal"], body: "qual o pedido mínimo de tubo?", model });
+    expect(result.status).toBe("completed");
+    expect(complete).not.toHaveBeenCalled();
+    expect(provider.generate).toHaveBeenCalled();
+    expect(sendText).toHaveBeenCalledWith(expect.objectContaining({ text: "Resposta do motor atual." }));
   });
 });

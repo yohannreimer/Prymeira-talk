@@ -32,6 +32,17 @@ describe('physical connection display state', () => {
 
 describe('connections panel summary', () => {
   const conn = (provider: 'evolution' | 'waha', status: string, health = 'healthy') => ({ id: provider, channelId: 'c', provider, sessionName: provider, status, health, verifiedPhoneNumber: null, eligible: true, isActiveWriter: false, lastCheckedAt: null }) as never;
+  it('keeps the physical count without promising delivery from an ineligible WAHA', () => {
+    const summary = connectionSummary({ provider: 'evolution', status: 'disconnected', redundancyEnabled: true, connections: [
+      conn('evolution', 'disconnected'), { ...connection, id: 'secondary', provider: 'waha', eligible: false, health: 'degraded', lastError: 'PHONE_MISMATCH' }
+    ] });
+    expect(summary).toMatchObject({ tone: 'down', title: 'WhatsApp indisponível', count: '1 de 2 conexões ativas' });
+    expect(summary.detail).not.toMatch(/seguem|continuam/);
+  });
+  it('reports lost redundancy in Channels while a proven WAHA carries messages', () => {
+    expect(connectionSummary({ provider: 'evolution', status: 'connected', redundancyEnabled: true, connections: [conn('evolution', 'disconnected'), conn('waha', 'connected')] }))
+      .toMatchObject({ tone: 'warning', title: 'Uma conexão caiu', detail: 'As mensagens seguem pela outra conexão. Gere o QR Code da que caiu para religar.' });
+  });
   it('says everything is fine, that one connection fell, or that WhatsApp is disconnected', () => {
     expect(connectionSummary({ provider: 'evolution', status: 'connected', redundancyEnabled: true, connections: [conn('evolution', 'connected'), conn('waha', 'connected')] }))
       .toMatchObject({ tone: 'ok', title: 'Tudo funcionando', count: '2 de 2 conexões ativas' });

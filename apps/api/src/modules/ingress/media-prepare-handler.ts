@@ -79,13 +79,13 @@ export function mediaFetchers(source: FrozenSource, deps: { waha: Pick<WahaClien
     }
     if (evolutionInstance && deps.evolution?.fetchMedia && key.rawId) {
       const evolution = deps.evolution, id = key.rawId;
-      fetchers.push({ name: 'evolution', async fetch() { return { mediaUrl: await evolution.fetchMedia!({ instanceName: evolutionInstance, id }) }; } });
+      fetchers.push({ name: 'evolution', async fetch() { return { mediaUrl: await evolution.fetchMedia!({ instanceName: evolutionInstance, id, key: { ...key, identityFormat: 'whatsapp_stanza', nativeId: id, nativeChatAddress: key.chatAddress, nativeSenderParticipant: key.senderParticipant || null } }) }; } });
     }
   } else if (source.provider === 'evolution' && source.channelProvider === 'evolution' && deps.evolution?.fetchMedia && key.nativeId) {
     const evolution = deps.evolution, id = key.nativeId;
-    fetchers.push({ name: 'evolution', async fetch() { return { mediaUrl: await evolution.fetchMedia!({ instanceName: source.sessionName, id }) }; } });
+    fetchers.push({ name: 'evolution', async fetch() { return { mediaUrl: await evolution.fetchMedia!({ instanceName: source.sessionName, id, key }) }; } });
   }
-  return { fetchers, useStoredUrl: source.provider !== 'waha' };
+  return { fetchers, useStoredUrl: !['waha', 'evolution'].includes(source.provider) };
 }
 
 /** Durable media for messages that did not come through an ingress receipt (imported history, gap recovery). */

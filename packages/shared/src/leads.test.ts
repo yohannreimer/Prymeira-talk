@@ -24,9 +24,12 @@ describe("Google lead search contracts", () => {
       city: "Campinas",
       state: "SP",
       idempotencyKey: "request-1",
-      maxTimeSeconds: 600
+      maxTimeSeconds: 600,
+      minResults: 30
     });
     expect(() => leadGoogleSearchRequestSchema.parse({ ...parsed, maxTimeSeconds: 179 })).toThrow();
+    expect(() => leadGoogleSearchRequestSchema.parse({ ...parsed, minResults: 201 })).toThrow();
+    expect(leadGoogleSearchRequestSchema.parse({ ...parsed, minResults: 0 }).minResults).toBe(0);
     expect(() => leadGoogleSearchRequestSchema.parse({ ...parsed, maxTimeSeconds: 901 })).toThrow();
   });
 });

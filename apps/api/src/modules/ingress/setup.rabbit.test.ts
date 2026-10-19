@@ -75,7 +75,7 @@ const windows = [
 ] as const;
 describe.skipIf(!brokerUrl || !databaseUrl)('owned real RabbitMQ setup cancellation', () => {
   beforeAll(() => {
-    readIngressEnvironment({ INGRESS_TRANSPORT_STAGE: 'isolated-1a', DATABASE_URL: databaseUrl, INGRESS_AMQP_URL: brokerUrl,
+    readIngressEnvironment({ TALK_TEST_POSTGRES_PORT: process.env.TALK_TEST_POSTGRES_PORT, TALK_TEST_AMQP_PORT: process.env.TALK_TEST_AMQP_PORT, INGRESS_TRANSPORT_STAGE: 'isolated-1a', DATABASE_URL: databaseUrl, INGRESS_AMQP_URL: brokerUrl,
       INGRESS_NAMESPACE: 'talk.isolated.setup_test', INGRESS_WORKSPACE_ALLOWLIST: 'fixture', INGRESS_PRIVATE_ROOT: '/private/tmp/unused' });
   });
   for (const kind of ['publisher', 'consumer'] as const) {

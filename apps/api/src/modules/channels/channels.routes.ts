@@ -140,13 +140,15 @@ export const channelsRoutes: FastifyPluginAsync<ChannelsRoutesOptions> = async (
 
     try {
       const metaRuntime = body.data.provider === "meta_cloud"
-        ? await resolveMetaRuntime(app.prisma, { workspaceId: request.talk.workspaceId })
+        ? await resolveMetaRuntime(app.prisma, { workspaceId: request.talk.workspaceId,
+            expectedEvolutionWebhook: options.evolution ? { webhookUrl: options.evolution.publicWebhookUrl(request.talk.workspaceId), webhookSecret: options.evolution.webhookSecret } : undefined })
         : null;
       const channelService = metaRuntime?.active && metaRuntime.connectionMode === "evolution_official"
         && metaRuntime.evolutionClient && options.evolution
         ? createChannelsService(app.prisma as unknown as PrismaLike, {
             evolution: options.evolution,
             metaEvolutionWebhook: {
+              attestInstance: metaRuntime.attestEvolutionInstance,
               client: {
                 setWebhook: metaRuntime.evolutionClient.setWebhook.bind(metaRuntime.evolutionClient)
               },

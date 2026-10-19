@@ -2,7 +2,7 @@ import type { Channel, ChannelModel, ConsumeMessage } from 'amqplib';
 import { setupOwnedAmqpConnection } from './connection-setup.js';
 import { closeOwnedAmqpConnection } from './connection-close.js';
 import { randomUUID } from 'node:crypto';
-import { ConfirmedIngressPublisher, decodeReference, declareTransport, transportTopology } from './broker.js';
+import { ConfirmedIngressPublisher, IngressBackpressure, decodeReference, declareTransport, transportTopology } from './broker.js';
 import { IngressJournal } from './journal.js';
 import { reportFailure } from '../../observability/glitchtip.js';
 
@@ -57,6 +57,19 @@ export class IngressTransportConsumer {
     await publisher.publish({ version: 1, quarantineId: id }, 'dead');
     this.ack(message);
   }
+  private async settledPublication(receiptId: string, deadline: number) {
+    let pollMs = 10;
+    while (this.running) {
+      if (Date.now() >= deadline) { this.stopAccepting(); return null; }
+      const state = await this.journal.db.ingressDelivery.findUniqueOrThrow({ where: { receiptId } });
+      if (!this.running) return null;
+      if (state.state === 'dead_letter' || state.state === 'pending_application') return state;
+      if (!state.leaseToken || !state.leaseUntil || state.leaseUntil.getTime() <= Date.now()) return state;
+      await new Promise(resolve => setTimeout(resolve, Math.min(pollMs, Math.max(1, deadline - Date.now()))));
+      pollMs = Math.min(250, pollMs * 2);
+    }
+    return null;
+  }
   private async deliver(message: ConsumeMessage) {
     const reference = decodeReference(message);
     if (!reference || !('receiptId' in reference)) return this.quarantine(message, 'invalid_transport_reference');
@@ -64,20 +77,44 @@ export class IngressTransportConsumer {
     if (!receipt) return this.quarantine(message, 'unknown_receipt');
     if (receipt.transportNamespace !== this.namespace || (this.journal.workspaceAllowlist && !this.journal.workspaceAllowlist.has(receipt.workspaceId))) return this.quarantine(message, 'foreign_transport_scope');
     const state = await this.journal.db.ingressDelivery.findUniqueOrThrow({ where: { receiptId: receipt.id } });
+    if (!this.running) return;
     if (state.state === 'dead_letter') { this.ack(message); return; }
     try {
       if (this.application) await this.application.apply(receipt.id);
       else await this.journal.handoff(receipt.id);
     } catch (error) {
       reportFailure('application_retry', error);
-      const failure = await this.journal.db.ingressDelivery.update({ where: { receiptId: receipt.id }, data: { failures: { increment: 1 }, lastError: 'application_handoff_failed' } });
-      const publisher = this.publisher();
-      if (!publisher?.ready) { this.stopAccepting(); return; }
-      // No classic DLX. The replacement persistent message is mandatory-routed
-      // and confirmed, and its evidence committed, BEFORE the original ACK.
-      await this.journal.publish(receipt.id, publisher, failure.failures >= this.maxFailures ? 'dead' : 'retry');
-      if (failure.failures >= this.maxFailures) reportFailure('application_dead_letter', error);
-      this.ack(message);
+      // Successful durable handoff never waits for publication bookkeeping. Only
+      // a failed application must wait before incrementing and publishing retry.
+      const deadline = Date.now() + (this.publisher()?.deadlineMs ?? 2000) + 10000;
+      let counted = false;
+      while (this.running) {
+        let failure = await this.settledPublication(receipt.id, deadline);
+        if (!failure || !this.running) return; // Closing the original channel requeues this reference.
+        if (failure.state === 'dead_letter' || failure.state === 'pending_application') { this.ack(message); return; }
+        if (!counted) {
+          const changed = await this.journal.db.ingressDelivery.updateMany({ where: { receiptId: receipt.id, state: { in: ['staged', 'routed'] },
+            OR: [{ leaseUntil: null }, { leaseUntil: { lt: new Date() } }] }, data: { failures: { increment: 1 }, lastError: 'application_handoff_failed' } });
+          if (!changed.count) continue; // A duplicate completed or claimed publication meanwhile.
+          counted = true;
+          failure = await this.journal.db.ingressDelivery.findUniqueOrThrow({ where: { receiptId: receipt.id } });
+        }
+        if (!this.running) return;
+        if (failure.state === 'dead_letter' || failure.state === 'pending_application') { this.ack(message); return; }
+        const publisher = this.publisher();
+        if (!publisher?.ready) { this.stopAccepting(); return; }
+        try {
+          // Confirm replacement AND its SQL evidence before acknowledging this
+          // reference. Concurrent duplicate deliveries may claim the lease first.
+          await this.journal.publish(receipt.id, publisher, failure.failures >= this.maxFailures ? 'dead' : 'retry');
+        } catch (publishError) {
+          if (publishError instanceof IngressBackpressure && publishError.code === 'publication_in_progress') continue;
+          throw publishError;
+        }
+        if (failure.failures >= this.maxFailures) reportFailure('application_dead_letter', error);
+        this.ack(message);
+        return;
+      }
       return;
     }
     this.ack(message);

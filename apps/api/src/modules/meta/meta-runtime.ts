@@ -1,6 +1,7 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { createEvolutionClient, type EvolutionClient } from "../evolution/evolution.client.js";
 import { createMetaClient, type MetaClient } from "./meta.client.js";
+import { createMetaEvolutionAttestation, createOwnedMetaEvolutionClient, type ExpectedEvolutionWebhook, type MetaEvolutionDb } from './meta-evolution-client.js';
 
 const META_CLOUD_PROVIDER = "meta_cloud";
 const DEFAULT_GRAPH_API_BASE_URL = "https://graph.facebook.com/v23.0";
@@ -17,6 +18,7 @@ export interface MetaRuntimeInput {
   workspaceId: string;
   fetch?: typeof fetch;
   graphApiBaseUrl?: string;
+  expectedEvolutionWebhook?: ExpectedEvolutionWebhook;
 }
 
 export type MetaRuntime =
@@ -52,9 +54,10 @@ export type MetaRuntime =
       appSecret: null;
       evolutionClient: EvolutionClient;
       evolutionInstanceName: string | null;
+      attestEvolutionInstance(instanceName: string): Promise<boolean>;
     };
 
-export interface MetaRuntimePrismaLike {
+export interface MetaRuntimePrismaLike extends Partial<MetaEvolutionDb> {
   integrationConfig: {
     findUnique(args: IntegrationConfigFindUniqueArgs): Promise<IntegrationConfigRecord | null>;
   };
@@ -123,6 +126,7 @@ export async function resolveMetaRuntime(
       return inactiveRuntime();
     }
 
+    const base = createEvolutionClient({ baseUrl: evolutionBaseUrl, apiKey: evolutionApiKey, fetch: input.fetch });
     return {
       active: true,
       connectionMode,
@@ -131,12 +135,9 @@ export async function resolveMetaRuntime(
       phoneNumberId: null,
       webhookVerifyToken: null,
       appSecret: null,
-      evolutionClient: createEvolutionClient({
-        baseUrl: evolutionBaseUrl,
-        apiKey: evolutionApiKey,
-        fetch: input.fetch
-      }),
-      evolutionInstanceName
+      evolutionClient: createOwnedMetaEvolutionClient(base, prisma, input.workspaceId, evolutionInstanceName, input.expectedEvolutionWebhook),
+      evolutionInstanceName,
+      attestEvolutionInstance: createMetaEvolutionAttestation(base, evolutionInstanceName, input.expectedEvolutionWebhook)
     };
   }
 

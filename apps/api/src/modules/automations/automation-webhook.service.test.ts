@@ -51,7 +51,9 @@ function tokenRecord(value = token) {
 }
 
 function createMockPrisma() {
-  return {
+  const runs = new Map<string, Record<string, unknown>>();
+  const prisma = {
+    $executeRaw: vi.fn(),
     automationRule: { findFirst: vi.fn().mockResolvedValue(webhookRule()) },
     automationWebhookToken: {
       findUnique: vi.fn().mockResolvedValue(null),
@@ -59,9 +61,11 @@ function createMockPrisma() {
       upsert: vi.fn().mockImplementation(async (args: { update: { token: string } }) => tokenRecord(args.update.token))
     },
     automationRun: {
-      findFirst: vi.fn().mockResolvedValue(null),
-      create: vi.fn().mockResolvedValue({}),
-      update: vi.fn().mockResolvedValue({})
+      findFirst: vi.fn().mockImplementation(async (args: { where: { eventKey?: string; createdAt?: unknown } }) => args.where.createdAt ? null : runs.get(args.where.eventKey!) ?? { id: 'run-1', workspaceId, ruleId, eventKey: args.where.eventKey, status: 'queued', input: {} }),
+      findMany: vi.fn().mockResolvedValue([]),
+      create: vi.fn().mockImplementation(async (args: { data: Record<string, unknown> }) => { runs.set(String(args.data.eventKey), { id: 'run-1', ...args.data }); return { id: 'run-1', ...args.data }; }),
+      update: vi.fn().mockImplementation(async (args: { data: Record<string, unknown> }) => { const key = String((args.data.input as Record<string, unknown> | undefined)?.eventKey ?? [...runs.keys()].at(-1) ?? 'webhook.received:abc:1'); const row = { ...(runs.get(key) ?? { id: 'run-1', workspaceId, ruleId, status: 'queued', eventKey: key }), ...args.data }; runs.set(key, row); return row; }),
+      updateMany: vi.fn().mockResolvedValue({ count: 1 })
     },
     channel: {
       findFirst: vi.fn().mockResolvedValue({
@@ -107,6 +111,7 @@ function createMockPrisma() {
       }))
     }
   };
+  return Object.assign(prisma, { $transaction: vi.fn(async (work: (tx: unknown) => Promise<unknown>) => work(prisma)) });
 }
 
 function createService(prisma = createMockPrisma(), runner = { runForWebhookEvent: vi.fn().mockResolvedValue({ id: "run-1" }) }) {
@@ -272,8 +277,8 @@ describe("automation webhook submissions", () => {
         workspaceId,
         ruleId,
         eventKey,
-        status: "running",
-        input: expect.objectContaining({ source: "automation_webhook", phone: "5547999991234" })
+        status: "queued",
+        input: expect.objectContaining({ source: "automation_webhook", phone: "5547999991234", submission: expect.objectContaining({ name: "Joana", variables: expect.any(Object) }) })
       })
     });
     const bucket = Number(eventKey.split(":").at(-1));
@@ -349,7 +354,7 @@ describe("automation webhook submissions", () => {
       eventKey: "webhook.received:abc:1",
       variables: expect.objectContaining({ nome: "Joana", empresa: "Metalúrgica", "utm.source": "instagram" }),
       outboundBlockedReason: null,
-      runInput: { phone: "5547999991234", payload: submission.payload }
+      runInput: expect.objectContaining({ phone: "5547999991234", payload: submission.payload, messageId })
     });
   });
 
@@ -423,18 +428,13 @@ describe("automation webhook submissions", () => {
 
     expect(runner.runForWebhookEvent).not.toHaveBeenCalled();
     expect(prisma.contact.create).not.toHaveBeenCalled();
-    expect(prisma.automationRun.update).toHaveBeenCalledWith({
-      where: { workspaceId_ruleId_eventKey: { workspaceId, ruleId, eventKey: "k1" } },
-      data: {
-        status: "failed",
-        result: expect.objectContaining({
-          error: "Canal do WhatsApp não encontrado. Escolha o canal no gatilho Webhook externo."
-        })
-      }
-    });
+    expect(prisma.automationRun.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: "run-1", workspaceId, status: "queued", executionToken: null },
+      data: expect.objectContaining({ status: "failed", result: expect.objectContaining({ error: "Canal do WhatsApp não encontrado. Escolha o canal no gatilho Webhook externo." }) })
+    }));
   });
 
-  it("marks the run failed when processing throws", async () => {
+  it("keeps a transient preparation failure durably queued", async () => {
     const { service, prisma } = createService();
     prisma.conversation.upsert.mockRejectedValueOnce(new Error("database down"));
 
@@ -445,8 +445,12 @@ describe("automation webhook submissions", () => {
         submission: okSubmission({ whatsapp: "47999991234" })
       })
     ).rejects.toThrow("database down");
-    expect(prisma.automationRun.update).toHaveBeenCalledWith(
-      expect.objectContaining({ data: expect.objectContaining({ status: "failed" }) })
-    );
+    expect(prisma.automationRun.update).not.toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ status: "failed" }) }));
   });
+});
+
+
+it('exposes a durable recovery sweep after the accepting process disappears', async () => {
+  const { service } = createService();
+  expect(service.processDueSubmissions).toBeTypeOf('function');
 });

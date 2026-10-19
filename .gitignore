@@ -9,3 +9,12 @@ coverage/
 .turbo/
 .next/
 /infra/leads-cnpj/data/
+
+# Reproducible validation reports and release manifests
+validation-artifacts/
+
+# Generated TypeScript and local test upload artifacts
+*.tsbuildinfo
+/apps/api/tmp/
+
+.validation/

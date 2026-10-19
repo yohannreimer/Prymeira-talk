@@ -20,6 +20,10 @@ export function describeChannelProblems(channels: ChannelDto[], health: ChannelH
     if (channel.provider !== "evolution") continue;
     const label = labelOf(channel);
     const item = byChannel.get(channel.id);
+    // Physical repair details belong in Channels. A proven working session keeps
+    // the logical channel available, even while the other provider needs a QR.
+    if (channel.connections?.some(connection => connection.status === 'connected' && connection.eligible && connection.health !== 'unhealthy' &&
+      (connection.provider === 'evolution' || channel.redundancyEnabled))) continue;
     const disconnected = channel.status === "disconnected" || channel.status === "failed";
     // Watchdog says "ok" for a disconnected channel: it is dormant or was disconnected on purpose.
     if (disconnected && item?.state === "ok") continue;

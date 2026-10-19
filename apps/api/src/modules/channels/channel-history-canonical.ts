@@ -1,10 +1,12 @@
+import { json, sha, stable } from '../messaging/canonical-values.js';
 import type { PrismaClient } from '@prisma/client';
+import { normalizeWhatsappPhone } from './channel-connections.js';
 import { autoResolveAuthority } from './conversation-authority.js';
 import { usableContactName } from '../contacts/contact-name.js';
 import { enterCanonicalWorkspaceTransaction } from '../messaging/canonical-boundary.js';
 import { deriveTrustedMessagingContext, StaleMessagingSourceError } from '../messaging/canonical-source.js';
 import { selectConversationPreviewInTransaction } from '../messaging/conversation-preview.js';
-import { createCanonicalStore } from '../messaging/canonical-store.js';
+import { createCanonicalStore, type CanonicalStoreOptions } from '../messaging/canonical-store.js';
 import type { NormalizationResult, TrustedMessagingContext } from '../messaging/normalized-event.js';
 import type { FrozenSource } from '../ingress/media-prepare-handler.js';
 import { normalizeEvolutionWebhook } from '../evolution/evolution-event-normalizer.js';
@@ -14,6 +16,18 @@ export type CanonicalHistoryChannel = { id: string; workspaceId: string; provide
 export type CanonicalHistoryResult = { conversationId: string | null; conversationIds: Set<string>; inserted: number; held: number; skipped: number };
 
 const store = createCanonicalStore();
+const BENIGN_HISTORY_IGNORES = new Set(['provider_system_notice', 'non_conversation_status', 'non_conversation_newsletter']);
+
+/** No canonical identity can be certified for this provider row. Keep its source/key/reason
+ * available to the caller while the fixed error message remains safe for operational logs.
+ * Throwing leaves the recovery checkpoint unchanged, so a corrected row can be retried. */
+export class HistoryNormalizationHoldError extends Error {
+  readonly code = 'HISTORY_NORMALIZATION_HELD';
+  constructor(readonly provider: 'evolution' | 'waha', readonly connectionId: string, readonly providerKey: string, readonly reason: string) {
+    super('HISTORY_NORMALIZATION_HELD');
+    this.name = 'HistoryNormalizationHoldError';
+  }
+}
 
 /** Evolution connection that may write this channel's history, or null when the channel has no
  * eligible physical connection (the caller then keeps the legacy writer for this chat). */
@@ -24,7 +38,8 @@ export async function canonicalHistoryConnection(prisma: PrismaClient, channel: 
 
 /** One provider message read back from a provider API (history or gap recovery), normalized under the trusted
  * context only inside its own transaction. `receiptId` is the provider's own message id: never text or time. */
-export type ProviderMessageItem = { receiptId: string; timestampMs: number; originalType?: string;
+export type ProviderMessageItem = { receiptId: string; timestampMs: number; originalType?: string; fingerprint?: string;
+  wahaTemplateSnapshot?: CanonicalStoreOptions['wahaTemplateSnapshot'];
   normalize: (context: TrustedMessagingContext) => NormalizationResult };
 /** What happens after the messages are committed: durable media and live updates. Both are best effort: a failure
  * leaves the message visible with its media pending (recoverable), never rolls the message back. */
@@ -43,35 +58,42 @@ export type AfterPersist = {
  *   unread so people see them; no agent or automation acts on a message that may be minutes old.
  *
  * One transaction per message (the store requires READ COMMITTED and forbids wrapping a batch), so a failure keeps
- * what was already written and a retry finds it as a duplicate. Messages a legacy writer already owns are skipped:
- * the store would hold them as "requires adoption" instead of duplicating them.
+ * what was already written and a retry finds it as a duplicate. Messages a legacy writer already owns are held for adoption by the canonical store,
+ * rather than silently skipping any other chat which reused the native id.
  */
 export async function persistProviderMessages(input: {
-  prisma: PrismaClient; channel: CanonicalHistoryChannel; connection: { id: string; provider: 'evolution' | 'waha' };
+  prisma: PrismaClient; channel: CanonicalHistoryChannel; connection: { id: string; provider: 'evolution' | 'waha'; lifecycleGeneration?: number; sessionName?: string };
   mode: 'history' | 'recovered_live'; items: ProviderMessageItem[]; batchId: string; after?: AfterPersist;
 }): Promise<CanonicalHistoryResult> {
   const { prisma, channel, connection, mode, batchId } = input;
   const created: Array<{ messageId: string; conversationId: string; media: FrozenSource | null }> = [];
   const result: CanonicalHistoryResult = { conversationId: null, conversationIds: new Set(), inserted: 0, held: 0, skipped: 0 };
   const contested = new Set<string>();
-  const seen = new Set<string>();
   for (const item of [...input.items].sort((a, b) => a.timestampMs - b.timestampMs)) {
-    if (seen.has(item.receiptId)) { result.skipped++; continue; }
-    seen.add(item.receiptId);
     await prisma.$transaction(async tx => {
       await enterCanonicalWorkspaceTransaction(tx, channel.workspaceId);
       const context = await deriveTrustedMessagingContext(tx, { workspaceId: channel.workspaceId, channelId: channel.id,
         authenticatedSource: { provider: connection.provider, connectionId: connection.id }, mode, observedAt: new Date().toISOString() });
-      const normalized = item.normalize(context);
-      if (normalized.kind !== 'accepted' || normalized.event.kind !== 'message') { result.skipped++; return; }
-      const event = normalized.event;
-      const nativeIds = [...new Set([event.key.nativeId, event.key.rawId].filter((id): id is string => !!id))];
-      if (nativeIds.length && await tx.message.findFirst({ where: { workspaceId: channel.workspaceId, providerMessageId: { in: nativeIds } }, select: { id: true } })) {
-        result.skipped++; return;
+      if ((connection.lifecycleGeneration !== undefined && context.lifecycleGeneration !== connection.lifecycleGeneration)
+        || (connection.sessionName !== undefined && context.sessionName !== connection.sessionName)) throw new StaleMessagingSourceError('Recovery source changed');
+      const sourceChannel = await tx.channel.findUniqueOrThrow({ where: { id: channel.id } });
+      const anchor = normalizeWhatsappPhone(sourceChannel.verifiedMessagingPhoneNumber);
+      if (anchor) {
+        const physical = await tx.channelConnection.findUniqueOrThrow({ where: { id: connection.id } });
+        if (normalizeWhatsappPhone(physical.verifiedPhoneNumber) !== anchor) throw new StaleMessagingSourceError('Channel identity mismatch');
       }
-      // Evolution history keeps the receipt key earlier imports used, so a re-run finds them as duplicates.
-      const receiptKey = mode === 'history' && connection.provider === 'evolution' ? `history:${channel.id}:${item.receiptId}` : `${mode}:${connection.provider}:${channel.id}:${item.receiptId}`;
+      const normalized = item.normalize(context);
+      if (normalized.kind !== 'accepted') {
+        if (normalized.kind === 'ignored' && BENIGN_HISTORY_IGNORES.has(normalized.reason)) { result.skipped++; return; }
+        throw new HistoryNormalizationHoldError(connection.provider, connection.id, item.receiptId, normalized.reason);
+      }
+      if (normalized.event.kind !== 'message') { result.skipped++; return; }
+      const event = normalized.event;
+      // Native ids alone can collide across chats, directions and channels. The canonical
+      // store owns that complete identity; receipt keys preserve the same scoped tuple.
+      const receiptKey = `${mode}:${connection.provider}:${channel.id}:${sha(stable(event.key))}`;
       const stored = await store.persistInTransaction(tx, event, { receiptKey,
+        ...(connection.provider === 'waha' && item.wahaTemplateSnapshot ? { wahaTemplateSnapshot: item.wahaTemplateSnapshot } : {}),
         ...(mode === 'history' ? { presentation: { ingestedAt: new Date(item.timestampMs), history: { originalType: item.originalType ?? 'unknown', batchId } } } : {}) });
       if (stored.outcome === 'held') {
         result.held++;
@@ -79,13 +101,24 @@ export async function persistProviderMessages(input: {
         return;
       }
       if (stored.conversationId) { result.conversationId = stored.conversationId; result.conversationIds.add(stored.conversationId); }
-      if (stored.outcome !== 'created' || !stored.messageId || !stored.conversationId) { result.skipped++; return; }
-      result.inserted++;
+      if (!stored.messageId || !stored.conversationId) { result.skipped++; return; }
       const message = await tx.message.findUniqueOrThrow({ where: { id: stored.messageId } });
-      if (message.hiddenByReset) return;
-      created.push({ messageId: message.id, conversationId: stored.conversationId,
-        media: event.media?.hasMedia && ['audio', 'image', 'file'].includes(message.type)
-          ? { provider: context.provider, channelProvider: context.channelProvider, sessionName: context.sessionName, key: event.key, mimeType: event.attachment.mimeType ?? null } : null });
+      if (message.hiddenByReset) { result.skipped++; return; }
+      const media: FrozenSource | null = event.media?.hasMedia && ['audio', 'image', 'file'].includes(message.type)
+        ? { provider: context.provider, channelProvider: context.channelProvider, sessionName: context.sessionName, key: event.key, mimeType: event.attachment.mimeType ?? null } : null;
+      if (media) {
+        // Imported media has no authenticated ingress receipt. Its own durable obligation
+        // shares the message transaction, exact source and existing lease/backoff runner.
+        const scope = { workspaceId: channel.workspaceId, channelId: channel.id }, logicalKey = `message:${message.id}`, kind = 'media.prepare';
+        await tx.ingressEffect.upsert({ where: { workspaceId_channelId_logicalKey_kind: { ...scope, logicalKey, kind } }, update: {}, create: {
+          ...scope, logicalKey, kind, messageId: message.id, conversationId: stored.conversationId,
+          cause: json({ origin: 'canonical_history', observationId: stored.observationId, messageId: message.id }),
+          frozen: json({ presentationOnly: true, mode, mediaSource: media, dependsOn: [] })
+        } });
+      }
+      if (stored.outcome !== 'created') { result.skipped++; return; }
+      result.inserted++;
+      created.push({ messageId: message.id, conversationId: stored.conversationId, media });
       // Recovered in time order: a reply we sent from the phone clears what was waiting before it.
       if (mode === 'recovered_live' && message.direction === 'outbound')
         await tx.conversation.updateMany({ where: { workspaceId: channel.workspaceId, id: stored.conversationId, unreadCount: { gt: 0 } }, data: { unreadCount: 0 } });

@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto';
+import { createOwnedMetaEvolutionClient } from '../meta/meta-evolution-client.js';
 import { PrismaClient } from '@prisma/client';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { EvolutionClient } from '../evolution/evolution.client.js';
+import { createChannelsService } from './channels.service.js';
 import { createOutboundDispatchJournal } from './outbound-dispatch-journal.js';
 import { createOutboundRouter, OutboundUncertainError, type DeliveryProbe } from './outbound-router.js';
 
@@ -13,7 +15,7 @@ describe.skipIf(!databaseUrl)('outbound router on PostgreSQL', () => {
   const workspaces: string[] = [];
   beforeAll(() => {
     const target = new URL(databaseUrl!);
-    if (target.hostname !== '127.0.0.1' || target.port !== '55439' || target.pathname !== '/messaging_test') throw new Error('Only the owned local messaging_test database is permitted');
+    if (target.hostname !== '127.0.0.1' || target.port !== (process.env.TALK_TEST_POSTGRES_PORT ?? '55439') || target.pathname !== '/messaging_test') throw new Error('Only the owned local messaging_test database is permitted');
     db = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
   });
   afterAll(async () => {
@@ -92,7 +94,7 @@ describe.skipIf(!databaseUrl)('outbound router on PostgreSQL', () => {
     expect(d.base.sendText).toHaveBeenCalledWith(expect.objectContaining({ quoted: { id: '3EB0Q', fromMe: true, participant: null, body: 'oi' } }));
   });
   it('deletes for everyone through WAHA when Evolution cannot', async () => {
-    const f = await fixture(), c = clients({ evolution: { deleteMessageForEveryone: vi.fn(async () => { throw new Error('evolution down'); }) }, waha: { deleteMessage: vi.fn(async () => undefined) } });
+    const f = await fixture(), c = clients({ evolution: { deleteMessageForEveryone: vi.fn(async () => { throw http(404); }) }, waha: { deleteMessage: vi.fn(async () => undefined) } });
     await router(c).deleteMessageForEveryone!({ instanceName: f.channel.providerKey, id: '3EB0DEL', remoteJid: '5547888880000@s.whatsapp.net', fromMe: true });
     expect((c.waha as unknown as { deleteMessage: ReturnType<typeof vi.fn> }).deleteMessage).toHaveBeenCalledWith({ session: f.waha.sessionName, chatId: '5547888880000@c.us', messageId: 'true_5547888880000@c.us_3EB0DEL' });
   });
@@ -187,16 +189,89 @@ describe.skipIf(!databaseUrl)('outbound router on PostgreSQL', () => {
     expect(c.waha.sendMedia).toHaveBeenCalledWith(expect.objectContaining({ data: Buffer.from('remote-bytes').toString('base64') }));
   });
 
-  it('passes straight through for an instance it does not know, and never lets the journal block a send', async () => {
+  it('rejects unknown channels and stops before provider I/O when the journal is unavailable', async () => {
     const c = clients(), journalRows = await db.outboundDispatch.count();
-    await router(c).sendText({ instanceName: `unknown-${randomUUID()}`, number: '5547888880000', text: 'x' });
-    expect(c.base.sendText).toHaveBeenCalledTimes(1);
+    await expect(router(c).sendText({ instanceName: `unknown-${randomUUID()}`, number: '5547888880000', text: 'x' })).rejects.toThrow('CHANNEL_NOT_FOUND');
+    expect(c.base.sendText).not.toHaveBeenCalled();
     expect(await db.outboundDispatch.count()).toBe(journalRows);
-    const f = await fixture();
+    const f = await fixture(), brokenClients = clients();
     const broken = { ...createOutboundDispatchJournal(db), begin: vi.fn(async () => { throw new Error('journal down'); }) };
-    const warn = vi.fn();
-    expect(await send(router(clients(), { journal: broken as never, logger: { warn } }), f)).toMatchObject({ providerMessageId: 'EVO-TEXT-1' });
-    expect(warn).toHaveBeenCalled();
+    await expect(send(router(brokenClients, { journal: broken }), f)).rejects.toThrow('journal down');
+    expect(brokenClients.base.sendText).not.toHaveBeenCalled(); expect(brokenClients.waha.sendText).not.toHaveBeenCalled();
+  });
+
+  it('rejects a duplicated logical provider key across real workspace rows, including explicitly scoped calls', async () => {
+    const first = await fixture(), second = await fixture(), c = clients();
+    await db.channel.update({ where: { id: second.channel.id }, data: { providerKey: first.channel.providerKey } });
+    const r = router(c);
+    await expect(r.sendText({ workspaceId: second.workspaceId, channelId: second.channel.id, instanceName: first.channel.providerKey, number: '5547888880000', text: 'synthetic' })).rejects.toThrow('CHANNEL_PROVIDER_KEY_AMBIGUOUS');
+    expect(c.base.sendText).not.toHaveBeenCalled(); expect(c.waha.sendText).not.toHaveBeenCalled();
+    expect(await rows(first.workspaceId)).toEqual([]); expect(await rows(second.workspaceId)).toEqual([]);
+  });
+
+  it('the database rejects a duplicated WAHA physical session across real workspace rows', async () => {
+    const first = await fixture({ active: 'waha' }), second = await fixture(), c = clients();
+    await expect(db.channelConnection.update({ where: { id: second.waha.id }, data: { sessionName: first.waha.sessionName } })).rejects.toMatchObject({ code: 'P2002' });
+    expect(c.base.sendText).not.toHaveBeenCalled(); expect(c.waha.sendText).not.toHaveBeenCalled();
+    expect(await rows(first.workspaceId)).toEqual([]);
+  });
+
+  it('does not dispatch when all actual physical rows are unavailable', async () => {
+    const f = await fixture({ evolution: { status: 'disconnected', eligible: false }, waha: { status: 'disconnected', eligible: false } }), c = clients();
+    await expect(send(router(c), f)).rejects.toThrow('NO_CONNECTION_AVAILABLE');
+    expect(c.base.sendText).not.toHaveBeenCalled(); expect(c.waha.sendText).not.toHaveBeenCalled();
+    expect(await rows(f.workspaceId)).toEqual([]);
+  });
+
+  it('rejects a QR request with colliding logical ownership before any provider control I/O', async () => {
+    const first = await fixture(), second = await fixture();
+    await db.channel.update({ where: { id: second.channel.id }, data: { providerKey: first.channel.providerKey } });
+    const createInstance = vi.fn(), connectInstance = vi.fn(), setWebhook = vi.fn();
+    const service = createChannelsService(db as never, { evolution: { mode: 'real', client: { createInstance, connectInstance, setWebhook } as never,
+      webhookSecret: 'synthetic', publicWebhookUrl: () => 'https://example.invalid/hook', localWebhookUrl: () => 'http://example.invalid/hook' } });
+    await expect(service.startQrSession({ workspaceId: second.workspaceId, channelId: second.channel.id })).rejects.toMatchObject({ code: 'CHANNEL_PROVIDER_OWNERSHIP_UNVERIFIED', statusCode: 409 });
+    expect(createInstance).not.toHaveBeenCalled(); expect(connectInstance).not.toHaveBeenCalled(); expect(setWebhook).not.toHaveBeenCalled();
+  });
+
+  it('persists the exact newly created instance claim before configuring its webhook', async () => {
+    const f = await fixture();
+    const createInstance = vi.fn(async ({ instanceName }: { instanceName: string }) => ({ instanceName, qrCode: 'synthetic-qr', raw: {} }));
+    const setWebhook = vi.fn(async () => {
+      expect((await db.channel.findUniqueOrThrow({ where: { id: f.channel.id } })).providerInstanceClaim).toBe(f.channel.providerKey);
+      return { raw: {} };
+    });
+    const service = createChannelsService(db as never, { evolution: { mode: 'real', client: { createInstance, setWebhook } as never,
+      webhookSecret: 'synthetic', publicWebhookUrl: () => 'https://example.invalid/hook', localWebhookUrl: () => 'http://example.invalid/hook' } });
+    await expect(service.startQrSession({ workspaceId: f.workspaceId, channelId: f.channel.id })).resolves.toMatchObject({ qrCode: 'synthetic-qr' });
+    expect(setWebhook).toHaveBeenCalledTimes(1);
+  });
+
+  it('persists template dispatches and refuses lost journal fences', async () => {
+    const f = await fixture(), journal = createOutboundDispatchJournal(db);
+    const id = await journal.begin({ workspaceId: f.workspaceId, channelId: f.channel.id, kind: 'template', destination: '15550001111' });
+    await journal.recordAttempt(id, { connectionId: f.evolution.id, provider: 'evolution', outcome: 'accepted', code: null });
+    await journal.accept(id, { connectionId: f.evolution.id, providerMessageId: 'template-proof' });
+    expect(await db.outboundDispatch.findUniqueOrThrow({ where: { id } })).toMatchObject({ kind: 'template', state: 'accepted' });
+    await expect(journal.accept(id, { connectionId: f.evolution.id, providerMessageId: 'replacement' })).rejects.toThrow('OUTBOUND_JOURNAL_FENCE_LOST');
+    await expect(journal.recordAttempt(id, { connectionId: f.evolution.id, provider: 'evolution', outcome: 'accepted', code: null })).rejects.toThrow('OUTBOUND_JOURNAL_FENCE_LOST');
+  });
+
+  it('journals an attested Meta Evolution template with no physical connection and rejects a cross-workspace collision', async () => {
+    const f = await fixture(), key = `meta-${randomUUID()}`;
+    const meta = await db.channel.create({ data: { workspaceId: f.workspaceId, provider: 'meta_cloud', providerKey: key, status: 'connected' } });
+    const expected = { webhookUrl: `https://example.invalid/webhooks/evolution/${f.workspaceId}`, webhookSecret: 'synthetic-owned-secret' };
+    const sendTemplate = vi.fn(async () => ({ providerMessageId: 'meta-template', raw: {} }));
+    const getWebhook = vi.fn(async () => ({ enabled: true, url: expected.webhookUrl, headers: { 'x-prymeira-talk-secret': expected.webhookSecret } }));
+    const client = createOwnedMetaEvolutionClient({ ...clients().base, sendTemplate, getWebhook }, db, f.workspaceId, key, expected);
+    await client.sendTemplate!({ instanceName: key, name: 'hello', language: 'pt_BR', number: '15550000002' });
+    expect(getWebhook).toHaveBeenCalledTimes(1);
+    expect(await db.channel.findUniqueOrThrow({ where: { id: meta.id } })).toMatchObject({ providerInstanceClaim: key });
+    expect(await db.outboundDispatch.findFirstOrThrow({ where: { workspaceId: f.workspaceId, channelId: meta.id } })).toMatchObject({ kind: 'template', connectionId: null, state: 'accepted', providerMessageId: 'meta-template' });
+    const otherWorkspace = `router-${randomUUID()}`; workspaces.push(otherWorkspace);
+    await db.channel.create({ data: { workspaceId: otherWorkspace, provider: 'evolution', providerKey: key } });
+    await expect(client.sendTemplate!({ instanceName: key, name: 'hello', language: 'pt_BR', number: '15550000002' })).rejects.toMatchObject({ code: 'CHANNEL_PROVIDER_OWNERSHIP_UNVERIFIED' });
+    expect(sendTemplate).toHaveBeenCalledTimes(1);
+    expect(await db.outboundDispatch.count({ where: { workspaceId: f.workspaceId, channelId: meta.id } })).toBe(1);
   });
 
   it('turns a send that was interrupted mid-flight into an uncertain one instead of forgetting it', async () => {

@@ -1005,7 +1005,10 @@ export function createConversationsService(
           : "file"
         : "text";
 
-      const prospecting = input.metadata?.source === 'ai_agent' ? await findProspectingReservation(prisma, input.workspaceId, input.conversationId) : null;
+      const contextualFollowup = input.metadata?.contextualFollowup === true;
+      if (contextualFollowup && (input.attachment || input.contactCard || !input.reservedMessageId || conversation.channel?.provider !== 'evolution'
+        || options.evolution?.mode !== 'real' || !options.evolution.client?.supportsCanonicalFollowups)) throw new Error('Canonical contextual follow-up delivery unavailable');
+      const prospecting = !contextualFollowup && input.metadata?.source === 'ai_agent' ? await findProspectingReservation(prisma, input.workspaceId, input.conversationId) : null;
       const prospectingPending = prospecting ? input.reservedMessageId ? await adoptProspectingOutbound(prisma, {
         workspaceId: input.workspaceId, conversationId: input.conversationId, messageId: input.reservedMessageId, agentId: prospecting.agentId,
         generation: typeof input.metadata?.prospectingGeneration === 'string' ? input.metadata.prospectingGeneration : prospecting.generation,
@@ -1032,6 +1035,7 @@ export function createConversationsService(
           providerStarted = true;
           return await operation();
         } catch (error) {
+          if (contextualFollowup && error instanceof Error && error.name === 'ContextualFollowupBlocked') throw error;
           if (reservedMessageId && providerStarted && !isDefinitiveProviderRejection(error)) {
             throw new OutboundDeliveryUncertainError();
           }
@@ -1094,6 +1098,7 @@ export function createConversationsService(
               number: contactPhone,
               text: messageBody,
               ...(prospectingPending ? { prospectingMessageId: prospectingPending.id } : {}),
+              ...(contextualFollowup ? { contextualFollowupMessageId: input.reservedMessageId } : {}),
               ...(input.quoted ? { quoted: input.quoted } : {})
             }));
         }

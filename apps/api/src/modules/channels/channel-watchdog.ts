@@ -1,5 +1,6 @@
-import type { ChannelHealthDto, ChannelStatus, RealtimeEvent } from "@prymeira-talk/shared";
-import { toChannelDto } from "./channels.service.js";
+import type { ChannelDto, ChannelHealthDto, ChannelStatus, RealtimeEvent } from "@prymeira-talk/shared";
+import { createChannelConnectionsService } from "./channel-connections.js";
+import { logicalChannelStatus, type RoutableConnection } from "./outbound-routing.js";
 import { decideChannelHealth, MAX_RECONNECT_ATTEMPTS, type EvolutionState, type HealthMemory } from "./channel-health.js";
 
 const DEFAULT_INTERVAL_MS = 120_000;
@@ -13,13 +14,16 @@ type CheckOutcome = "skipped" | "unreachable" | "answered";
 type ChannelRow = {
   id: string; workspaceId: string; provider: string; providerKey: string;
   phoneNumber: string | null; displayName: string | null; status: ChannelStatus;
-  createdAt: Date; updatedAt: Date;
+  createdAt: Date; updatedAt: Date; redundancyEnabled?: boolean; verifiedMessagingPhoneNumber?: string | null; providerInstanceClaim?: string | null;
 };
 
 export interface ChannelWatchdogPrisma {
   channel: {
-    findMany(args: { where: { provider: "evolution"; archivedAt: null } }): Promise<ChannelRow[]>;
+    findMany(args: { where: { provider: "evolution"; archivedAt?: null; providerKey?: string } }): Promise<ChannelRow[]>;
     update(args: { where: { workspaceId_id: { workspaceId: string; id: string } }; data: { status: ChannelStatus } }): Promise<ChannelRow>;
+  };
+  channelConnection: {
+    findMany(args: { where: { workspaceId?: string; channelId?: string; provider?: "evolution"; sessionName?: string } }): Promise<Array<RoutableConnection & { workspaceId: string; channelId: string }>>;
   };
   message: {
     findFirst(args: {
@@ -50,6 +54,9 @@ export function createChannelWatchdog(deps: {
   prisma: ChannelWatchdogPrisma;
   evolution: ChannelWatchdogEvolution;
   publish: (event: RealtimeEvent) => void;
+  describeChannel?: (channel: ChannelRow) => Promise<ChannelDto>;
+  /** Fenced physical probe used when the faster health monitor is disabled. */
+  refreshPrimary?: (channel: ChannelRow) => Promise<void>;
   now?: () => Date;
   intervalMs?: number;
   dryRun?: boolean;
@@ -63,20 +70,27 @@ export function createChannelWatchdog(deps: {
   let lastTickOk = true;
   let lastError: string | null = null;
   let unreachableTicks = 0;
-  const memory = new Map<string, HealthMemory & { workspaceId: string; lastInboundAt: string | null }>();
+  const memory = new Map<string, HealthMemory & { workspaceId: string; lastInboundAt: string | null; logicalAvailable: boolean }>();
   const webhookAt = new Map<string, number>();
   const manualDisconnects = new Set<string>();
   let timer: ReturnType<typeof setInterval> | undefined;
   let running = false;
 
   const toDto = (channelId: string, entry: NonNullable<ReturnType<typeof memory.get>>): ChannelHealthDto => ({
-    channelId, state: entry.state, since: entry.since, lastInboundAt: entry.lastInboundAt, attempts: entry.attempts
+    channelId, state: entry.logicalAvailable ? "ok" : entry.state, since: entry.since, lastInboundAt: entry.lastInboundAt, attempts: entry.logicalAvailable ? 0 : entry.attempts
   });
 
   async function check(channel: ChannelRow): Promise<CheckOutcome> {
     const client = deps.evolution.client;
     if (!client.getConnectionState) return "skipped";
+    const owners = await deps.prisma.channel.findMany({ where: { provider: 'evolution', providerKey: channel.providerKey } });
+    const physicalOwners = await deps.prisma.channelConnection.findMany({ where: { provider: 'evolution', sessionName: channel.providerKey } });
+    if (owners.length !== 1 || owners[0]?.id !== channel.id || owners[0]?.workspaceId !== channel.workspaceId || physicalOwners.some(owner => owner.channelId !== channel.id || owner.workspaceId !== channel.workspaceId))
+      throw new Error('Channel physical session ownership is ambiguous');
+    if (!dryRun) await deps.refreshPrimary?.(channel);
     const current = now();
+    const connections = await deps.prisma.channelConnection.findMany({ where: { workspaceId: channel.workspaceId, channelId: channel.id } });
+    if (connections.some(connection => connection.provider === "evolution" && (connection.lifecycleGeneration ?? 0) % 2 !== 0)) return "skipped";
     const evolutionState = await client.getConnectionState({ instanceName: channel.providerKey }).catch((error: unknown) => {
       const lastLogged = unreachableLoggedAt.get(channel.id);
       if (lastLogged === undefined || current.getTime() - lastLogged >= UNREACHABLE_LOG_EVERY_MS) {
@@ -88,6 +102,10 @@ export function createChannelWatchdog(deps: {
       }
       return null;
     });
+    const observedConnections = connections.map(connection => connection.provider === 'evolution' && evolutionState !== null
+      ? { ...connection, status: evolutionState === 'open' ? 'connected' : evolutionState === 'connecting' ? 'connecting' : 'disconnected', eligible: connection.eligible && evolutionState === 'open' }
+      : connection);
+    const logicalAvailable = logicalChannelStatus(observedConnections, channel.redundancyEnabled ?? false, channel.verifiedMessagingPhoneNumber) === 'connected';
     const previous = memory.get(channel.id) ?? null;
 
     let lastInboundAt: Date | null = null;
@@ -100,6 +118,13 @@ export function createChannelWatchdog(deps: {
     }
 
     let decision = decideChannelHealth({ evolutionState, previous, lastInboundAt, now: current });
+    const repairAllowed = channel.providerInstanceClaim === channel.providerKey;
+    if (!repairAllowed && evolutionState === 'close') {
+      // An unclaimed remote name can be observed, never mutated. Do not count
+      // hypothetical repair attempts or claim that a QR was actually returned.
+      decision = { ...decision, state: 'disconnected', action: 'none', attempts: 0, nextAttemptAt: null,
+        since: previous?.state === 'disconnected' ? previous.since : current.toISOString() };
+    }
 
     // Manually disconnected or dormant channels are still reconciled, but never reconnected or alerted.
     const suppressed = evolutionState !== null && (manualDisconnects.has(channel.id) || !(await deps.prisma.message.findFirst({
@@ -113,7 +138,10 @@ export function createChannelWatchdog(deps: {
       };
     }
 
-    if (decision.talkStatus && decision.talkStatus !== channel.status) {
+    // Physical connections own logical status through the connection service and
+    // health monitor. This legacy Evolution-only observation has no identity proof
+    // and must never overwrite the aggregate or race those fenced observations.
+    if (!connections.length && decision.talkStatus && decision.talkStatus !== channel.status) {
       if (dryRun) {
         log.info({ event: "channel_watchdog_dry_run", action: "update_status", channelId: channel.id, from: channel.status, to: decision.talkStatus }, "Channel watchdog dry run: would update the channel status.");
       } else {
@@ -122,12 +150,12 @@ export function createChannelWatchdog(deps: {
           where: { workspaceId_id: { workspaceId: channel.workspaceId, id: channel.id } },
           data: { status: decision.talkStatus }
         });
-        deps.publish({ type: "channel.updated", workspaceId: channel.workspaceId, payload: toChannelDto(updated as never) });
+        deps.publish({ type: "channel.updated", workspaceId: channel.workspaceId, payload: await (deps.describeChannel ?? createChannelConnectionsService(deps.prisma as never).describe)(updated as never) });
         log.info({ event: "channel_watchdog_status_corrected", channelId: channel.id, from, to: decision.talkStatus }, "Channel watchdog corrected the channel status.");
       }
     }
 
-    if (!suppressed && evolutionState === "open" && (current.getTime() - (webhookAt.get(channel.id) ?? 0)) >= WEBHOOK_EVERY_MS) {
+    if (repairAllowed && !suppressed && evolutionState === "open" && (current.getTime() - (webhookAt.get(channel.id) ?? 0)) >= WEBHOOK_EVERY_MS) {
       webhookAt.set(channel.id, current.getTime());
       if (dryRun) {
         log.info({ event: "channel_watchdog_dry_run", action: "reassert_webhook", channelId: channel.id, instanceName: channel.providerKey }, "Channel watchdog dry run: would reassert the webhook.");
@@ -140,7 +168,7 @@ export function createChannelWatchdog(deps: {
       }
     }
 
-    if (decision.action === "reconnect") {
+    if (repairAllowed && decision.action === "reconnect") {
       if (dryRun) {
         log.info({ event: "channel_watchdog_dry_run", action: "reconnect", channelId: channel.id, attempt: decision.attempts }, "Channel watchdog dry run: would attempt a reconnect.");
       } else {
@@ -154,12 +182,13 @@ export function createChannelWatchdog(deps: {
     }
 
     const next = {
-      workspaceId: channel.workspaceId, state: decision.state, since: decision.since,
+      workspaceId: channel.workspaceId, state: decision.state, since: decision.since, logicalAvailable,
       attempts: decision.attempts, nextAttemptAt: decision.nextAttemptAt,
       lastInboundAt: lastInboundAt ? lastInboundAt.toISOString() : previous?.lastInboundAt ?? null
     };
     memory.set(channel.id, next);
-    const changed = !previous ? decision.state !== "ok" : previous.state !== decision.state;
+    const visibleState = toDto(channel.id, next).state;
+    const changed = !previous ? visibleState !== "ok" : toDto(channel.id, previous).state !== visibleState;
     if (changed) {
       log.info({ event: "channel_watchdog_state_changed", channelId: channel.id, from: previous?.state ?? null, to: decision.state }, "Channel watchdog health state changed.");
       if (!dryRun) deps.publish({ type: "channel.health", workspaceId: channel.workspaceId, payload: toDto(channel.id, next) });
@@ -213,6 +242,8 @@ export function createChannelWatchdog(deps: {
       return { lastTickAt, lastTickOk, lastError, unreachable: unreachableTicks >= UNREACHABLE_TICKS };
     },
     getHealth(workspaceId: string): ChannelHealthDto[] {
+      // Dry-run memory includes hypothetical attempts and QR decisions, never facts.
+      if (dryRun) return [];
       return [...memory.entries()]
         .filter(([, entry]) => entry.workspaceId === workspaceId)
         .map(([channelId, entry]) => toDto(channelId, entry));

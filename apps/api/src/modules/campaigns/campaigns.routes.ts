@@ -603,7 +603,8 @@ export const campaignsRoutes: FastifyPluginAsync<CampaignsRoutesOptions> = async
 
     try {
       const runtime = await resolveMetaRuntime(app.prisma, {
-        workspaceId: request.talk.workspaceId
+        workspaceId: request.talk.workspaceId,
+        expectedEvolutionWebhook: options.evolution ? { webhookUrl: options.evolution.publicWebhookUrl(request.talk.workspaceId), webhookSecret: options.evolution.webhookSecret } : undefined
       });
       const metaService = createCampaignsService(app.prisma as unknown as PrismaLike, {
         evolution: options.evolution,

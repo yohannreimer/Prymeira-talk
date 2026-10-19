@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { QueryObserver } from '@tanstack/react-query';
 import type { ChannelHealthDto, ConversationDto, MessageDto, RealtimeEvent } from '@prymeira-talk/shared';
+import { connectionCount, connectionDisplay } from '../../features/channels/connection-display';
 import { TalkSession, conversationMatches, patchConversations } from './talk-session';
 
 const message = (id: string, conversationId = 'c1', body = id): MessageDto => ({ id, conversationId, workspaceId: 'w', providerMessageId: null, direction: 'inbound', type: 'text', body, mediaUrl: null, status: 'sent', sentByUserId: null, createdAt: '2026-09-30T00:00:00Z' });
@@ -96,6 +97,20 @@ describe('conversation reset boundary', () => {
 });
 
 describe('session query cache', () => {
+  it('preserves physical connections when a legacy partial channel frame updates the cache', () => {
+    const cache = session();
+    const channel = { id: 'channel', workspaceId: 'w', provider: 'evolution', providerKey: 'ev', status: 'connected', redundancyEnabled: true, activeConnectionId: 'wa', connectedCount: 1, connectionTotal: 2,
+      connections: [{ id: 'wa', provider: 'waha', status: 'connected', eligible: true, isActiveWriter: true }] };
+    cache.client.setQueryData(cache.key('channels'), [channel]);
+    cache.event(event('channel.updated', { id: 'channel', status: 'connected', displayName: 'Comercial' }));
+    const cached = cache.client.getQueryData<any[]>(cache.key('channels'))![0]!;
+    expect(cached).toMatchObject({ ...channel, displayName: 'Comercial' });
+    expect(connectionCount(cached)).toBe('1 de 2 conectados');
+    expect(connectionDisplay(cached).find(row => row.provider === 'waha')).toMatchObject({ status: 'connected', isActiveWriter: true });
+    cache.event(event('channel.updated', { id: 'channel', connections: [], connectedCount: 0, activeConnectionId: null }));
+    expect(cache.client.getQueryData<any[]>(cache.key('channels'))?.[0]).toMatchObject({ connections: [], connectedCount: 0, activeConnectionId: null });
+  });
+
   it.each(['HTTP', 'commit'])('keeps distinct local sends with identical content when the second arrives during %s', async timing => {
     const cache = session(); const key = cache.key('messages', 'c1');
     const first = { ...message('optimistic-first', 'c1', 'same text'), direction: 'outbound' as const, status: 'pending' as const };

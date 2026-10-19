@@ -459,9 +459,35 @@ describe.skipIf(!safe).sequential('campaign prospecting with disposable PostgreS
     const scheduler=createAgentReplyScheduler({prisma,agentRuntime:{runForMessage}});
     await scheduler.processDueReplies();
     const recovered=await prisma.aiAgentPendingReply.findUniqueOrThrow({where:{id:pending.id}});
-    expect(runForMessage).toHaveBeenCalledTimes(["none","prepared"].includes(phase)?1:0);
-    expect(recovered.status).toBe(["sending","uncertain"].includes(phase)?"failed":"completed");
-    await scheduler.processDueReplies();expect(runForMessage).toHaveBeenCalledTimes(["none","prepared"].includes(phase)?1:0);
+    expect(runForMessage).not.toHaveBeenCalled();
+    expect(recovered.status).toBe(phase === 'confirmed' ? 'completed' : 'failed');
+    if (phase !== 'confirmed') {
+      expect((await prisma.conversation.findUniqueOrThrow({ where: { id: row.conversationId } })).aiControlStatus).toBe('human_controlled');
+      expect((await prisma.aiAgentSession.findUniqueOrThrow({ where: { id: pending.sessionId! } })).status).toBe('handoff_requested');
+      expect((await origin()).status).toBe('stopped');
+    }
+    await scheduler.processDueReplies();expect(runForMessage).not.toHaveBeenCalled();
+  });
+
+  it.each(['none', 'prepared'])('does not repeat a committed business action after a crash with %s outbound', async phase => {
+    const row = await confirmed(); await inbound(row.conversationId);
+    const pending = await prisma.aiAgentPendingReply.findFirstOrThrow({ where: { workspaceId } }), token = randomUUID();
+    await prisma.aiAgentPendingReply.update({ where: { id: pending.id }, data: { status: 'processing', claimToken: token,
+      lockedAt: new Date(Date.now() - AGENT_REPLY_LEASE_MS - 1_000) } });
+    // The worker committed its tool action, then died before a delivery checkpoint.
+    const createNote = () => prisma.contactNote.create({ data: { workspaceId, contactId: row.contactId,
+      conversationId: row.conversationId, body: 'Business action committed before crash', createdById: null } });
+    await createNote();
+    if (phase === 'prepared') await reserveProspectingOutbound(prisma, { workspaceId, conversationId: row.conversationId,
+      agentId, generation: row.generation, type: 'text', body: 'Prepared response', metadata: { replyClaimId: pending.id, replyClaimToken: token } });
+    const runForMessage = vi.fn(async () => { await createNote(); return { status: 'completed' as const }; });
+    const scheduler = createAgentReplyScheduler({ prisma, agentRuntime: { runForMessage } });
+    await scheduler.processDueReplies(); await scheduler.processDueReplies();
+    expect(runForMessage).not.toHaveBeenCalled();
+    expect(await prisma.contactNote.count({ where: { workspaceId } })).toBe(1);
+    expect((await prisma.aiAgentPendingReply.findUniqueOrThrow({ where: { id: pending.id } })).status).toBe('failed');
+    expect((await prisma.conversation.findUniqueOrThrow({ where: { id: row.conversationId } })).aiControlStatus).toBe('human_controlled');
+    expect((await prisma.aiAgentSession.findUniqueOrThrow({ where: { id: pending.sessionId! } })).status).toBe('handoff_requested');
   });
 
   it("atomically claims a fetched response across two scheduler instances",async()=>{
@@ -505,7 +531,7 @@ describe.skipIf(!safe).sequential('campaign prospecting with disposable PostgreS
     const outbound=await reserveProspectingOutbound(prisma,{workspaceId,conversationId:row.conversationId,agentId,generation:row.generation,type:"text",body:"Antiga",
       metadata:{replyClaimId:pending.id,replyClaimToken:token}});
     await createAgentReplyScheduler({prisma,agentRuntime:{runForMessage:vi.fn(async()=>({status:"completed" as const}))}}).processDueReplies();
-    const send=vi.fn();await expect(dispatchProspectingOutbound(prisma,outbound,send)).rejects.toThrow("queue ownership");expect(send).not.toHaveBeenCalled();
+    const send=vi.fn();await expect(dispatchProspectingOutbound(prisma,outbound,send)).rejects.toThrow("authorization changed");expect(send).not.toHaveBeenCalled();
     expect((await prisma.message.findUniqueOrThrow({where:{id:outbound.id}})).metadata).toMatchObject({prospectingDispatch:"cancelled"});
   });
 
@@ -575,7 +601,8 @@ describe.skipIf(!safe).sequential('campaign prospecting with disposable PostgreS
   it("deliberate reset never releases an uncertain campaign send into an automatic retry",async()=>{
     await createCampaignWorker({prisma,evolution:{checkWhatsappNumbersAvailability:verify,sendText:async()=>{throw new Error("lost ack");}}}).processOne();
     const old=await origin();expect(old.status).toBe("uncertain");
-    await createConversationsService(prisma as unknown as ConversationsPrismaLike).resetConversation({workspaceId,conversationId:old.conversationId,actorUserId:null});
+    await expect(createConversationsService(prisma as unknown as ConversationsPrismaLike).resetConversation({workspaceId,conversationId:old.conversationId,actorUserId:null})).rejects.toMatchObject({code:"CONVERSATION_RESET_DELIVERY_UNCONFIRMED",statusCode:409});
+    expect((await origin()).status).toBe("uncertain");
     expect(await prisma.campaignProspectingReservation.count({where:{workspaceId}})).toBe(1);
     const job=await makeJob();const sendText=vi.fn();await createCampaignWorker({prisma,evolution:{checkWhatsappNumbersAvailability:verify,sendText}}).processOne();
     expect(sendText).not.toHaveBeenCalled();expect((await prisma.campaignRecipient.findUniqueOrThrow({where:{id:job.id}})).status).toBe("pending");

@@ -237,6 +237,8 @@ export interface ConversationActionResultDto {
 export interface CurrentTalkUserDto {
   workspaceId: string;
   role: "owner" | "manager" | "agent";
+  /** Paid add-ons the Hub released for this workspace. Missing on older APIs, which means none. */
+  addons?: { orcamentos: boolean };
 }
 
 export interface AgentTestChatMessageDto {
@@ -1515,7 +1517,7 @@ async function assertApiReadAccess(response: Response, token: string, signal?: A
   }) });
 }
 
-async function fetchJson<T>(
+export async function fetchJson<T>(
   getToken: () => Promise<string | null>,
   path: string,
   options: RequestInit,
@@ -2692,9 +2694,11 @@ export async function apiGetCurrentTalkUser(
   }
 
   const payload = asRecord(await response.json());
+  const addons = asRecord(payload.addons);
   return {
     workspaceId: String(payload.workspaceId ?? ""),
-    role: payload.role === "owner" || payload.role === "manager" ? payload.role : "agent"
+    role: payload.role === "owner" || payload.role === "manager" ? payload.role : "agent",
+    addons: { orcamentos: addons.orcamentos === true }
   };
 
   });

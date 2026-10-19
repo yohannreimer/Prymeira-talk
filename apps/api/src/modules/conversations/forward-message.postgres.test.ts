@@ -35,7 +35,11 @@ describe.skipIf(!databaseUrl)("forwarding a message to other conversations", () 
     app.decorate("prisma", prisma);
     app.decorate("realtime", { publish: vi.fn() } as never);
     app.addHook("preHandler", async (request: import("fastify").FastifyRequest) => { request.talk = { workspaceId, role: "agent", clerkUserId: null }; });
-    await app.register(conversationsRoutes, { evolution: { mode: "real", client } as never });
+    await app.register(conversationsRoutes, { evolution: {
+      mode: "real", client, providerConfigured: true, webhookSecret: "forward-fixture-secret",
+      publicWebhookUrl: (id: string) => `https://talk.test/webhooks/evolution/${encodeURIComponent(id)}`,
+      localWebhookUrl: (id: string) => `http://127.0.0.1:3000/webhooks/evolution/${encodeURIComponent(id)}`
+    } as never });
   }, 30_000);
   afterAll(async () => {
     await app?.close();

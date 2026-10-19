@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { createAgentFollowupRuntime } from "./agent-followup-runtime.js";
 import { resolveFollowupStepInstruction } from "./followup-step-instruction.js";
+import { createScriptedModel, toolCall } from "../harness/core/model.js";
+import { fichaInicial } from "../harness/agentes/atendimento/ficha.js";
 
 const ids = {
   workspace: "workspace_a",
@@ -222,6 +224,9 @@ function buildRuntime(overrides: Record<string, any> = {}) {
     outbound: { createPendingOutboundMessage },
     publisher: overrides.publisher,
     followupBrain: overrides.followupBrain,
+    harness: overrides.harness,
+    // Future router dependency; keep this injection local until the contextual runtime exists.
+    ...("contextualFollowup" in overrides ? { contextualFollowup: overrides.contextualFollowup } : {}),
     now: overrides.now ?? (() => now)
   });
 
@@ -349,6 +354,61 @@ describe("follow-up brain mode", () => {
 });
 
 describe("createAgentFollowupRuntime", () => {
+  it("routes an opt-in commercial time-choice follow-up to a contextual review draft without transport", async () => {
+    const channelId = "synthetic_commercial_channel";
+    const contextualConfig = { version: 1, enabled: true, profile: "commercial", channels: [channelId] };
+    const agent = {
+      ...baseAgent,
+      systemPrompt: "Você é Lia da Oficina Aurora. Retome apenas a escolha do horário já oferecido; a agenda ainda não confirmou reserva.",
+      behaviorConfig: { followup: followupConfig, contextualFollowup: contextualConfig }
+    };
+    const conversation = {
+      ...baseConversation,
+      contactId: "synthetic_nora",
+      contact: { id: "synthetic_nora", name: "Nora Fictícia" },
+      channel: { ...baseConversation.channel, id: channelId,
+        followupConfig: { ...baseConversation.channel.followupConfig, humanCommercialDelivery: "review" } }
+    };
+    const messages = [
+      { id: "synthetic_nora_request", direction: "inbound", type: "text", body: "Quero conversar sobre o atendimento da Oficina Aurora.", createdAt: new Date("2026-09-22T10:00:00.000Z") },
+      { id: ids.anchor, direction: "outbound", type: "text", body: "Você prefere conversar na quarta às 10h ou às 15h?", createdAt: new Date("2026-09-22T10:01:00.000Z") }
+    ];
+    const draft = "Nora, conseguiu escolher entre os horários que te enviei para conversarmos?";
+    const updateMany = vi.fn().mockResolvedValue({ count: 1 });
+    // This stub proves routing only. Task 6 also exercises the real contextual handler.
+    const runContextualFollowup = vi.fn().mockImplementation(async () => {
+      await updateMany({
+        where: { workspaceId: ids.workspace, id: ids.followup, activeKey: "active" },
+        data: { status: "review", draftBody: draft, decision: {
+          type: "customer_message", body: draft, evidenceMessageIds: [ids.anchor]
+        } }
+      });
+      return { status: "review", followupId: ids.followup };
+    });
+    const harness = buildRuntime({
+      aiAgent: { findFirst: vi.fn().mockResolvedValue(agent) },
+      conversation: { findUnique: vi.fn().mockResolvedValue(conversation) },
+      message: { findMany: vi.fn().mockResolvedValue(messages) },
+      conversationFollowup: { updateMany },
+      revalidateActiveFollowup: vi.fn().mockResolvedValue({ status: "valid", context: {
+        ...validContext({ decision: { contextualEngine: {
+          version: 1, profile: "commercial", policyRevision: "synthetic_policy_revision"
+        } } }), conversation, agent
+      } }),
+      contextualFollowup: { runFollowup: runContextualFollowup }
+    });
+
+    await expect(harness.runtime.runFollowup({ workspaceId: ids.workspace, followupId: ids.followup }))
+      .resolves.toEqual({ status: "review", followupId: ids.followup });
+    expect(runContextualFollowup).toHaveBeenCalledTimes(1);
+    expect(updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ status: "review", draftBody: draft })
+    }));
+    expect(harness.provider.generate).not.toHaveBeenCalled();
+    expect(harness.decide).not.toHaveBeenCalled();
+    expect(harness.createPendingOutboundMessage).not.toHaveBeenCalled();
+  });
+
   it("drafts a qualification follow-up for review when the number has no automatic-send opt-in", async () => {
     const conversation = { ...baseConversation, channel: { provider: "evolution", providerKey: "instance_1" } };
     const harness = buildRuntime({ conversation: { findUnique: vi.fn().mockResolvedValue(conversation) } });
@@ -1071,5 +1131,74 @@ describe("createAgentFollowupRuntime", () => {
     }));
     expect(harness.provider.generate).toHaveBeenCalledOnce();
     expect(harness.createPendingOutboundMessage).toHaveBeenCalledOnce();
+  });
+});
+
+describe("follow-up by the new attendance agent", () => {
+  const channelId = "canal-205";
+  const pendencia = (dono: "cliente" | "empresa") => ({
+    ...fichaInicial(),
+    contato: { tipo: "cliente" as const, prova: null },
+    pendencias: [{ id: "p1", dono, descricao: dono === "cliente" ? "informar a espessura da chapa" : "mandar o orçamento das chapas", prova: { mensagem: 2, trecho: "Qual espessura você precisa?" }, status: "aberta" as const, resolvidaPor: null }]
+  });
+  function setup(input: { dono: "cliente" | "empresa"; reason?: string; writer?: string; anchorMessageAt?: Date; delivery?: "review" | "automatic" }) {
+    const analista = createScriptedModel("analista", () => ({ content: null, toolCalls: [] }));
+    const model = createScriptedModel("escritor", () => ({ content: null, toolCalls: [toolCall("responder", { texto: input.writer ?? "Oi Ana, conseguiu ver a espessura da chapa?" })] }));
+    const followup = { ...baseFollowup, kind: "human_commercial" as const, sessionId: ids.session, status: "processing", lockedAt: now, reason: input.reason ?? "scheduled", anchorMessageAt: input.anchorMessageAt ?? new Date("2026-09-22T10:01:00.000Z") };
+    const context = { ...validContext(), followup };
+    const session = { id: ids.session, metadata: { handoffBrief: { nota: "mantida" }, harness: { ficha: pendencia(input.dono) } } };
+    const harness = buildRuntime({
+      aiAgent: { findFirst: vi.fn().mockResolvedValue({ ...baseAgent, behaviorConfig: { ...baseAgent.behaviorConfig, harness: { agente: "atendimento", canais: [channelId] } } }) },
+      conversation: { findUnique: vi.fn().mockResolvedValue({ ...baseConversation, channel: { ...baseConversation.channel, id: channelId, followupConfig: { ...baseConversation.channel.followupConfig, humanCommercialDelivery: input.delivery ?? "automatic" } } }) },
+      revalidateActiveFollowup: vi.fn().mockResolvedValue({ status: "valid", context }),
+      harness: { modelFactory: () => ({ model, analista }) }
+    });
+    const update = vi.fn().mockResolvedValue({});
+    Object.assign(harness.prisma, { aiAgentSession: { findFirst: vi.fn().mockResolvedValue(session), update } });
+    return { ...harness, update, model, analista };
+  }
+
+  it("chases the contact's open item with the analyst's record and sends it on an automatic channel", async () => {
+    const { runtime, createPendingOutboundMessage, decide, provider, update } = setup({ dono: "cliente" });
+    const result = await runtime.runFollowup({ workspaceId: ids.workspace, followupId: ids.followup });
+    expect(result.status).toBe("sent");
+    expect(createPendingOutboundMessage).toHaveBeenCalledWith(expect.objectContaining({ body: "Oi Ana, conseguiu ver a espessura da chapa?" }));
+    expect(decide).not.toHaveBeenCalled();
+    expect(provider.generate).not.toHaveBeenCalled();
+    expect(update).toHaveBeenCalledWith(expect.objectContaining({
+      data: { metadata: expect.objectContaining({ handoffBrief: { nota: "mantida" }, harness: expect.objectContaining({ ficha: expect.objectContaining({ followups: [expect.objectContaining({ pendenciaId: "p1" })] }) }) }) }
+    }));
+  });
+
+  it("a draft that goes to review is not counted as an attempt until it is sent", async () => {
+    const { runtime, prisma, createPendingOutboundMessage, update } = setup({ dono: "cliente", delivery: "review" });
+    const result = await runtime.runFollowup({ workspaceId: ids.workspace, followupId: ids.followup });
+    expect(result.status).toBe("review");
+    expect(createPendingOutboundMessage).not.toHaveBeenCalled();
+    expect(prisma.conversationFollowup.updateMany).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ reason: "harness_review" }) }));
+    expect(update).toHaveBeenCalledWith(expect.objectContaining({
+      data: { metadata: expect.objectContaining({ harness: expect.objectContaining({ ficha: expect.objectContaining({ followups: [] }) }) }) }
+    }));
+  });
+
+  it("turns an item the company owes into a reminder for the seller, without writing to the contact", async () => {
+    const { runtime, prisma, createPendingOutboundMessage } = setup({ dono: "empresa" });
+    const result = await runtime.runFollowup({ workspaceId: ids.workspace, followupId: ids.followup });
+    expect(result.status).toBe("review");
+    expect(createPendingOutboundMessage).not.toHaveBeenCalled();
+    expect(prisma.conversationFollowup.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ kind: "seller_reminder", reason: "seller_reminder", decision: expect.objectContaining({ mode: "harness", motivo: expect.stringContaining("orçamento") }) })
+    }));
+  });
+
+  it("waits for the configured step before reading the conversation", async () => {
+    const { runtime, prisma, model, analista } = setup({ dono: "cliente", reason: "brain_quiet_wait", anchorMessageAt: new Date("2026-09-22T11:55:00.000Z") });
+    const complete = vi.spyOn(analista, "complete");
+    const write = vi.spyOn(model, "complete");
+    const result = await runtime.runFollowup({ workspaceId: ids.workspace, followupId: ids.followup });
+    expect(result.status).toBe("deferred");
+    expect(complete).not.toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
+    expect(prisma.conversationFollowup.updateMany).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ status: "scheduled", reason: "harness_waiting_step" }) }));
   });
 });

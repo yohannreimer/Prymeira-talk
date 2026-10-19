@@ -76,6 +76,8 @@ export function createIngressHttp(options: IngressHttpOptions) {
     if (typeof session !== 'string' || !session || session.length > 200 || typeof envelope.event !== 'string' || !envelope.event || envelope.event.length > 100) throw new HttpFailure(400, 'invalid_source_envelope');
     const connection = await tx.channelConnection.findUnique({ where: { workspaceId_provider_sessionName: { workspaceId, provider, sessionName: session } } });
     if (connection && (!connectionId || connection.id === connectionId)) {
+      const owners = await tx.channelConnection.findMany({ where: { provider, sessionName: session }, select: { id: true, workspaceId: true, channelId: true }, take: 2 });
+      if (owners.length !== 1 || owners[0]!.id !== connection.id || owners[0]!.workspaceId !== workspaceId) throw new HttpFailure(409, 'physical_source_ambiguous');
       return deriveTrustedMessagingContext(tx, { workspaceId, channelId: connection.channelId, authenticatedSource: { provider, connectionId: connection.id }, mode, observedAt });
     }
     if (provider === 'evolution' && !connectionId && !connection) {

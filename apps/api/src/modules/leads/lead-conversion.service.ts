@@ -46,7 +46,7 @@ export interface LeadConversionServiceOptions {
 type TransactionClient = Prisma.TransactionClient;
 
 interface PrismaLike {
-  $transaction<T>(callback: (tx: TransactionClient) => Promise<T>): Promise<T>;
+  $transaction<T>(callback: (tx: TransactionClient) => Promise<T>, options?: { timeout?: number }): Promise<T>;
   conversation: PrismaClient["conversation"];
   leadContactProvenance: PrismaClient["leadContactProvenance"];
 }
@@ -441,7 +441,8 @@ export function createLeadConversionService(
           skippedCount,
           contacts
         };
-      });
+      // Bulk imports can exceed Prisma's 5s default; keep the entire selection atomic.
+      }, { timeout: 120_000 });
     },
 
     async lookupComposerDraft(input: {

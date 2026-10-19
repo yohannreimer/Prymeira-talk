@@ -43,8 +43,8 @@ export function readIngressEnvironment(env: NodeJS.ProcessEnv = process.env) {
   const db = new URL(databaseUrl), broker = new URL(amqpUrl);
   const vhost = decodeURIComponent(broker.pathname);
   if (!production) {
-    if (db.hostname !== '127.0.0.1' || db.port !== '55439' || !['/messaging_test','/campaign_test','/assistant_pilot_test','/leads_task2_test'].includes(db.pathname)) throw new Error('Owned isolated PostgreSQL required');
-    if (broker.protocol !== 'amqp:' || broker.hostname !== '127.0.0.1' || broker.port !== '56739' || vhost !== '/talk_test') throw new Error('Owned isolated RabbitMQ required');
+    if (db.hostname !== '127.0.0.1' || db.port !== (env.TALK_TEST_POSTGRES_PORT ?? '55439') || !['/messaging_test','/campaign_test','/assistant_pilot_test','/leads_task2_test'].includes(db.pathname)) throw new Error('Owned isolated PostgreSQL required');
+    if (broker.protocol !== 'amqp:' || broker.hostname !== '127.0.0.1' || broker.port !== (env.TALK_TEST_AMQP_PORT ?? '56739') || vhost !== '/talk_test') throw new Error('Owned isolated RabbitMQ required');
   } else {
     if (!['postgres:', 'postgresql:'].includes(db.protocol) || !db.hostname) throw new Error('Production ingress requires a PostgreSQL DATABASE_URL');
     if (/_test$/.test(db.pathname)) throw new Error('Production ingress refuses a test database');
@@ -172,7 +172,7 @@ export async function createIngressRuntime(config: RuntimeConfig, consume: boole
         }
         // Conversations known only by a LID (Evolution history without a phone) get their number from WAHA.
         if (config.wahaHistoryImport && history.wahaLids && due('lids', 5 * 60_000)) await observer.run('lids', 'lid_resolution', () => resolveLidConversationsSweep(db, { lids: history.wahaLids! }, { ...scope, onError: warnFor('lid_resolution') }));
-        if (config.gapRecovery && due('gaps', 5 * 60_000)) { await observer.run('gaps', 'gap_recovery', () => recoverGapsSweep(db, history, { ...scope, deferWahaUntilImported: config.wahaHistoryImport, onError: warnFor('gap_recovery') })); }
+        if (config.gapRecovery && due('gaps', 30_000)) { await observer.run('gaps', 'gap_recovery', () => recoverGapsSweep(db, history, { ...scope, deferWahaUntilImported: config.wahaHistoryImport, onError: warnFor('gap_recovery') })); }
       }
       catch (error) { reportFailure('recertification_sweep', error); console.warn('Recertification sweep failed', error); }
       observer.flush();

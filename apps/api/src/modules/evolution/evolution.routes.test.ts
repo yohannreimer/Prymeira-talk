@@ -183,6 +183,7 @@ function createMockPrisma(overrides: {
 } = {}) {
   const prisma = {
     channel: {
+      findMany: vi.fn().mockResolvedValue([{ id: 'channel_1', workspaceId: 'workspace_a', provider: 'evolution', providerKey: 'client-one' }]),
       findUnique:
         overrides.channel?.findUnique ??
         vi.fn().mockResolvedValue({
@@ -359,10 +360,13 @@ function createMockPrisma(overrides: {
       findMany: overrides.automationRule?.findMany ?? vi.fn().mockResolvedValue([])
     },
     automationRun: {
+      updateMany: vi.fn().mockResolvedValue({ count: 1 }),
       upsert:
         overrides.automationRun?.upsert ??
         vi.fn().mockImplementation(async (args) => ({
-          id: "run_1",
+          id: args.create.id ?? "run_1",
+          executionToken: args.create.executionToken,
+          leaseUntil: args.create.leaseUntil,
           workspaceId: args.create.workspaceId,
           ruleId: args.create.ruleId,
           eventKey: args.create.eventKey,
@@ -669,17 +673,28 @@ describe("Evolution webhook routes", () => {
       await app.close();
     }
   });
-  it('scopes physical Evolution QR events and status to the primary connection', async () => {
-    const { app, prisma, publish } = await buildEvolutionApp();
-    const primary = { id: 'primary-connection', workspaceId: 'workspace_a', channelId: 'channel_1', provider: 'evolution', sessionName: 'client-one', status: 'connecting', health: 'unknown', verifiedPhoneNumber: null, eligible: false };
-    const upsert = vi.fn(async () => primary);
-    (prisma as any).channelConnection = { upsert, findMany: vi.fn(async () => [primary, { ...primary, id: 'secondary-connection', provider: 'waha', status: 'connected', health: 'degraded' }]) };
+  it.each([
+    { event: 'QRCODE_UPDATED', data: { qrcode: { code: 'primary-qr' } } },
+    { event: 'CONNECTION_UPDATE', data: { state: 'close' } }
+  ])('keeps WAHA-only logical state and full DTO after legacy $event', async control => {
+    const prisma = createMockPrisma();
+    const row: any = { ...await (prisma.channel.findUnique as unknown as () => Promise<Record<string, unknown>>)(), status: 'connected', redundancyEnabled: true, activeConnectionId: 'secondary-connection' };
+    const primary = { id: 'primary-connection', workspaceId: 'workspace_a', channelId: 'channel_1', provider: 'evolution', sessionName: 'client-one', status: 'connecting', health: 'unknown', verifiedPhoneNumber: '15550000001', eligible: false, lifecycleGeneration: 0 };
+    const secondary = { ...primary, id: 'secondary-connection', provider: 'waha', sessionName: 'secondary', status: 'connected', health: 'healthy', eligible: true, lastHealthyAt: new Date() };
+    const upsert = vi.fn(async ({ update }: any) => Object.assign(primary, update));
+    (prisma.channel as any).findFirst = vi.fn(async () => ({ ...row }));
+    (prisma.channel as any).findMany = vi.fn(async () => [{ ...row }]);
+    (prisma.channel as any).updateMany = vi.fn(async () => ({ count: 1 }));
+    prisma.channel.update.mockImplementation(async ({ data }: any) => Object.assign(row, data));
+    (prisma as any).channelConnection = { upsert, findMany: vi.fn(async () => [primary, secondary]) };
+    prisma.$transaction = vi.fn(async (callback: (db: any) => Promise<unknown>) => callback(prisma));
+    const { app, publish } = await buildEvolutionApp(prisma);
     try {
-      const response = await app.inject({ method: 'POST', url: '/webhooks/evolution/workspace_a', headers: { 'x-prymeira-talk-secret': 'top_secret' }, payload: { event: 'QRCODE_UPDATED', instance: 'client-one', data: { qrcode: { code: 'primary-qr' } } } });
+      const response = await app.inject({ method: 'POST', url: '/webhooks/evolution/workspace_a', headers: { 'x-prymeira-talk-secret': 'top_secret' }, payload: { ...control, instance: 'client-one' } });
       expect(response.statusCode).toBe(200);
-      expect(upsert).toHaveBeenCalledWith(expect.objectContaining({ where: { workspaceId_channelId_provider: { workspaceId: 'workspace_a', channelId: 'channel_1', provider: 'evolution' } }, update: expect.objectContaining({ status: 'connecting' }) }));
-      expect(publish).toHaveBeenCalledWith(expect.objectContaining({ type: 'channel.qr_updated', payload: expect.objectContaining({ connectionId: 'primary-connection', provider: 'evolution' }) }));
-      expect(publish).toHaveBeenCalledWith(expect.objectContaining({ type: 'channel.updated', payload: expect.objectContaining({ connectedCount: 1, connectionTotal: 2, connections: expect.arrayContaining([expect.objectContaining({ id: 'primary-connection', status: 'connecting' })]) }) }));
+      expect(row.status).toBe('connected');
+      expect(publish).toHaveBeenCalledWith(expect.objectContaining({ type: 'channel.updated', payload: expect.objectContaining({ status: 'connected', connectedCount: 1, connectionTotal: 2, connections: expect.arrayContaining([expect.objectContaining({ id: 'secondary-connection', eligible: true })]) }) }));
+      if (control.event === 'QRCODE_UPDATED') expect(publish).toHaveBeenCalledWith(expect.objectContaining({ type: 'channel.qr_updated', payload: expect.objectContaining({ connectionId: 'primary-connection', provider: 'evolution' }) }));
     } finally { await app.close(); }
   });
 
@@ -1098,6 +1113,19 @@ describe("Evolution webhook routes", () => {
     }
   });
 
+  it.each(['logical', 'physical', 'identity'] as const)('rejects legacy %s source conflicts before customer processing', async conflict => {
+    const prisma = createMockPrisma();
+    const own = { id: 'channel_1', workspaceId: 'workspace_a', provider: 'evolution', providerKey: 'client-one', verifiedMessagingPhoneNumber: conflict === 'identity' ? '15550000001' : null };
+    prisma.channel.findMany.mockResolvedValue(conflict === 'logical' ? [own, { ...own, id: 'foreign', workspaceId: 'foreign' }] : [own]);
+    if (conflict !== 'logical') (prisma as any).channelConnection = { findMany: vi.fn().mockResolvedValue([{ id: 'primary', provider: 'evolution', workspaceId: conflict === 'physical' ? 'foreign' : 'workspace_a', channelId: 'channel_1', verifiedPhoneNumber: '15550000002' }]) };
+    const { app } = await buildEvolutionApp(prisma);
+    try {
+      const response = await app.inject({ method: 'POST', url: '/webhooks/evolution/workspace_a', headers: { 'x-prymeira-talk-secret': 'top_secret' }, payload: validWebhookBody });
+      expect(response.statusCode).toBe(409);
+      expect(prisma.message.create).not.toHaveBeenCalled(); expect(prisma.contact.create).not.toHaveBeenCalled(); expect(prisma.$transaction).not.toHaveBeenCalled();
+    } finally { await app.close(); }
+  });
+
   it("returns 404 when the Evolution channel is missing", async () => {
     const prisma = createMockPrisma({
       channel: { findUnique: vi.fn().mockResolvedValue(null) }
@@ -1438,7 +1466,7 @@ describe("Evolution webhook routes", () => {
         expect(call).toMatchObject({ workspaceId: "workspace_a", messageId: expect.any(String) });
         expect(call.fetchers).toHaveLength(1);
         await call.fetchers[0].fetch();
-        expect(fetchMedia).toHaveBeenCalledWith({ instanceName: validWebhookBody.instance, id: "provider_image_durable" });
+        expect(fetchMedia).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: "workspace_a", channelId: "channel_1", instanceName: validWebhookBody.instance, id: "provider_image_durable", key: expect.objectContaining({ rawId: "provider_image_durable", direction: "inbound", chatAddress: expect.any(String) }) }));
       } finally { await app.close(); }
     });
 
@@ -2295,10 +2323,11 @@ describe("Evolution webhook routes", () => {
             workspaceId: "workspace_a",
             ruleId: "automation_1",
             eventKey: "message.received:provider_msg_1",
-            status: "completed"
+            status: "running"
           })
         })
       );
+      expect(prisma.automationRun.updateMany).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ status: 'completed' }) }));
       expect(publish).toHaveBeenCalledWith(
         expect.objectContaining({
           type: "automation_run.created",
@@ -2320,7 +2349,7 @@ describe("legacy webhook delegation to the ingress", () => {
     expect(refused.statusCode).toBe(409);
     expect(refused.json()).toEqual({ ok: false, error: "delegated_to_ingress" });
     expect(JSON.stringify(Object.values(prisma).flatMap((v) => (typeof v === "function" ? [(v as { mock?: { calls: unknown[] } }).mock?.calls] : [])))).not.toContain("delegated-ws");
-    expect((await post(app, "other-ws")).statusCode).not.toBe(409);
+    expect((await post(app, "workspace_a")).statusCode).not.toBe(409);
   });
   it("refuses every workspace for '*' and still authenticates first", async () => {
     const { app } = await buildEvolutionApp(createMockPrisma(), undefined, { delegatedWorkspaces: "*" });

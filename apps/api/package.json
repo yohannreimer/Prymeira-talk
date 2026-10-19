@@ -16,9 +16,16 @@
     "test:jev-villefer-package-live": "tsx scripts/test-jev-villefer-package-live.ts",
     "test:followups-villefer-live": "tsx scripts/test-followups-villefer-live.ts",
     "eval:followup-brain": "tsx scripts/evaluate-followup-brain.ts",
+    "harness:simular": "tsx scripts/harness-simular.ts",
+    "harness:exportar-followups": "tsx scripts/harness-exportar-followups.ts",
+    "harness:sombra-followup": "tsx scripts/harness-sombra-followup.ts",
+    "harness:sondar-modelo": "tsx scripts/harness-sondar-modelo.ts",
+    "harness:ligar-villefer": "tsx scripts/harness-ligar-villefer.ts",
     "compile:villefer-v1": "tsx scripts/compile-villefer-v1.ts",
     "prisma": "dotenv -e ../../.env -- prisma",
-    "seed:demo": "dotenv -e ../../.env -- tsx prisma/seed-demo.ts"
+    "seed:demo": "dotenv -e ../../.env -- tsx prisma/seed-demo.ts",
+    "harness:replay-followups": "tsx scripts/replay-followup-reactivation.ts",
+    "harness:replay-contextual-followups": "tsx scripts/replay-contextual-followups.ts"
   },
   "dependencies": {
     "@fastify/cors": "^11.1.0",

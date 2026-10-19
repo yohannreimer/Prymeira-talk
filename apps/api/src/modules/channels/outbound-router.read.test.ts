@@ -3,10 +3,10 @@ import { createOutboundRouter } from './outbound-router.js';
 
 function router(evolutionStatus: 'connected' | 'disconnected', base: Record<string, unknown>) {
   const db = {
-    channel: { findFirst: vi.fn(async () => ({ id: 'c', workspaceId: 'w', redundancyEnabled: true, activeConnectionId: 'b' })) },
+    channel: { findMany: vi.fn(async () => [{ id: 'c', workspaceId: 'w', redundancyEnabled: true, activeConnectionId: 'b' }]) },
     channelConnection: { findMany: vi.fn(async () => [
-      { id: 'a', provider: 'evolution', status: evolutionStatus, health: 'unknown', eligible: evolutionStatus === 'connected', verifiedPhoneNumber: '554734353573', lastHealthyAt: null, sessionName: 'evo' },
-      { id: 'b', provider: 'waha', status: 'connected', health: 'healthy', eligible: true, verifiedPhoneNumber: '554734353573', lastHealthyAt: new Date(), sessionName: 'waha-geral' }]) }
+      { workspaceId: 'w', channelId: 'c', id: 'a', provider: 'evolution', status: evolutionStatus, health: 'unknown', eligible: evolutionStatus === 'connected', verifiedPhoneNumber: '554734353573', lastHealthyAt: null, sessionName: 'evo' },
+      { workspaceId: 'w', channelId: 'c', id: 'b', provider: 'waha', status: 'connected', health: 'healthy', eligible: true, verifiedPhoneNumber: '554734353573', lastHealthyAt: new Date(), sessionName: 'waha-geral' }]) }
   };
   const waha = { sendText: vi.fn(), sendMedia: vi.fn(), sendVoice: vi.fn(), sendContact: vi.fn(),
     getContactProfilePicture: vi.fn(async () => ({ profilePictureURL: 'https://pps.whatsapp.net/waha.jpg' })),

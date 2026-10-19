@@ -1,5 +1,5 @@
 import type { PrismaClient } from '@prisma/client';
-import { shouldReturnToPrimary, writerCandidates, type RoutableChannel, type RoutableConnection } from './outbound-routing.js';
+import { logicalChannelStatus, shouldReturnToPrimary, writerCandidates, type RoutableChannel, type RoutableConnection } from './outbound-routing.js';
 
 /** Keeps a redundant channel honest every 15 seconds:
  *  1. probes both physical connections (the connection service applies the 3-consecutive-failures rule);
@@ -11,7 +11,7 @@ import { shouldReturnToPrimary, writerCandidates, type RoutableChannel, type Rou
  *     returns to Evolution only after ten stable minutes with real, agreeing events from both connections.
  * Idempotent and fenced: the writer change only applies if nobody changed it in the meantime. */
 
-type Db = Pick<PrismaClient, 'channel' | 'channelConnection' | '$queryRaw'>;
+type Db = Pick<PrismaClient, 'channel' | 'channelConnection' | '$queryRaw' | '$transaction'>;
 export type WriterChange = { workspaceId: string; channelId: string; from: string | null; to: string; reason: 'writer_unavailable' | 'receive_loss' | 'primary_recovered' };
 
 export function createChannelHealthMonitor(options: {
@@ -114,11 +114,11 @@ export function createChannelHealthMonitor(options: {
   }
 
   async function load(channel: { workspaceId: string; id: string }) {
-    const record = await db.channel.findFirst({ where: { workspaceId: channel.workspaceId, id: channel.id }, select: { id: true, workspaceId: true, redundancyEnabled: true, activeConnectionId: true } });
+    const record = await db.channel.findFirst({ where: { workspaceId: channel.workspaceId, id: channel.id }, select: { id: true, workspaceId: true, redundancyEnabled: true, activeConnectionId: true, verifiedMessagingPhoneNumber: true } });
     if (!record) return null;
     const rows = await db.channelConnection.findMany({ where: { workspaceId: channel.workspaceId, channelId: channel.id } });
     const connections: Array<RoutableConnection & { lastError: string | null }> = rows.map(row => ({ id: row.id, provider: row.provider, status: row.status, health: row.health, eligible: row.eligible,
-      verifiedPhoneNumber: row.verifiedPhoneNumber, lastHealthyAt: row.lastHealthyAt, lastError: row.lastError }));
+      verifiedPhoneNumber: row.verifiedPhoneNumber, lastHealthyAt: row.lastHealthyAt, lifecycleGeneration: row.lifecycleGeneration, lastError: row.lastError }));
     return { ...record, connections } satisfies RoutableChannel & { id: string; workspaceId: string };
   }
 
@@ -176,12 +176,24 @@ export function createChannelHealthMonitor(options: {
    * phone. A dropped Evolution no longer shows the whole channel as disconnected (and hides it from campaigns, leads
    * and automations) while WAHA keeps receiving and sending. */
   async function reconcileStatus(channel: { workspaceId: string; id: string; status: string }) {
-    const rows = await db.channelConnection.findMany({ where: { workspaceId: channel.workspaceId, channelId: channel.id }, select: { provider: true, status: true, eligible: true } });
-    const status = logicalChannelStatus(rows);
-    if (!status || status === channel.status) return;
-    const changed = await db.channel.updateMany({ where: { workspaceId: channel.workspaceId, id: channel.id, status: channel.status as never }, data: { status } });
-    if (changed.count) {
-      options.logger?.info?.({ channelId: channel.id, from: channel.status, to: status }, 'Channel status follows its connections');
+    const transition = await db.$transaction(async tx => {
+      // Take the same row lock as connection probes/lifecycles before reading the
+      // physical facts. A stale snapshot must not reconnect a channel after QR,
+      // logout, a changed account or a restrictive observation committed.
+      const locked = await tx.channel.updateMany({ where: { workspaceId: channel.workspaceId, id: channel.id }, data: { connectionLifecycleGeneration: { increment: 0 } } });
+      if (!locked.count) return null;
+      const current = await tx.channel.findFirst({ where: { workspaceId: channel.workspaceId, id: channel.id }, select: { status: true, redundancyEnabled: true, verifiedMessagingPhoneNumber: true } });
+      if (!current) return null;
+      const rows = await tx.channelConnection.findMany({ where: { workspaceId: channel.workspaceId, channelId: channel.id } });
+      const status = logicalChannelStatus(rows, current.redundancyEnabled, current.verifiedMessagingPhoneNumber);
+      if (!status) return null;
+      if (status !== current.status) await tx.channel.updateMany({ where: { workspaceId: channel.workspaceId, id: channel.id, status: current.status }, data: { status } });
+      return status !== channel.status || status !== current.status ? status : null;
+    });
+    // A fenced probe may already have persisted the aggregate inside its own
+    // transaction. Its transition still needs to reach open browser sessions.
+    if (transition) {
+      options.logger?.info?.({ channelId: channel.id, from: channel.status, to: transition }, 'Channel status follows its connections');
       try { await options.onStatusChange?.({ workspaceId: channel.workspaceId, channelId: channel.id }); } catch { /* the next read shows it */ }
     }
   }
@@ -221,11 +233,4 @@ export function createChannelHealthMonitor(options: {
 }
 export type ChannelHealthMonitor = ReturnType<typeof createChannelHealthMonitor>;
 
-/** connected when a usable session exists (Evolution connected, or WAHA connected and eligible, i.e. proven on the
- * channel's phone); otherwise what Evolution says; null when there is nothing to follow. */
-export function logicalChannelStatus(connections: Array<{ provider: string; status: string; eligible: boolean }>) {
-  const primary = connections.find(connection => connection.provider === 'evolution');
-  const waha = connections.find(connection => connection.provider === 'waha');
-  if (primary?.status === 'connected' || (waha?.status === 'connected' && waha.eligible)) return 'connected' as const;
-  return primary ? primary.status as 'connected' | 'connecting' | 'disconnected' | 'failed' : null;
-}
+export { logicalChannelStatus } from './outbound-routing.js';

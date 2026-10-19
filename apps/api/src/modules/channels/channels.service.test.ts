@@ -186,7 +186,7 @@ describe("channels service", () => {
       data: {
         workspaceId: "workspace_a",
         provider: "evolution",
-        providerKey: "requested-instance",
+        providerKey: expect.stringMatching(/^talk-workspace-a-[0-9a-f-]{36}$/),
         displayName: "WhatsApp Comercial",
         phoneNumber: "+55 47 99999-0000",
         status: "disconnected",
@@ -197,7 +197,7 @@ describe("channels service", () => {
     expect(result).toEqual(
       expect.objectContaining({
         provider: "evolution",
-        providerKey: "requested-instance",
+        providerKey: expect.stringMatching(/^talk-workspace-a-[0-9a-f-]{36}$/),
         displayName: "WhatsApp Comercial",
         phoneNumber: "+55 47 99999-0000",
         status: "disconnected"
@@ -302,7 +302,7 @@ describe("channels service", () => {
     );
   });
 
-  it("configures the Evolution webhook when creating a Meta Cloud via Evolution channel", async () => {
+  it("rejects adoption of an unverified Meta Cloud via Evolution instance", async () => {
     const setWebhook = vi.fn().mockResolvedValue({ raw: {} });
     const prisma = createMockPrisma();
     prisma.channel.create = vi.fn().mockImplementation(async (args) => ({
@@ -321,29 +321,19 @@ describe("channels service", () => {
       }
     });
 
-    const result = await service.createChannel({
+    await expect(service.createChannel({
       workspaceId: "workspace_a",
       provider: "meta_cloud",
       displayName: " Meta Oficial ",
       providerKey: " official-instance ",
       phoneNumber: " +55 47 98888-0000 "
-    });
+    })).rejects.toMatchObject({ code: "CHANNEL_PROVIDER_OWNERSHIP_UNVERIFIED", statusCode: 409 });
 
-    expect(setWebhook).toHaveBeenCalledWith({
-      instanceName: "official-instance",
-      webhookUrl: "https://talk.prymeiradigital.com.br/webhooks/evolution/workspace_a",
-      webhookSecret: "webhook-secret"
-    });
-    expect(result).toEqual(
-      expect.objectContaining({
-        provider: "meta_cloud",
-        providerKey: "official-instance",
-        status: "connected"
-      })
-    );
+    expect(setWebhook).not.toHaveBeenCalled();
+    expect(prisma.channel.create).not.toHaveBeenCalled();
   });
 
-  it("keeps the Meta Cloud channel visible as failed when automatic webhook setup fails", async () => {
+  it("does not create a Meta Cloud via Evolution binding without a prior ownership claim", async () => {
     const setWebhook = vi.fn().mockRejectedValue(new EvolutionClientError(500, { error: "down" }));
     const update = vi.fn().mockImplementation(async (args) => ({
       ...metaChannel,
@@ -354,7 +344,7 @@ describe("channels service", () => {
     }));
     const prisma = createMockPrisma({
       channel: {
-        findMany: vi.fn(),
+        findMany: vi.fn().mockResolvedValue([]),
         findFirst: vi.fn(),
         create: vi.fn().mockImplementation(async (args) => ({
           ...metaChannel,
@@ -376,24 +366,16 @@ describe("channels service", () => {
       }
     });
 
-    const result = await service.createChannel({
+    await expect(service.createChannel({
       workspaceId: "workspace_a",
       provider: "meta_cloud",
       displayName: "Meta Oficial",
       providerKey: "official-instance"
-    });
+    })).rejects.toMatchObject({ code: "CHANNEL_PROVIDER_OWNERSHIP_UNVERIFIED", statusCode: 409 });
 
-    expect(setWebhook).toHaveBeenCalledOnce();
-    expect(update).toHaveBeenCalledWith({
-      where: {
-        workspaceId_id: {
-          workspaceId: "workspace_a",
-          id: channelId
-        }
-      },
-      data: { status: "failed" }
-    });
-    expect(result.status).toBe("failed");
+    expect(setWebhook).not.toHaveBeenCalled();
+    expect(update).not.toHaveBeenCalled();
+    expect(prisma.channel.create).not.toHaveBeenCalled();
   });
 
   it("rejects a Meta Cloud channel without a provider key", async () => {
@@ -618,6 +600,7 @@ describe("channels service", () => {
     });
     const setWebhook = vi.fn().mockResolvedValue({ raw: {} });
     const prisma = createMockPrisma();
+    prisma.channel.findFirst.mockResolvedValue({ ...baseChannel, providerInstanceClaim: baseChannel.providerKey });
     const service = createChannelsService(prisma, {
       evolution: {
         mode: "real",
@@ -683,11 +666,12 @@ describe("channels service", () => {
       code: "EVOLUTION_QR_UNAVAILABLE",
       statusCode: 502
     });
-    expect(prisma.channel.update).not.toHaveBeenCalled();
+    expect(prisma.channel.update).toHaveBeenCalledWith(expect.objectContaining({ data: { providerInstanceClaim: baseChannel.providerKey } }));
   });
 
   it("explains missing QR when the existing Evolution instance is still linked", async () => {
     const prisma = createMockPrisma();
+    prisma.channel.findFirst.mockResolvedValue({ ...baseChannel, providerInstanceClaim: baseChannel.providerKey });
     const getConnectionState = vi.fn().mockResolvedValue("open");
     const service = createChannelsService(prisma, {
       evolution: {
@@ -861,7 +845,7 @@ describe("channels service", () => {
 });
 
 describe("channels routes", () => {
-  it("configures an Evolution webhook when creating a Meta Cloud channel through the route", async () => {
+  it("rejects an unverified Meta Cloud Evolution webhook binding through the route", async () => {
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(JSON.stringify({ ok: true }), {
         status: 200,
@@ -871,7 +855,7 @@ describe("channels routes", () => {
     vi.stubGlobal("fetch", fetchMock);
     const prisma = createMockPrisma({
       channel: {
-        findMany: vi.fn(),
+        findMany: vi.fn().mockResolvedValue([]),
         findFirst: vi.fn(),
         create: vi.fn().mockImplementation(async (args) => ({
           ...metaChannel,
@@ -921,29 +905,10 @@ describe("channels routes", () => {
         }
       });
 
-      expect(response.statusCode).toBe(201);
-      expect(fetchMock).toHaveBeenCalledWith(
-        "https://wsapi.yrdnegocios.com.br/webhook/set/official-instance",
-        expect.objectContaining({
-          method: "POST",
-          headers: expect.objectContaining({ apikey: "secret-key" })
-        })
-      );
-      expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
-        webhook: expect.objectContaining({
-          enabled: true,
-          url: "https://talk.prymeiradigital.com.br/webhooks/evolution/workspace_a",
-          headers: expect.objectContaining({
-            "x-prymeira-talk-secret": "webhook-secret"
-          }),
-          events: expect.arrayContaining(["MESSAGES_UPSERT", "MESSAGES_UPDATE", "SEND_MESSAGE"])
-        })
-      });
-      expect(realtimeEventSchema.parse(publish.mock.calls[0]?.[0])).toEqual({
-        type: "channel.updated",
-        workspaceId: "workspace_a",
-        payload: channelSchema.parse(response.json())
-      });
+      expect(response.statusCode).toBe(409);
+      expect(response.json().code).toBe('CHANNEL_PROVIDER_OWNERSHIP_UNVERIFIED');
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(publish).not.toHaveBeenCalled();
     } finally {
       vi.unstubAllGlobals();
       await app.close();
@@ -1078,8 +1043,8 @@ describe("channels routes", () => {
       expect(markManualDisconnect).toHaveBeenCalledWith(channelId);
       expect(publish).toHaveBeenCalledWith(expect.objectContaining({ type: "channel.updated" }));
       expect(prisma.channel.delete).not.toHaveBeenCalled();
-      expect(prisma.channel.findMany).toHaveBeenNthCalledWith(1, expect.objectContaining({ where: { workspaceId: "workspace_a", archivedAt: null } }));
-      expect(prisma.channel.findMany).toHaveBeenNthCalledWith(2, expect.objectContaining({ where: { workspaceId: "workspace_a" } }));
+      expect(prisma.channel.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { workspaceId: "workspace_a", archivedAt: null } }));
+      expect(prisma.channel.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { workspaceId: "workspace_a" } }));
     } finally {
       await app.close();
     }

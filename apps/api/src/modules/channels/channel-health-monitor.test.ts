@@ -1,12 +1,40 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 describe('channel status follows its connections', () => {
-  it('stays connected on WAHA proven on the same phone while Evolution is down', async () => {
+  const primary = { id: 'ev', provider: 'evolution' as const, status: 'connected', eligible: true, health: 'healthy' as const, verifiedPhoneNumber: '5547999990000', lastHealthyAt: new Date(), lifecycleGeneration: 0 };
+  const secondary = { ...primary, id: 'wa', provider: 'waha' as const };
+  it('uses routing identity and lifecycle fences for WAHA-only, Evolution-only and both-down states', async () => {
     const { logicalChannelStatus } = await import('./channel-health-monitor.js');
-    expect(logicalChannelStatus([{ provider: 'evolution', status: 'disconnected', eligible: false }, { provider: 'waha', status: 'connected', eligible: true }])).toBe('connected');
-    expect(logicalChannelStatus([{ provider: 'evolution', status: 'disconnected', eligible: false }, { provider: 'waha', status: 'connected', eligible: false }])).toBe('disconnected');
-    expect(logicalChannelStatus([{ provider: 'evolution', status: 'connected', eligible: true }])).toBe('connected');
+    const offline = { ...primary, status: 'disconnected', eligible: false };
+    expect(logicalChannelStatus([offline, secondary])).toBe('connected');
+    expect(logicalChannelStatus([offline, { ...secondary, eligible: false }])).toBe('disconnected');
+    expect(logicalChannelStatus([offline, { ...secondary, verifiedPhoneNumber: '5511888882222' }])).toBe('disconnected');
+    expect(logicalChannelStatus([offline, { ...secondary, lastHealthyAt: null }])).toBe('disconnected');
+    expect(logicalChannelStatus([offline, { ...secondary, health: 'unhealthy' }])).toBe('disconnected');
+    expect(logicalChannelStatus([offline, { ...secondary, lifecycleGeneration: 1 }])).toBe('disconnected');
+    expect(logicalChannelStatus([offline, secondary], false)).toBe('disconnected');
+    expect(logicalChannelStatus([primary, { ...secondary, status: 'disconnected', eligible: false }])).toBe('connected');
+    expect(logicalChannelStatus([{ ...primary, lifecycleGeneration: 1 }, secondary])).toBe('connected');
+    expect(logicalChannelStatus([{ ...primary, health: 'unhealthy' }])).toBe('disconnected');
     expect(logicalChannelStatus([])).toBeNull();
+  });
+  it('publishes a status transition already persisted by the probe and never reverts a healthy WAHA', async () => {
+    const { createChannelHealthMonitor } = await import('./channel-health-monitor.js');
+    const channel = { id: 'c', workspaceId: 'w', status: 'disconnected', redundancyEnabled: true, activeConnectionId: secondary.id };
+    const connections = [{ ...primary, status: 'disconnected', eligible: false }, secondary];
+    const onStatusChange = vi.fn();
+    const db = {
+      channel: { findMany: async () => [{ ...channel }], findFirst: async () => ({ ...channel }), updateMany: async ({ where, data }: any) => { if (where.status && channel.status !== where.status) return { count: 0 }; if (data.status) channel.status = data.status; return { count: 1 }; } },
+      channelConnection: { findMany: async () => connections }, $queryRaw: async () => []
+    };
+    (db as any).$transaction = async (run: any) => run(db);
+    const monitor = createChannelHealthMonitor({ db: db as never, probe: async () => { channel.status = 'connected'; }, onStatusChange });
+    await monitor.tick();
+    expect(channel.status).toBe('connected');
+    expect(onStatusChange).toHaveBeenCalledExactlyOnceWith({ workspaceId: 'w', channelId: 'c' });
+    await monitor.tick();
+    expect(channel.status).toBe('connected');
+    expect(onStatusChange).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -23,6 +51,7 @@ describe('a probe that never answers', () => {
       channelConnection: { findMany: async ({ where }: any) => [{ id: `${where.channelId}-conn`, provider: 'waha', status: 'connected', eligible: true }] },
       $queryRaw: async () => []
     };
+    (db as any).$transaction = async (run: any) => run(db);
     const probed: string[] = [];
     const warnings: string[] = [];
     const monitor = createChannelHealthMonitor({ db: db as never, probeTimeoutMs: 30,

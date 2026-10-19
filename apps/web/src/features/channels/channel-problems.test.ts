@@ -38,6 +38,14 @@ describe("describeChannelProblems", () => {
     expect(problem).toMatchObject({ tone: "danger", title: "Vendas 6 precisa ser reconectado" });
     expect(problem!.detail).toContain("QR");
   });
+  it.each(['evolution', 'waha'] as const)('does not claim an outage while %s still carries the logical channel', provider => {
+    const connections = [
+      { id: 'ev', channelId: 'c1', provider: 'evolution' as const, sessionName: 'ev', status: provider === 'evolution' ? 'connected' as const : 'disconnected' as const, health: 'healthy' as const, eligible: true, verifiedPhoneNumber: '5547999990000', isActiveWriter: provider === 'evolution', lastCheckedAt: null, lastError: null },
+      { id: 'wa', channelId: 'c1', provider: 'waha' as const, sessionName: 'wa', status: provider === 'waha' ? 'connected' as const : 'disconnected' as const, health: 'healthy' as const, eligible: true, verifiedPhoneNumber: '5547999990000', isActiveWriter: provider === 'waha', lastCheckedAt: null, lastError: null }
+    ];
+    const problems = describeChannelProblems([channel({ redundancyEnabled: true, connections })], [health({ state: 'needs_qr' })], NOW);
+    expect(problems).toEqual([]);
+  });
   it("silêncio mostra há quantas horas", () => {
     const [problem] = describeChannelProblems([channel()], [health({ state: "silent", lastInboundAt: new Date(NOW.getTime() - 5 * 3_600_000).toISOString() })], NOW);
     expect(problem).toMatchObject({ tone: "warning", title: "Vendas 6 pode estar sem receber mensagens" });

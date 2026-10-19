@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createAgentReplyScheduler } from "./agent-reply-scheduler.js";
+import * as monitoring from '../../observability/glitchtip.js';
 
 const ids = {
   workspace: "workspace_a",
@@ -45,6 +46,20 @@ function buildPrisma(overrides: Record<string, any> = {}) {
 }
 
 describe("createAgentReplyScheduler", () => {
+  it("leaves a supplier's message to the buyer agent instead of the sales agent", async () => {
+    const prisma = buildPrisma();
+    const claimInbound = vi.fn().mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    const scheduler = createAgentReplyScheduler({ prisma, agentRuntime: { runForMessage: vi.fn() }, purchaseInbound: { claimInbound } });
+    const scope = { workspaceId: ids.workspace, conversationId: ids.conversation, messageId: ids.firstMessage };
+    expect(await scheduler.scheduleActiveSessionForMessage(scope)).toEqual({ scheduled: false });
+    expect(claimInbound).toHaveBeenCalledWith(scope);
+    expect(prisma.conversation.findUnique).not.toHaveBeenCalled();
+    expect(prisma.aiAgentPendingReply.upsert).not.toHaveBeenCalled();
+    await scheduler.scheduleActiveSessionForMessage(scope);
+    expect(prisma.conversation.findUnique).toHaveBeenCalled();
+    scheduler.stop();
+  });
+
   it("does not recreate the pending queue when reset happens during settings lookup", async () => {
     const prisma = buildPrisma();
     prisma.workspaceMirror.findUnique.mockImplementation(async () => {
@@ -183,6 +198,7 @@ describe("createAgentReplyScheduler", () => {
     expect(agentRuntime.runForMessage).toHaveBeenCalledWith({
       workspaceId: ids.workspace,
       agentId: ids.agent,
+      sessionId: ids.session,
       conversationId: ids.conversation,
       messageId: ids.firstMessage,
       trigger: "automation",
@@ -279,6 +295,7 @@ describe("createAgentReplyScheduler", () => {
     expect(agentRuntime.runForMessage).toHaveBeenCalledWith({
       workspaceId: ids.workspace,
       agentId: ids.agent,
+      sessionId: ids.session,
       conversationId: ids.conversation,
       messageId: ids.secondMessage,
       trigger: "automation",
@@ -389,5 +406,24 @@ describe("createAgentReplyScheduler", () => {
         lastError: "OpenAI-compatible provider returned an invalid response."
       })
     });
+  });
+
+  it.each(['returned', 'thrown'] as const)('reports %s failures without forwarding result messages or queue identities', async mode => {
+    const report = vi.spyOn(monitoring, 'reportFailure').mockReturnValue(true);
+    try {
+      const prisma = buildPrisma({ aiAgentPendingReply: { findMany: vi.fn().mockResolvedValue([{
+        id: ids.pending, workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation,
+        lastMessageId: ids.secondMessage, attempts: 0
+      }]) } });
+      const runForMessage = mode === 'returned' ? vi.fn().mockResolvedValue({ status: 'failed', message: 'PRIVATE_FIXTURE' })
+        : vi.fn().mockRejectedValue(new TypeError("ownKeys did not include '$on'"));
+      const scheduler = createAgentReplyScheduler({ prisma, agentRuntime: { runForMessage } });
+      expect((await scheduler.processDueReplies())[0]?.status).toBe('failed');
+      expect(report).toHaveBeenCalledOnce();
+      if (mode === 'returned') {
+        expect(report.mock.calls[0]?.[2]?.diagnostic?.code).toBe('AGENT_RUN_FAILED');
+        expect(JSON.stringify(report.mock.calls)).not.toMatch(/PRIVATE_FIXTURE|workspace_a/);
+      }
+    } finally { report.mockRestore(); }
   });
 });

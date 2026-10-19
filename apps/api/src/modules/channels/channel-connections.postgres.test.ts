@@ -14,7 +14,7 @@ describe.skipIf(!databaseUrl)('physical connections on PostgreSQL', () => {
   const evolution: any = { mode: 'real', webhookSecret: 'test', publicWebhookUrl: () => 'https://talk.test/webhook', client: { createInstance: vi.fn(async ({ instanceName }) => ({ instanceName, qrCode: 'evolution-qr' })), setWebhook: vi.fn(), logoutInstance: vi.fn(), getConnectionState: vi.fn(async () => 'open'), getInstanceIdentity: vi.fn(async () => '5547999990000@s.whatsapp.net') } };
   beforeAll(() => {
     const target = new URL(databaseUrl!);
-    if (!['postgresql:', 'postgres:'].includes(target.protocol) || !['127.0.0.1', 'localhost'].includes(target.hostname) || !['/campaign_test', '/connections_test'].includes(target.pathname)) throw new Error('Allowlisted local disposable connection database required.');
+    if (!['postgresql:', 'postgres:'].includes(target.protocol) || !['127.0.0.1', 'localhost'].includes(target.hostname) || !['/campaign_test', '/connections_test', '/messaging_test'].includes(target.pathname) || (target.pathname === '/messaging_test' && target.port !== (process.env.TALK_TEST_POSTGRES_PORT ?? '55439'))) throw new Error('Allowlisted local disposable connection database required.');
     prisma = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
   });
   afterAll(async () => { if (prisma) { await prisma.channel.deleteMany({ where: { workspaceId: { in: [workspaceId, otherWorkspace] } } }); await prisma.$disconnect(); } });
@@ -71,7 +71,12 @@ describe.skipIf(!databaseUrl)('physical connections on PostgreSQL', () => {
       evolution.client.getConnectionState.mockResolvedValue('open');
       evolution.client.getInstanceIdentity.mockResolvedValue('5511888882222@s.whatsapp.net');
       const changed = await service.refresh({ workspaceId, channelId, connectionId: primary.id });
-      expect(changed.channel.connections!.find((record) => record.id === secondary.id)).toMatchObject({ eligible: false, health: 'degraded', lastError: 'PHONE_MISMATCH' });
+      expect(changed.channel.connections!.find((record) => record.id === primary.id)).toMatchObject({ eligible: false, health: 'degraded', verifiedPhoneNumber: '5511888882222', lastError: 'PHONE_MISMATCH' });
+      expect(changed.channel.connections!.find((record) => record.id === secondary.id)).toMatchObject({ eligible: true, health: 'healthy', verifiedPhoneNumber: '5547999990000' });
+      expect(changed.channel).toMatchObject({ status: 'connected', activeConnectionId: secondary.id, phoneNumber: '5547999990000' });
+      expect(await prisma.channel.findUniqueOrThrow({ where: { id: channelId } })).toMatchObject({ verifiedMessagingPhoneNumber: '5547999990000' });
+      const repeated = await service.refresh({ workspaceId, channelId, connectionId: primary.id });
+      expect(repeated.channel.connections!.find(record => record.id === primary.id)).toMatchObject({ eligible: false, lastError: 'PHONE_MISMATCH' });
     } finally {
       remote.getSession.mockImplementation(async ({ session }: { session: string }) => ({ name: session, status: 'SCAN_QR_CODE', engine: { engine: 'WPP', state: 'CONNECTED' }, config: { metadata: { workspaceId, channelId } } }));
       evolution.client.getConnectionState.mockResolvedValue('open');
@@ -142,7 +147,7 @@ describe.skipIf(!databaseUrl)('physical connections on PostgreSQL', () => {
     release('5547999990000@s.whatsapp.net');
     const observed = await pending;
     expect(await prisma.channelConnection.findMany({ where: scope, orderBy: { id: 'asc' } })).toEqual(lifecycleState);
-    expect(observed.channel.connections!.find((r) => r.provider === 'waha')?.eligible).toBe(false);
+    expect(observed.channel.connections!.find((r) => r.provider === 'waha')?.eligible).toBe(action.startsWith('primary'));
     expect(await prisma.channel.findUniqueOrThrow({ where: { id: created.id } })).toMatchObject({ connectionLifecycleGeneration: expect.any(Number) });
     if (action === 'disable') expect(observed.channel.redundancyEnabled).toBe(false);
     if (action === 'logout' || action === 'fresh-qr') expect(lifecycleState.find((r) => r.provider === 'waha')).toMatchObject({ verifiedPhoneNumber: null, lastHealthyAt: null });
@@ -208,11 +213,19 @@ describe.skipIf(!databaseUrl)('physical connections on PostgreSQL', () => {
     const fenced = await prisma.channelConnection.findMany({ where: scope, orderBy: { id: 'asc' } });
     const operating = fenced.find((r) => r.provider === (action.startsWith('primary') ? 'evolution' : 'waha'))!;
     expect(operating.lifecycleGeneration % 2).toBe(1);
-    expect(fenced.find((r) => r.provider === 'waha')).toMatchObject({ eligible: false, lastHealthyAt: null });
+    const primaryMaintenance = action.startsWith('primary');
+    expect(fenced.find(r => r.provider === 'waha')).toMatchObject(primaryMaintenance
+      ? { eligible: true, lastHealthyAt: expect.any(Date) } : { eligible: false, lastHealthyAt: null });
     const observed = await service.refresh({ ...scope, connectionId: secondary.id });
-    expect(observed.channel.connections!.find((r) => r.provider === 'waha')?.eligible).toBe(false);
-    expect(await prisma.channelConnection.findMany({ where: scope, orderBy: { id: 'asc' } })).toEqual(fenced);
-    expect(provider.getMe).toHaveBeenCalledTimes(1);
+    expect(observed.channel.connections!.find(r => r.provider === 'waha')?.eligible).toBe(primaryMaintenance);
+    const afterProbe = await prisma.channelConnection.findMany({ where: scope, orderBy: { id: 'asc' } });
+    if (primaryMaintenance) {
+      // A probe of the independent WAHA may progress, but can neither complete
+      // nor modify the primary's active lifecycle token or verified identity.
+      expect(afterProbe.find(r => r.provider === 'evolution')).toEqual(fenced.find(r => r.provider === 'evolution'));
+      expect(afterProbe.find(r => r.provider === 'waha')).toMatchObject({ eligible: true, verifiedPhoneNumber: '5547999990000' });
+    } else expect(afterProbe).toEqual(fenced);
+    expect(provider.getMe).toHaveBeenCalledTimes(primaryMaintenance ? 2 : 1);
     release(action === 'fresh-qr' ? 'waha-qr' : action === 'primary-qr' ? { instanceName: created.providerKey, qrCode: 'evo-qr' } : undefined);
     await pending;
     expect((await prisma.channelConnection.findUniqueOrThrow({ where: { id: operating.id } })).lifecycleGeneration % 2).toBe(0);

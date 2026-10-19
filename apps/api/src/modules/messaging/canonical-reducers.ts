@@ -462,5 +462,5 @@ export function createCanonicalReducers({ digest, lockAndScope, resolveActionTar
     result.outcome = 'enriched'; result.changes.push('snapshot_reconciled');
     return result;
   }
-  return { reduceAction, recoverForMessage, recoverPendingInTransaction, reconciliationFrontierInTransaction, reconcileRevisionInTransaction, reconcileSnapshotInTransaction };
+  return { reduceAction, recoverForMessage, unfinishedContent, recoverPendingInTransaction, reconciliationFrontierInTransaction, reconcileRevisionInTransaction, reconcileSnapshotInTransaction };
 }

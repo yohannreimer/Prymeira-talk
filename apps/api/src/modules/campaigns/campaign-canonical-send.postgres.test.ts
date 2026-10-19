@@ -47,7 +47,7 @@ describe.skipIf(!safe).sequential('campaign identity through real canonical ingr
     const channel = await db.channel.create({ data: { workspaceId, provider: 'evolution', providerKey: randomUUID(), status: 'connected', redundancyEnabled: true } });
     const connection = await db.channelConnection.create({ data: { workspaceId, channelId: channel.id, provider,
       sessionName: channel.providerKey, status: 'connected', health: 'healthy', eligible: true, verifiedPhoneNumber: '15550001111', lastHealthyAt: new Date() } });
-    if (provider === 'waha') await db.channelConnection.create({ data: { workspaceId, channelId: channel.id, provider: 'evolution', sessionName: randomUUID(), verifiedPhoneNumber: '15550001111' } });
+    if (provider === 'waha') await db.channelConnection.create({ data: { workspaceId, channelId: channel.id, provider: 'evolution', sessionName: channel.providerKey, verifiedPhoneNumber: '15550001111' } });
     await db.channel.update({ where: { id: channel.id }, data: { activeConnectionId: connection.id } });
     const contact = await db.contact.create({ data: { workspaceId, phone: '4730290282', name: 'Sardanha Refrigeração' } });
     const campaign = await db.campaign.create({ data: { workspaceId, channelId: channel.id, name: 'Teste', messageBody: 'Oi, aqui é o João.', audience: {}, status: 'scheduled', prospectingAgentId: agent.id,

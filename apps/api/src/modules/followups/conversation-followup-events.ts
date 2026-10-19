@@ -3,6 +3,7 @@ import {
   conversationFollowupPurposeSchema,
   conversationFollowupReasonCodeSchema,
   conversationFollowupSchema,
+  contextualFollowupDecisionSchema,
   type ConversationFollowupDto,
   type MessageType,
   type RealtimeEvent
@@ -203,6 +204,26 @@ function safePurpose(decision: unknown) {
 /** Only the fields meant for the card; the rest of the AI's answer stays in the decision log. */
 function safeAnalysis(decision: unknown) {
   if (!decision || typeof decision !== "object" || Array.isArray(decision)) return null;
+  const contextual = (decision as Record<string, unknown>).contextualFollowup;
+  if (contextual && typeof contextual === "object" && !Array.isArray(contextual)) {
+    const data = contextual as Record<string, unknown>;
+    const parsed = contextualFollowupDecisionSchema.safeParse(data.output);
+    if (!parsed.success || parsed.data.type === "unavailable") return null;
+    const output = parsed.data;
+    const analysis = data.analysis && typeof data.analysis === "object" ? data.analysis as Record<string, unknown> : {};
+    const items = Array.isArray(analysis.pendingItems) ? analysis.pendingItems as Array<{ subject?: unknown; evidence?: { messageId?: unknown } }> : [];
+    const pending = output.type === "customer_message" ? items.find(item => item.evidence?.messageId === output.evidenceMessageIds[0]) : null;
+    const timing = analysis.customerTiming && typeof analysis.customerTiming === "object" ? (analysis.customerTiming as Record<string, unknown>).notBefore : null;
+    return conversationFollowupAnalysisSchema.parse({
+      situation: output.type === "seller_reminder" ? "waiting_company" : output.type === "customer_message" ? "waiting_customer" : output.reason === "closed" ? "closed" : "no_pending",
+      pendingItem: output.type === "seller_reminder" ? output.summary : typeof pending?.subject === "string" ? pending.subject : null,
+      nextStep: output.type === "seller_reminder" ? "A empresa precisa agir; nenhuma mensagem automática ao cliente." : output.type === "customer_message" ? "Revisar a retomada contextual." : "Nenhuma mensagem ao cliente.",
+      timingNote: typeof timing === "string" ? `Cliente pediu aguardar até ${timing}.` : null,
+      rationale: output.type === "seller_reminder" ? "A pendência é da empresa, conforme as mensagens registradas." : output.type === "customer_message" ? "Rascunho revisado com evidências da conversa deste agente." : output.reason === "customer_timing" ? "Contato suspenso para respeitar a data pedida pelo cliente." : "A análise não autoriza nova mensagem.",
+      // This engine does not estimate a probability; the legacy DTO requires a number.
+      confidence: 0
+    });
+  }
   const brain = (decision as Record<string, unknown>).brain;
   if (!brain || typeof brain !== "object") return null;
   const { situation, pendingItem, nextStep, timingNote, rationale, confidence } = brain as Record<string, unknown>;
@@ -215,6 +236,12 @@ function safeActiveReason(reason: string | null | undefined) {
   if (parsed.success) return parsed.data;
 
   switch (reason) {
+    case "contextual_review":
+      return "jev_human_review";
+    case "contextual_context_limit":
+      return "conversation_context_limit";
+    case "contextual_review_failed":
+      return "reply_audit_unavailable";
     case "followup_agent_unavailable":
       return "agent_unavailable";
     case "followup_conversation_unavailable":

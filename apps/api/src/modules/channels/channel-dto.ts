@@ -4,6 +4,7 @@ type ChannelRecord = Pick<ChannelDto, 'id' | 'workspaceId' | 'provider' | 'provi
   createdAt: Date | string;
   updatedAt: Date | string;
   archivedAt?: Date | string | null;
+  verifiedMessagingPhoneNumber?: string | null;
 };
 
 /** Legacy logical contract, shared without a service-to-service import cycle. */
@@ -13,7 +14,7 @@ export function toChannelDto(record: ChannelRecord): ChannelDto {
     workspaceId: record.workspaceId,
     provider: record.provider,
     providerKey: record.providerKey,
-    phoneNumber: record.phoneNumber,
+    phoneNumber: record.verifiedMessagingPhoneNumber ?? record.phoneNumber,
     displayName: record.displayName,
     status: record.status,
     archivedAt: record.archivedAt ? (record.archivedAt instanceof Date ? record.archivedAt.toISOString() : record.archivedAt) : null,
