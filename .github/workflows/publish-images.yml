@@ -36,8 +36,6 @@ jobs:
       TALK_TEST_DATABASE_ADMIN_URL: postgresql://talk_test:talk_test@127.0.0.1:55439/postgres
       REHEARSAL_DATABASE_URL: postgresql://talk_test:talk_test@127.0.0.1:55439/talk_rehearsal
       INGRESS_TEST_AMQP_URL: amqp://talk_test:talk_test@127.0.0.1:56739/talk_test
-      TALK_COMPARE_PG_ID: ${{ job.services.postgres.id }}
-      TALK_COMPARE_RABBIT_ID: ${{ job.services.rabbitmq.id }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -81,6 +79,9 @@ jobs:
           fs.writeFileSync('validation-artifacts/images.json',JSON.stringify(images,null,2));
           JS
       - name: Execute fixed twelve slots, preserving slow and failed outcomes
+        env:
+          TALK_COMPARE_PG_ID: ${{ job.services.postgres.id }}
+          TALK_COMPARE_RABBIT_ID: ${{ job.services.rabbitmq.id }}
         run: node .github/comparison/run.mjs
       - name: Stop only comparison-labelled containers
         if: always()
