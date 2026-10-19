@@ -54,7 +54,7 @@ jobs:
           python3 -m pip install playwright==1.64.0
           python3 -m playwright install --with-deps chromium
       - name: Verify owned comparison tooling
-        run: node --test .github/comparison/isolation.test.mjs .github/comparison/deadline.test.mjs
+        run: node --test .github/comparison/isolation.test.mjs .github/comparison/deadline.test.mjs .github/ui-comparison/analyze.test.mjs
       - name: Verify composed current API candidate
         run: |
           pnpm --filter @prymeira-talk/api typecheck
@@ -82,16 +82,20 @@ jobs:
             docker build --platform linux/amd64 --label "org.opencontainers.image.revision=$sha" -f ".validation/variants/$sha/apps/api/Dockerfile" -t "talk-compare-${name,,}" ".validation/variants/$sha"
             docker image inspect "talk-compare-${name,,}" --format '{{json .}}' > "validation-artifacts/image-$name.json"
           done
-          docker build --platform linux/amd64 -f ".validation/variants/1d7aa19ed9c4a48532937408b9ece782c53d5cd6/apps/web/Dockerfile" -t talk-compare-web ".validation/variants/1d7aa19ed9c4a48532937408b9ece782c53d5cd6"
-          docker image inspect talk-compare-web --format '{{json .}}' > validation-artifacts/image-web.json
+          for pair in A_web:1d7aa19ed9c4a48532937408b9ece782c53d5cd6 N_web:f2ff10305183d0a866d2564067f82f520dc7258b; do
+            name=${pair%%:*}
+            sha=${pair#*:}
+            docker build --platform linux/amd64 -f ".validation/variants/$sha/apps/web/Dockerfile" -t "talk-compare-${name,,}" ".validation/variants/$sha"
+            docker image inspect "talk-compare-${name,,}" --format '{{json .}}' > "validation-artifacts/image-$name.json"
+          done
           node --input-type=module <<'JS'
           import fs from 'node:fs';
-          const images=Object.fromEntries(['A_ingress','A_worker','A_api','N','web'].map(n=>[n,JSON.parse(fs.readFileSync(`validation-artifacts/image-${n}.json`)).Id]));
+          const images=Object.fromEntries(['A_ingress','A_worker','A_api','N','A_web','N_web'].map(n=>[n,JSON.parse(fs.readFileSync(`validation-artifacts/image-${n}.json`)).Id]));
           fs.writeFileSync('validation-artifacts/images.json',JSON.stringify(images,null,2));
           JS
-      - name: Pilot actual visible UI with current VPS and candidate
+      - name: Paired actual visible UI with current VPS and candidate
         env:
-          UI_COMPARISON_PILOT: true
+          UI_COMPARISON_PILOT: false
           TALK_COMPARE_PG_ID: ${{ job.services.postgres.id }}
           TALK_COMPARE_RABBIT_ID: ${{ job.services.rabbitmq.id }}
         run: node .github/ui-comparison/run.mjs

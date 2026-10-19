@@ -10,7 +10,7 @@
 
 ## Fixed comparison
 
-A: ingress 99f65ed, worker 51b1fdd, API c9d49c8, web 1d7aa19. N: messaging fixes composed with current API c9d49c8 (merge f2ff103), same web 1d7aa19 (web source unchanged in both parents).
+A: ingress 99f65ed, worker 51b1fdd, API c9d49c8, web 1d7aa19. N: messaging fixes composed with current API c9d49c8 (merge f2ff103), web rebuilt from N as well (apps/web unchanged; the additive contextual-followup export in packages/shared must also pass the actual frontend build).
 Limits: ingress 0.5 CPU/512 MiB; worker 0.75 CPU/768 MiB; API 2 CPU/2048 MiB; web 1 CPU/1024 MiB. These quotas do not reproduce physical 2-CPU VPS contention from unrelated services.
 
 - [ ] Record allowlisted live metadata and immutable source/image fingerprints; never copy credentials or customer content.
@@ -19,7 +19,7 @@ Limits: ingress 0.5 CPU/512 MiB; worker 0.75 CPU/768 MiB; API 2 CPU/2048 MiB; we
 - [ ] Add actual compiled ingress/worker/API/web lifecycle; production NODE_ENV and API auth plugin enabled, external Hub replaced by owned synthetic access fixture. Abort external browser requests. Providers are loopback fixtures; no messages are sent to WhatsApp.
 - [ ] Seed equal datasets: 20 synthetic conversations, 100 prior messages each, redundant Evolution/WAHA on one synthetic number, background aliases. No real pending state.
 - [ ] First run a small pilot to validate rendered UI, actual websocket updates, and observation coverage. Preserve pilot failures; do not treat them as product performance results.
-- [ ] Freeze profiles before paired runs: sustained 1 unique message/s for 60 seconds, busy 4/s for 60 seconds; two provider envelopes per identity, 25% addressed to the open chat, deterministic short/long Unicode text mix. These are plausible test profiles, not a measured production traffic distribution. Recovery stays enabled against empty synthetic history. Execute each profile A,N,N,A with fresh DB/broker namespace per slot.
+- [ ] Freeze profiles before paired runs: sustained 1 unique message/s for 60 seconds, busy 4/s for 60 seconds; two provider envelopes per identity (WAHA copy delayed by a deterministic assumed 40–159 ms), 25% addressed to the open chat, deterministic short/long Unicode text mix. These are plausible test profiles, not a measured production traffic distribution. Recovery stays enabled against empty synthetic history. Execute each profile A,N,N,A with fresh DB/broker namespace per slot.
 - [ ] Preserve offer timestamps/statuses, durable/apply oracles, RT effect state, WS/DOM/viewport timestamps, missing/duplicates, resource samples and screenshots. Report p50/p95/max only alongside denominators and misses; no silent exclusion of rejected offers.
 - [ ] Download and inspect actual screenshots; analyze paired results and separate server latency from browser latency. Verify checksums and deliver local evidence/report. No deploy proposal until evidence is reviewed.
 

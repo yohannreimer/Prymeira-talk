@@ -15,7 +15,7 @@ const external=http.createServer((req,res)=>{const url=new URL(req.url,'http://1
  if(req.method==='GET'&&url.pathname.startsWith('/api/ui-waha/')){res.setHeader('x-talk-recovery-pagination','1');res.setHeader('x-talk-recovery-raw-digest',createHash('sha256').update('[]').digest('hex'));res.setHeader('x-talk-recovery-raw-count','0');res.setHeader('x-talk-recovery-next-offset','0');res.setHeader('x-talk-recovery-exhausted','true');return res.end('[]');}
  res.statusCode=403;res.end(JSON.stringify({error:'unconfigured synthetic boundary'}));});
 function start(role,entry,env){const image=config.images[role];if(!/^sha256:[a-f0-9]{64}$/.test(image))throw Error('Immutable image required');const quotas={ingress:['0.5','512m'],worker:['0.75','768m'],api:['2','2048m']};const args=['run','--rm','--pull','never','--name',label+'-'+role,'--label','talk.compare='+label,'--label','talk.compare.role='+role,'--network','host','--read-only','--tmpfs','/tmp:rw,size=128m','--cap-drop=ALL','--security-opt=no-new-privileges','--user',`${process.getuid()}:${process.getgid()}`,'--cpus',quotas[role][0],'--memory',quotas[role][1],'--memory-swap',quotas[role][1],'--mount',`type=bind,src=${root},dst=${root}`];for(const[k,v]of Object.entries(env))args.push('--env',k+'='+v);args.push('--entrypoint','node',image,entry);const child=cp.spawn('docker',args,{stdio:['ignore','pipe','pipe']});children.push(child);child.stdout.on('data',s=>logs.push('['+role+'] '+s));child.stderr.on('data',s=>logs.push('['+role+'] '+s));return child;}
-let browser;
+let browser,pollPromise,polling=false;
 try{
  await new Promise(r=>external.listen(18481,'127.0.0.1',r));
  const channel=await db.channel.create({data:{workspaceId,provider:'evolution',providerKey:instance,displayName:'Canal sintético',status:'connected',historyImportStatus:'completed',verifiedMessagingPhoneNumber:'15550008888'}});
@@ -37,27 +37,30 @@ try{
  const browserConfig=path.join(output,'browser-config.json');save('browser-config.json',{url:'http://127.0.0.1:18476/?conversation='+conversations[0].id,output});
  const browserLog=fs.openSync(path.join(output,'browser-process.log'),'w');browser=cp.spawn('python3',['.github/ui-comparison/browser.py',browserConfig],{stdio:['ignore',browserLog,browserLog]});
  await until(()=>{if(browser.exitCode!==null)throw Error('Browser failed');return fs.existsSync(path.join(output,'ready.json'));},90000);
- const rate=config.profile==='busy'?4:1,duration=config.pilot?8:60,count=duration*rate;const offers=[],observations=[];const began=Date.now();let polling=true;
- const poll=(async()=>{while(polling){const at=Date.now(),rows=await db.message.findMany({where:{workspaceId,body:{startsWith:'TALKUI_'}},select:{id:true,body:true,conversationId:true,createdAt:true,ingestedAt:true}});observations.push({at,rows});await sleep(100);}})();
+ const rate=config.profile==='busy'?4:1,duration=config.pilot?8:60,count=duration*rate;const offers=[],observations=[];const began=Date.now();polling=true;
+ const seenDb=new Set();pollPromise=(async()=>{while(polling){const at=Date.now(),rows=await db.message.findMany({where:{workspaceId,body:{startsWith:'TALKUI_'},...(seenDb.size?{id:{notIn:[...seenDb]}}:{})},select:{id:true,body:true,conversationId:true,createdAt:true,ingestedAt:true}});for(const row of rows)seenDb.add(row.id);if(rows.length)observations.push({at:Date.now(),queryStartedAt:at,rows});await sleep(100);}})();
  const tasks=[];
  for(let i=0;i<count;i++){
   const due=began+i*1000/rate;while(Date.now()<due)await sleep(due-Date.now());
-  const target=i%4===0,index=target?0:1+(i%19),phone=String(15551000000+index),marker='TALKUI_'+String(i).padStart(5,'0'),text=marker+' '+(i%10===3?'Consulta sintética detalhada sobre disponibilidade, prazo e condições. '.repeat(10):'Olá! Gostaria de confirmar a disponibilidade 😊');const rawId='UI-SYNTH-'+String(i).padStart(5,'0');
+  const target=i%4===0,index=target?0:1+(i%19),phone=String(15551000000+index),marker='TALKUI_'+String(i).padStart(5,'0'),text=marker+' '+(i%10===0?'Consulta sintética detalhada sobre disponibilidade, prazo e condições. '.repeat(10):'Olá! Gostaria de confirmar a disponibilidade 😊');const rawId='UI-SYNTH-'+String(i).padStart(5,'0');
   for(const provider of ['evolution','waha']){
    const body=provider==='evolution'?{event:'MESSAGES_UPSERT',instance,data:{key:{id:rawId,remoteJid:phone+'@s.whatsapp.net',fromMe:false},message:{conversation:text},messageTimestamp:Math.floor(Date.now()/1000),pushName:`UI Contato ${String(index).padStart(2,'0')}`}}:{event:'message.any',session,payload:{id:`false_${phone}@c.us_${rawId}`,from:phone+'@c.us',fromMe:false,body:text,timestamp:Math.floor(Date.now()/1000),_data:{Info:{PushName:`UI Contato ${String(index).padStart(2,'0')}`}}}};
    const raw=JSON.stringify(body),headers={'content-type':'application/json',...(provider==='evolution'?{'x-prymeira-talk-secret':secret}:{'x-webhook-hmac-algorithm':'sha512','x-webhook-hmac':createHmac('sha512',wahaSecret).update(raw).digest('hex')})};
-   tasks.push((async()=>{const at=Date.now();let status=0,data={},error=null;try{const r=await fetch(`http://127.0.0.1:18411/webhooks/${provider}/${workspaceId}`,{method:'POST',headers,body:raw,signal:AbortSignal.timeout(20000)});status=r.status;data=await r.json();}catch(e){error=e.name;}offers.push({i,marker,target,provider,rawId,at,endedAt:Date.now(),status,data,error,scheduledAt:due});})());
+   tasks.push((async()=>{const scheduledAt=due+(provider==='waha'?40+(i*37)%120:0);while(Date.now()<scheduledAt)await sleep(scheduledAt-Date.now());const at=Date.now();let status=0,data={},error=null;try{const r=await fetch(`http://127.0.0.1:18411/webhooks/${provider}/${workspaceId}`,{method:'POST',headers,body:raw,signal:AbortSignal.timeout(20000)});status=r.status;data=await r.json();}catch(e){error=e.name;}offers.push({i,marker,target,provider,rawId,digest:createHash('sha256').update(raw).digest('hex'),at,endedAt:Date.now(),status,data,error,scheduledAt});})());
   }
  }
  await Promise.all(tasks);save('offers.json',{began,count,rate,duration,offeredUntil:Date.now(),offers});
  const drain=Date.now()+150000;let complete=false;
  while(Date.now()<drain){const live=JSON.parse(fs.readFileSync(path.join(output,'browser-live.json'),'utf8'));const seen=new Set(live.times.filter(t=>t.phase==='visibleAfterTwoFrames').map(t=>t.marker));const admitted=new Set(offers.filter(o=>o.target&&o.status===202).map(o=>o.marker));const totalAdmitted=new Set(offers.filter(o=>o.status===202).map(o=>o.marker));const applied=await db.message.count({where:{workspaceId,body:{startsWith:'TALKUI_'}}});if(admitted.size>0&&[...admitted].every(x=>seen.has(x))&&applied>=totalAdmitted.size){complete=true;break;}await sleep(250);}
- polling=false;await poll;save('database-observations.json',observations);save('final-oracles.json',{complete,identities:await db.canonicalMessageIdentity.findMany({where:{workspaceId,rawId:{startsWith:'UI-SYNTH-'}}}),messages:await db.message.findMany({where:{workspaceId,body:{startsWith:'TALKUI_'}}}),effects:await db.ingressEffect.findMany({where:{workspaceId}}),applications:await db.ingressApplication.findMany({where:{workspaceId}}),receipts:await db.ingressReceipt.findMany({where:{workspaceId},select:{id:true,authenticatedDigest:true,createdAt:true}})});
+ polling=false;await pollPromise;save('database-observations.json',observations);save('final-oracles.json',{complete,identities:await db.canonicalMessageIdentity.findMany({where:{workspaceId,rawId:{startsWith:'UI-SYNTH-'}}}),messages:await db.message.findMany({where:{workspaceId,body:{startsWith:'TALKUI_'}}}),effects:await db.ingressEffect.findMany({where:{workspaceId}}),applications:await db.ingressApplication.findMany({where:{workspaceId}}),receipts:await db.ingressReceipt.findMany({where:{workspaceId},select:{id:true,authenticatedDigest:true,createdAt:true}})});
  fs.writeFileSync(path.join(output,'stop-browser'),'');await until(()=>browser.exitCode!==null,15000);if(browser.exitCode!==0)throw Error('Browser observation failed');
  save('slot-result.json',{complete,endedAt:Date.now(),count,profile:config.profile});
 }finally{
- fs.writeFileSync(path.join(output,'stop-browser'),'');if(browser&&browser.exitCode===null)browser.kill('SIGTERM');
- save('boundary.json',boundary);fs.writeFileSync(path.join(output,'runtime.log'),logs.join(''));await db.$disconnect();await new Promise(r=>external.close(r));
+ polling=false;if(pollPromise)await pollPromise.catch(()=>undefined);
+ fs.writeFileSync(path.join(output,'stop-browser'),'');
+ if(browser&&browser.exitCode===null)await until(()=>browser.exitCode!==null,10000).catch(()=>browser.kill('SIGTERM'));
  const owned=cp.execFileSync('docker',['ps','-aq','--filter','label=talk.compare='+label],{encoding:'utf8'}).trim().split('\n').filter(Boolean);if(owned.length)cp.execFileSync('docker',['rm','-f',...owned],{stdio:'ignore'});
  for(const child of children)if(child.exitCode===null)child.kill('SIGTERM');
+ await db.$disconnect();external.closeAllConnections();await new Promise(r=>external.close(r));
+ save('boundary.json',boundary);fs.writeFileSync(path.join(output,'runtime.log'),logs.join(''));
 }

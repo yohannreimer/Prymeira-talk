@@ -3,7 +3,8 @@ import json, pathlib, sys, time, traceback
 from urllib.parse import urlsplit
 from playwright.sync_api import sync_playwright
 config=json.loads(pathlib.Path(sys.argv[1]).read_text()); out=pathlib.Path(config['output'])
-def save(name,obj): (out/name).write_text(json.dumps(obj,ensure_ascii=False,indent=2))
+def save(name,obj):
+ temporary=out/(name+'.tmp'); temporary.write_text(json.dumps(obj,ensure_ascii=False,indent=2)); temporary.replace(out/name)
 errors=[]; requests=[]; frames=[]; clocks=[]
 try:
  with sync_playwright() as p:
@@ -28,9 +29,12 @@ try:
    ws.on('close',lambda:frames.append({'event':'close','at':time.time()*1000}))
   page.on('websocket',websocket)
   page.add_init_script("""(() => {
-    window.__uiTimes = []; window.__uiClock = () => performance.timeOrigin + performance.now();
+    window.__uiTimes = []; window.__uiFrames = []; window.__uiDuplicates = {}; window.__uiClock = () => performance.timeOrigin + performance.now();
+    const NativeWebSocket=window.WebSocket;
+    window.WebSocket=new Proxy(NativeWebSocket,{construct(Target,args){const socket=Reflect.construct(Target,args);socket.addEventListener('message',event=>{const markers=String(event.data).match(/TALKUI_[0-9]{5}/g);if(markers)window.__uiFrames.push({event:'received',at:__uiClock(),markers:[...new Set(markers)]});});return socket;}});
     const mounted = new Map(), visible = new Set(); let armed = false;
     function scan() {
+      const counts={}; for (const node of document.querySelectorAll('[data-message-id]')) { const m=node.textContent.match(/TALKUI_[0-9]{5}/)?.[0];if(m)counts[m]=(counts[m]??0)+1; } for(const [m,n]of Object.entries(counts))window.__uiDuplicates[m]=Math.max(window.__uiDuplicates[m]??0,n);
       for (const node of document.querySelectorAll('[data-message-id]')) {
         const marker = node.textContent.match(/TALKUI_[0-9]{5}/)?.[0]; if (!marker) continue;
         if (!mounted.has(marker)) { mounted.set(marker, __uiClock()); window.__uiTimes.push({marker,phase:'mounted',at:__uiClock(),id:node.dataset.messageId}); }
@@ -74,7 +78,7 @@ try:
   for _ in range(6):
    start=time.time()*1000;bc=page.evaluate('performance.timeOrigin+performance.now()');end=time.time()*1000
    clocks.append({'start':start,'browser':bc,'end':end,'offset':bc-(start+end)/2,'uncertainty':(end-start)/2})
-  save('browser.json',{'times':page.evaluate('window.__uiTimes'),'frames':frames,'errors':errors,'requests':requests,'clocks':clocks,'browser':browser.version,'viewport':page.viewport_size,'visibility':page.evaluate('document.visibilityState')})
+  save('browser.json',{'times':page.evaluate('window.__uiTimes'),'frames':page.evaluate('window.__uiFrames'),'protocolFrames':frames,'maxSimultaneousBubbles':page.evaluate('window.__uiDuplicates'),'errors':errors,'requests':requests,'clocks':clocks,'browser':browser.version,'viewport':page.viewport_size,'visibility':page.evaluate('document.visibilityState')})
   page.screenshot(path=str(out/'final.png'))
   (out/'final.html').write_text(page.content())
   browser.close()
