@@ -53,12 +53,13 @@ jobs:
         run: |
           python3 -m pip install playwright==1.64.0
           python3 -m playwright install --with-deps chromium
+          python3 .github/ui-comparison/observer-test.py
       - name: Verify owned comparison tooling
         run: node --test .github/comparison/isolation.test.mjs .github/comparison/deadline.test.mjs .github/ui-comparison/analyze.test.mjs
       - name: Verify composed current API candidate
         run: |
           pnpm --filter @prymeira-talk/api typecheck
-          pnpm --filter @prymeira-talk/api exec vitest run src/modules/channels/outbound-router.test.ts src/modules/followups/contextual-followup-policy.test.ts src/modules/followups/contextual-followup-engine.test.ts src/modules/followups/contextual-followup-context.test.ts src/modules/followups/contextual-followup-profiles.test.ts src/modules/harness/agentes/followup/followup.test.ts --maxWorkers=1 --fileParallelism=false
+          pnpm --filter @prymeira-talk/api exec vitest run src/modules/channels/outbound-router.safety.test.ts src/modules/channels/outbound-router.destination.test.ts src/modules/channels/outbound-router.read.test.ts src/modules/channels/outbound-routing.test.ts src/modules/followups/contextual-followup-policy.test.ts src/modules/followups/contextual-followup-engine.test.ts src/modules/followups/contextual-followup-context.test.ts src/modules/followups/contextual-followup-profiles.test.ts src/modules/harness/agentes/followup/followup.test.ts --maxWorkers=1 --fileParallelism=false
           pnpm --filter @prymeira-talk/api harness:replay-contextual-followups
       - name: Fetch immutable source revisions, without production access
         run: |

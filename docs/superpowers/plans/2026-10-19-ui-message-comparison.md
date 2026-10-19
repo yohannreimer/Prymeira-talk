@@ -11,6 +11,8 @@
 ## Fixed comparison
 
 A: ingress 99f65ed, worker 51b1fdd, API c9d49c8, web 1d7aa19. N: messaging fixes composed with current API c9d49c8 (merge f2ff103), web rebuilt from N as well (apps/web unchanged; the additive contextual-followup export in packages/shared must also pass the actual frontend build).
+API rate limit: 300 requests per minute, observed in the live service; the earlier 3000/min control is retained separately and is not the final matched configuration.
+
 Limits: ingress 0.5 CPU/512 MiB; worker 0.75 CPU/768 MiB; API 2 CPU/2048 MiB; web 1 CPU/1024 MiB. These quotas do not reproduce physical 2-CPU VPS contention from unrelated services.
 
 - [ ] Record allowlisted live metadata and immutable source/image fingerprints; never copy credentials or customer content.

@@ -17,7 +17,7 @@ try:
    else: r.continue_()
   page.route('**/*',route)
   page.on('pageerror',lambda e:errors.append(str(e)))
-  page.on('response',lambda r:requests.append({'url':r.url,'status':r.status}) if r.status>=400 else None)
+  page.on('response',lambda r:requests.append({'url':r.url,'status':r.status,'at':time.time()*1000}))
   def websocket(ws):
    frames.append({'event':'open','url':ws.url,'at':time.time()*1000})
    def receive(payload):
@@ -28,35 +28,7 @@ try:
    ws.on('framereceived',receive)
    ws.on('close',lambda:frames.append({'event':'close','at':time.time()*1000}))
   page.on('websocket',websocket)
-  page.add_init_script("""(() => {
-    window.__uiTimes = []; window.__uiFrames = []; window.__uiDuplicates = {}; window.__uiClock = () => performance.timeOrigin + performance.now();
-    const NativeWebSocket=window.WebSocket;
-    window.WebSocket=new Proxy(NativeWebSocket,{construct(Target,args){const socket=Reflect.construct(Target,args);socket.addEventListener('message',event=>{const markers=String(event.data).match(/TALKUI_[0-9]{5}/g);if(markers)window.__uiFrames.push({event:'received',at:__uiClock(),markers:[...new Set(markers)]});});return socket;}});
-    const mounted = new Map(), visible = new Set(); let armed = false;
-    function scan() {
-      const counts={}; for (const node of document.querySelectorAll('[data-message-id]')) { const m=node.textContent.match(/TALKUI_[0-9]{5}/)?.[0];if(m)counts[m]=(counts[m]??0)+1; } for(const [m,n]of Object.entries(counts))window.__uiDuplicates[m]=Math.max(window.__uiDuplicates[m]??0,n);
-      for (const node of document.querySelectorAll('[data-message-id]')) {
-        const marker = node.textContent.match(/TALKUI_[0-9]{5}/)?.[0]; if (!marker) continue;
-        if (!mounted.has(marker)) { mounted.set(marker, __uiClock()); window.__uiTimes.push({marker,phase:'mounted',at:__uiClock(),id:node.dataset.messageId}); }
-        if (visible.has(marker)) continue;
-        const rect = node.getBoundingClientRect(), style = getComputedStyle(node);
-        // Require the message marker's text range in viewport and unoccluded, not merely a DOM node.
-        const walker=document.createTreeWalker(node,NodeFilter.SHOW_TEXT); let text;
-        while(text=walker.nextNode()) { const index=text.textContent.indexOf(marker); if(index<0)continue;
-          const range=document.createRange(); range.setStart(text,index); range.setEnd(text,index+marker.length);
-          const r=range.getBoundingClientRect(), x=(r.left+r.right)/2,y=(r.top+r.bottom)/2;
-          const top=document.elementFromPoint(x,y);
-          if(r.width>0 && r.top>=0 && r.bottom<=innerHeight && r.left>=0 && r.right<=innerWidth && style.visibility==='visible' && style.display!=='none' && Number(style.opacity)>0 && top && node.contains(top)) {
-            visible.add(marker); window.__uiTimes.push({marker,phase:'visibleAfterTwoFrames',at:__uiClock(),id:node.dataset.messageId,rect:{x:r.x,y:r.y,width:r.width,height:r.height},visibility:document.visibilityState});
-          }
-        }
-      }
-    }
-    // Passive observer: never mutates UI, scrolls, changes app caches or injects messages.
-    function schedule() { if(armed)return;armed=true;requestAnimationFrame(()=>requestAnimationFrame(()=>{armed=false;scan();})); }
-    new MutationObserver(schedule).observe(document,{subtree:true,childList:true,characterData:true,attributes:true,attributeFilter:['class','style']});
-    addEventListener('scroll',schedule,true); addEventListener('resize',schedule); setInterval(schedule,100);
-  })();""")
+  page.add_init_script(path=pathlib.Path(__file__).with_name('observer.js'))
   page.goto(config['url'],wait_until='networkidle',timeout=60000)
   page.screenshot(path=str(out/'recon.png'))
   (out/'recon.html').write_text(page.content())
@@ -78,7 +50,7 @@ try:
   for _ in range(6):
    start=time.time()*1000;bc=page.evaluate('performance.timeOrigin+performance.now()');end=time.time()*1000
    clocks.append({'start':start,'browser':bc,'end':end,'offset':bc-(start+end)/2,'uncertainty':(end-start)/2})
-  save('browser.json',{'times':page.evaluate('window.__uiTimes'),'frames':page.evaluate('window.__uiFrames'),'protocolFrames':frames,'maxSimultaneousBubbles':page.evaluate('window.__uiDuplicates'),'errors':errors,'requests':requests,'clocks':clocks,'browser':browser.version,'viewport':page.viewport_size,'visibility':page.evaluate('document.visibilityState')})
+  save('browser.json',{'times':page.evaluate('window.__uiTimes'),'frames':page.evaluate('window.__uiFrames'),'protocolFrames':frames,'maxSimultaneousBubbles':page.evaluate('window.__uiDuplicates'),'errors':errors,'requests':requests,'clocks':clocks,'browser':browser.version,'viewport':page.viewport_size,'visibility':page.evaluate('document.visibilityState'),'scrollContainers':page.evaluate("Array.from(document.querySelectorAll('*')).filter(e=>e.clientHeight>0 && e.scrollHeight>e.clientHeight+10).map(e=>({tag:e.tagName,className:e.className,scrollTop:e.scrollTop,scrollHeight:e.scrollHeight,clientHeight:e.clientHeight}))")})
   page.screenshot(path=str(out/'final.png'))
   (out/'final.html').write_text(page.content())
   browser.close()
