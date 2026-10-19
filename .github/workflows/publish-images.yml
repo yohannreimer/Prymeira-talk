@@ -212,12 +212,15 @@ jobs:
           wait "$sampler" 2>/dev/null || true
           exit "$status"
       - name: Build and execute pinned real GOWS adapter contract without provider sessions
+        if: ${{ !cancelled() }}
         run: |
           set -eu
           docker build --platform linux/amd64 -f infra/waha-recovery/Dockerfile -t talk-qualification-waha .
           docker image inspect talk-qualification-waha --format '{{json .}}' > validation-artifacts/waha-image.json
           docker run --rm --network none --entrypoint node talk-qualification-waha /app/talk-recovery-smoke.cjs > validation-artifacts/waha-contract.log 2>&1
       - name: Pull immutable Evolution image and inspect offline runtime
+        id: evolution_pull
+        if: ${{ !cancelled() }}
         run: |
           set -eu
           image=evoapicloud/evolution-api@sha256:b4a18ed5213d34a0845f841ba9afae1b67940457d021b42af863eae67dc2cfbd
@@ -225,6 +228,7 @@ jobs:
           docker image inspect "$image" --format '{{json .}}' > validation-artifacts/evolution-image.json
           docker run --rm --network none --entrypoint node "$image" -e 'const p=require("./package.json");console.log(JSON.stringify({version:p.version,node:process.version,arch:process.arch}));if(process.arch!=="x64")process.exit(1)' > validation-artifacts/evolution-runtime.log
       - name: Execute pinned Evolution compiled readers against real isolated PostgreSQL
+        if: ${{ !cancelled() && steps.evolution_pull.outcome == 'success' }}
         run: |
           set -eu
           image=evoapicloud/evolution-api@sha256:b4a18ed5213d34a0845f841ba9afae1b67940457d021b42af863eae67dc2cfbd
