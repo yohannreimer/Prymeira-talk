@@ -65,9 +65,14 @@ test('qualification gate rejects reused SHA artifacts, working-tree evidence and
   const context = { kind: 'load', sha: 'a'.repeat(40), sourceState: 'clean-checkout', runId: 'this-run', startedAt: '2026-10-19T12:00:00Z', completedAt: '2026-10-19T12:01:00Z' };
   const metrics = { canonicalMessages: 80, dualProviderEnvelopes: 160, oracleIdentities: 83, canonicalAddresses: 2930, durationMs: 10_000, trafficDurationMs: 10_000,
     ingressP95Ms: 100, applicationP95Ms: 200, overlapEnvelopes: 20, overlapApplicationP95Ms: 250, restartDuplicatePreserved: true,
-    recovery: { connections: 3, autonomousHistoricalEffects: 0, unexpectedFailures: 0, firstTurnAdvancedConnections: 0, firstTurnClaimedBackoffConnections: 2, untouchedConnectionsAfterContention: 1, observedContentionYields: 3, backoffAndResumeProved: true, sweepMs: 1200, requestsPerConnection: [4,4,4] }, resources: { sampleCount: 40, durationMs: 9750, averageCpuPercent: 20, cpuWindowSeconds: 2, maximumRssKiB: 100_000 } };
+    recovery: { connections: 3, autonomousHistoricalEffects: 0, unexpectedFailures: 0, firstTurnAdvancedConnections: 0, firstTurnClaimedBackoffConnections: 2, untouchedConnectionsAfterContention: 1, observedContentionYields: 3, progressOrResumeProved: true, laterTurnRequired: true, laterTurnProgressProved: true, fixtureOnlyRescheduledNextAttempt: true, sweepMs: 1200, requestsPerConnection: [4,4,4] }, resources: { sampleCount: 40, durationMs: 9750, averageCpuPercent: 20, cpuWindowSeconds: 2, maximumRssKiB: 100_000 } };
   const report = { schemaVersion: 1, kind: 'load', sha: context.sha, sourceState: context.sourceState, runId: context.runId, startedAt: context.startedAt, completedAt: context.completedAt, passed: true, testsExecuted: 1, metrics };
   assert.equal(validateQualificationEvidence(report, context), report);
+  const advanced = { ...report, metrics: { ...metrics, recovery: { ...metrics.recovery, firstTurnAdvancedConnections: 3, firstTurnClaimedBackoffConnections: 0, untouchedConnectionsAfterContention: 0,
+    observedContentionYields: 0, laterTurnRequired: false, laterTurnProgressProved: null, fixtureOnlyRescheduledNextAttempt: false } } };
+  assert.equal(validateQualificationEvidence(advanced, context), advanced);
+  assert.throws(() => validateQualificationEvidence({ ...advanced, metrics: { ...advanced.metrics, recovery: { ...advanced.metrics.recovery, laterTurnProgressProved: true } } }, context));
+  assert.throws(() => validateQualificationEvidence({ ...report, metrics: { ...metrics, recovery: { ...metrics.recovery, laterTurnProgressProved: null } } }, context));
   for (const bad of [null, { ...report, sha: 'b'.repeat(40) }, { ...report, runId: 'previous-run' }, { ...report, sourceState: 'working-tree' },
     { ...report, testsExecuted: 0 }, { ...report, passed: false }, { ...report, startedAt: '2026-10-18T12:00:00Z' }, { ...report, completedAt: 'invalid' }, { ...report, metrics: {} },
     { ...report, metrics: { ...metrics, resources: { maximumRssKiB: 100_000 } } }, { ...report, metrics: { ...metrics, oracleIdentities: 82 } }, { ...report, metrics: { ...metrics, applicationP95Ms: 2001 } },

@@ -1,8 +1,8 @@
-import { createHmac, randomUUID } from 'node:crypto';
+import { createHash, createHmac, randomUUID } from 'node:crypto';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
-import { mkdtemp, realpath, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import http from 'node:http';
-import { tmpdir } from 'node:os';
+import { availableParallelism, freemem, loadavg, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PrismaClient } from '@prisma/client';
 import amqp from 'amqplib';
@@ -116,6 +116,8 @@ describe.skipIf(!databaseUrl || !brokerUrl)('ingress in the production stage (re
     expect(kinds).toEqual(expect.arrayContaining(['realtime.message', 'realtime.conversation', 'assistant.message', 'agent.debounce', 'followup.activity', 'prospecting.inbound']));
   });
   it('qualifies 80 canonical / 160 dual-provider envelopes in 10 seconds with concurrent bounded recovery', async () => {
+    const diagnosticControl = process.env.TALK_LOAD_DIAGNOSTIC_RECOVERY === 'disabled';
+    if (diagnosticControl && process.env.TALK_VALIDATION_RUN_ID) throw new Error('Recovery-disabled diagnostic control cannot run as qualification');
     const startedAt = new Date().toISOString(), prefix = `load-${randomUUID()}-`;
     const addresses = Array.from({ length: 2930 }, () => ({ id: randomUUID(), workspaceId, channelId }));
     await db.canonicalAddress.createMany({ data: addresses });
@@ -145,30 +147,43 @@ describe.skipIf(!databaseUrl || !brokerUrl)('ingress in the production stage (re
     await new Promise<void>(resolve => provider.listen(0, '127.0.0.1', resolve));
     await db.channelConnection.updateMany({ where: { workspaceId, provider: 'evolution' }, data: { historyRecoveryNextAttemptAt: new Date(Date.now() + 120_000) } });
     const previousWorker = children[1]!; previousWorker.kill('SIGTERM'); await until(async () => previousWorker.exitCode, value => value !== null);
-    runtimeEnv = { ...runtimeEnv, INGRESS_WORKSPACE_ALLOWLIST: workspaceId, INGRESS_RECOVERY_ENABLED: 'true',
+    runtimeEnv = { ...runtimeEnv, INGRESS_WORKSPACE_ALLOWLIST: workspaceId, INGRESS_RECOVERY_ENABLED: diagnosticControl ? 'false' : 'true',
       WAHA_API_BASE_URL: `http://127.0.0.1:${(provider.address() as { port: number }).port}`, WAHA_API_KEY: 'synthetic-only' };
     const recoveryWorker = spawn(process.execPath, ['dist/ingress-worker.js'], { cwd: process.cwd(), env: runtimeEnv, stdio: 'pipe' }); children.push(recoveryWorker);
     recoveryWorker.stdout!.on('data', data => { const value = String(data); logs.push(value); if (!firstSweepFinishedAt && value.includes('Ingress background summary')) firstSweepFinishedAt = Date.now(); }); recoveryWorker.stderr!.on('data', data => logs.push(String(data)));
-    await until(async () => counts.size, count => count > 0, 40_000);
+    if (diagnosticControl) await new Promise(resolve => setTimeout(resolve, 30_000));
+    else await until(async () => counts.size, count => count > 0, 40_000);
     const receiptSentAt = new Map<string, number>();
-    const acceptMs: number[] = [], sentAt = new Map<string, number>(), resources: Array<{ elapsedMs: number; cpuPercent: number; rssKiB: number }> = [];
+    const envelopeDetails = new Map<string, { sequence: number; provider: 'evolution' | 'waha'; sentAt: number; acceptedAt: number }>();
+    const applicationFinalizedAt = new Map<string, number>(), pollTimings: Array<{ startMs: number; durationMs: number; gapMs: number | null; requested: number; visible: number }> = [];
+    let previousPollStartedAt: number | null = null;
+    const acceptMs: number[] = [], sentAt = new Map<string, number>(), resources: Array<{ elapsedMs: number; cpuPercent: number; rssKiB: number; processes: Array<{ role: string; cpuSeconds: number; rssKiB: number }> }> = [];
+    const hostBefore = { loadAverage: loadavg(), freeBytes: freemem(), availableParallelism: availableParallelism() };
     const began = Date.now(), applicationObservedAt = new Map<string, number>();
     let observingStopped = false;
     const observing = (async () => { while (!observingStopped) {
       if (receiptSentAt.size) {
-        const visible = await db.ingressApplication.findMany({ where: { workspaceId, receiptId: { in: [...receiptSentAt.keys()] }, state: 'applied' }, select: { receiptId: true } });
-        const at = Date.now(); for (const row of visible) if (!applicationObservedAt.has(row.receiptId)) applicationObservedAt.set(row.receiptId, at);
+        const pollStartedAt = Date.now(), requested = receiptSentAt.size;
+        const visible = await db.ingressApplication.findMany({ where: { workspaceId, receiptId: { in: [...receiptSentAt.keys()] }, state: 'applied' }, select: { receiptId: true, appliedAt: true } });
+        const at = Date.now();
+        if (pollStartedAt - began < 15_000) pollTimings.push({ startMs: pollStartedAt - began, durationMs: at-pollStartedAt, gapMs: previousPollStartedAt === null ? null : pollStartedAt-previousPollStartedAt, requested, visible: visible.length });
+        previousPollStartedAt = pollStartedAt;
+        for (const row of visible) if (!applicationObservedAt.has(row.receiptId)) { applicationObservedAt.set(row.receiptId, at); if (row.appliedAt) applicationFinalizedAt.set(row.receiptId, row.appliedAt.getTime()); }
       }
       await new Promise(resolve => setTimeout(resolve, 25));
     } })();
     const sampler = setInterval(() => {
       try {
-        const values = execFileSync('ps', ['-o', 'time=,rss=', '-p', [process.pid, ...children.filter(c => c.exitCode === null && c.pid).map(c => c.pid)].join(',')], { encoding: 'utf8' }).trim().split('\n').map(row => { const [time, rss] = row.trim().split(/\s+/); const parts = time!.split(':').map(Number); return [parts.reduce((seconds, part) => seconds*60+part, 0), Number(rss)]; });
-        resources.push({ elapsedMs: Date.now() - began, cpuPercent: values.reduce((n, row) => n + row[0]!, 0), rssKiB: values.reduce((n, row) => n + row[1]!, 0) });
+        const values = execFileSync('ps', ['-o', 'pid=,time=,rss=', '-p', [process.pid, ...children.filter(c => c.exitCode === null && c.pid).map(c => c.pid)].join(',')], { encoding: 'utf8' }).trim().split('\n').map(row => {
+          const [pid, time, rss] = row.trim().split(/\s+/), parts = time!.split(':').map(Number);
+          return { role: Number(pid) === process.pid ? 'test-observer' : Number(pid) === children[0]?.pid ? 'ingress' : 'application-recovery-worker', cpuSeconds: parts.reduce((seconds, part) => seconds*60+part, 0), rssKiB: Number(rss) };
+        });
+        resources.push({ elapsedMs: Date.now() - began, cpuPercent: values.reduce((n, row) => n + row.cpuSeconds, 0), rssKiB: values.reduce((n, row) => n + row.rssKiB, 0), processes: values });
       } catch { /* A restarting process can disappear between ps and the sample. */ }
     }, 250);
     let sweepMs = 0, overlapEndMs = 0, firstTurnRuntimeRecovered = 0;
     const recovery = (async () => {
+      if (diagnosticControl) return;
       const summary = await until(async () => logs.join('').match(/gaps:\s*\{[\s\S]*?maxMs:\s*(\d+)/), value => !!value && firstSweepFinishedAt > 0, 10_000);
       sweepMs = Number(summary![1]); firstTurnRuntimeRecovered = Number(logs.join('').match(/gaps:\s*\{[\s\S]*?counts:\s*\{\s*recovered:\s*(\d+)/)?.[1] ?? -1); expect(firstTurnRuntimeRecovered).toBeGreaterThanOrEqual(0); overlapEndMs = firstSweepFinishedAt - began;
     })();
@@ -179,8 +194,8 @@ describe.skipIf(!databaseUrl || !brokerUrl)('ingress in the production stage (re
         const evo = upsert(id, { conversation: 'synthetic controlled load' });
         const wa = { event: 'message.any', session: wahaSession, payload: { id: `false_15550001111@c.us_${id}`, from: '15550001111@c.us', fromMe: false, body: 'synthetic controlled load', timestamp } };
         await Promise.all([
-          (async () => { const at = Date.now(); const response = await post(`/webhooks/evolution/${workspaceId}`, evo); expect(response.status).toBe(202); receiptSentAt.set((await response.json() as { receiptId: string }).receiptId, at); acceptMs.push(Date.now() - at); })(),
-          (async () => { const at = Date.now(); const bytes = JSON.stringify(wa); const response = await post(`/webhooks/waha/${workspaceId}`, wa, { 'x-webhook-hmac-algorithm': 'sha512', 'x-webhook-hmac': createHmac('sha512', 'rehearsal-waha-secret-1234567').update(bytes).digest('hex') }); expect(response.status).toBe(202); receiptSentAt.set((await response.json() as { receiptId: string }).receiptId, at); acceptMs.push(Date.now() - at); })()
+          (async () => { const at = Date.now(); const response = await post(`/webhooks/evolution/${workspaceId}`, evo); expect(response.status).toBe(202); const receiptId = (await response.json() as { receiptId: string }).receiptId, acceptedAt = Date.now(); receiptSentAt.set(receiptId, at); envelopeDetails.set(receiptId, { sequence: i, provider: 'evolution', sentAt: at, acceptedAt }); acceptMs.push(acceptedAt - at); })(),
+          (async () => { const at = Date.now(); const bytes = JSON.stringify(wa); const response = await post(`/webhooks/waha/${workspaceId}`, wa, { 'x-webhook-hmac-algorithm': 'sha512', 'x-webhook-hmac': createHmac('sha512', 'rehearsal-waha-secret-1234567').update(bytes).digest('hex') }); expect(response.status).toBe(202); const receiptId = (await response.json() as { receiptId: string }).receiptId, acceptedAt = Date.now(); receiptSentAt.set(receiptId, at); envelopeDetails.set(receiptId, { sequence: i, provider: 'waha', sentAt: at, acceptedAt }); acceptMs.push(acceptedAt - at); })()
         ]);
       }
       if (Date.now() < began + 10_000) await new Promise(resolve => setTimeout(resolve, began + 10_000 - Date.now()));
@@ -201,20 +216,51 @@ describe.skipIf(!databaseUrl || !brokerUrl)('ingress in the production stage (re
       const firstTurnRecovered = await db.canonicalMessageIdentity.count({ where: { workspaceId, rawId: { in: recoveredIds } } });
       // Only the synthetic fixture's due time is changed. The compiled runtime's next
       // scheduled turn must resume persisted metadata after contention has ended.
-      await db.channelConnection.updateMany({ where: { id: { in: recoveryConnections.map(c => c.id) } }, data: { historyRecoveryNextAttemptAt: null } });
-      await until(() => db.channelConnection.count({ where: { id: { in: recoveryConnections.map(c => c.id) }, historyRecoveryFailures: 0, recoveredThroughAt: { gt: new Date(Date.now() - 550_000) } } }), count => count === 3, 40_000);
-      const identities = await until(() => db.canonicalMessageIdentity.findMany({ where: { workspaceId, rawId: { startsWith: prefix } }, include: { message: true } }), rows => rows.length === 83);
-      const actual = identities.map(i => i.rawId).sort(), expected = [...sentAt.keys(), ...recoveredIds].sort(); expect(actual).toEqual(expected);
+      const pendingConnections = yielded.filter(c => !isAdvanced(c));
+      const laterTurnRequired = pendingConnections.length > 0;
+      let laterTurnProgressProved: boolean | null = null;
+      if (!diagnosticControl && laterTurnRequired) {
+        await db.channelConnection.updateMany({ where: { id: { in: pendingConnections.map(c => c.id) } }, data: { historyRecoveryNextAttemptAt: null } });
+        await until(() => db.channelConnection.count({ where: { id: { in: recoveryConnections.map(c => c.id) }, historyRecoveryFailures: 0, recoveredThroughAt: { gt: new Date(Date.now() - 550_000) } } }), count => count === 3, 40_000);
+        laterTurnProgressProved = true;
+      }
+      const identities = await until(() => db.canonicalMessageIdentity.findMany({ where: { workspaceId, rawId: { startsWith: prefix } }, include: { message: true } }), rows => rows.length === (diagnosticControl ? 80 : 83));
+      const actual = identities.map(i => i.rawId).sort(), expected = [...sentAt.keys(), ...(diagnosticControl ? [] : recoveredIds)].sort(); expect(actual).toEqual(expected);
       const appliedProgress = await until(() => db.ingressEventProgress.findMany({ where: { workspaceId, receiptId: { in: [...receiptSentAt.keys()] } }, select: { receiptId: true, committedAt: true, state: true } }), rows => rows.length === 160);
       expect(appliedProgress.every(p => p.state !== 'held')).toBe(true);
       await until(async () => applicationObservedAt.size, count => count === 160);
       const applicationMs = appliedProgress.map(p => applicationObservedAt.get(p.receiptId)! - receiptSentAt.get(p.receiptId)!);
       const overlapProgress = appliedProgress.filter(p => receiptSentAt.get(p.receiptId)! <= began + overlapEndMs);
-      expect(overlapProgress.length).toBeGreaterThan(10);
+      if (!diagnosticControl) expect(overlapProgress.length).toBeGreaterThan(10);
       const percentile = (rows: number[], q: number) => [...rows].sort((a,b) => a-b)[Math.ceil(rows.length*q)-1]!;
       const ingressP95Ms = percentile(acceptMs, .95), applicationP95Ms = percentile(applicationMs, .95);
+      const overlapApplicationP95Ms = percentile(overlapProgress.map(p => applicationObservedAt.get(p.receiptId)! - receiptSentAt.get(p.receiptId)!), .95);
+      const quantiles = (values: number[]) => values.length ? { count: values.length, p50: percentile(values, .5), p90: percentile(values, .9), p95: percentile(values, .95), p99: percentile(values, .99), max: Math.max(...values) } : { count: 0 };
+      const envelopes = [...envelopeDetails].map(([receiptId, detail]) => ({ sequence: detail.sequence, provider: detail.provider, sentMs: detail.sentAt-began, acceptedMs: detail.acceptedAt-began,
+        applicationFinalizedMs: applicationFinalizedAt.has(receiptId) ? applicationFinalizedAt.get(receiptId)!-began : null, firstObservedAppliedMs: applicationObservedAt.get(receiptId)!-began,
+        ingressMs: detail.acceptedAt-detail.sentAt, applicationMs: applicationObservedAt.get(receiptId)!-detail.sentAt,
+        applicationFinalizationMs: applicationFinalizedAt.has(receiptId) ? applicationFinalizedAt.get(receiptId)!-detail.sentAt : null,
+        visibilityDelayMs: applicationFinalizedAt.has(receiptId) ? applicationObservedAt.get(receiptId)!-applicationFinalizedAt.get(receiptId)! : null,
+        overlapsRecovery: detail.sentAt <= began+overlapEndMs })).sort((a,b) => a.sequence-b.sequence || a.provider.localeCompare(b.provider));
+      const observations = { schemaVersion: 1, kind: 'load-observations', observationsOnly: true, recoveryEnabled: !diagnosticControl, diagnosticControl,
+        canonicalStoreSha256: createHash('sha256').update(await readFile(join(process.cwd(), 'src/modules/messaging/canonical-store.ts'))).digest('hex'), compiledWorkerEntrySha256: createHash('sha256').update(await readFile(join(process.cwd(), 'dist/ingress-worker.js'))).digest('hex'),
+        sourceSha: execFileSync('git', ['rev-parse','HEAD'], { encoding: 'utf8' }).trim(), sourceState: execFileSync('git', ['status','--porcelain'], { encoding: 'utf8' }).trim() ? 'working-tree' : 'clean-checkout',
+        harnessRunId: process.env.TALK_VALIDATION_RUN_ID ?? null, startedAt, observedAt: new Date().toISOString(), thresholds: { ingressP95Ms: 500, applicationP95Ms: 2000 },
+        trafficDurationMs, oracleIdentities: identities.length, ingressMs: quantiles(acceptMs), applicationMs: quantiles(applicationMs),
+        overlapApplicationMs: quantiles(envelopes.filter(e => e.overlapsRecovery).map(e => e.applicationMs)), postOverlapApplicationMs: quantiles(envelopes.filter(e => !e.overlapsRecovery).map(e => e.applicationMs)),
+        perSecond: Array.from({ length: 10 }, (_, second) => { const interval = envelopes.filter(e => e.sentMs >= second*1000 && e.sentMs < (second+1)*1000); return { second, ingressMs: quantiles(interval.map(e => e.ingressMs)), applicationMs: quantiles(interval.map(e => e.applicationMs)) }; }),
+        perProvider: ['evolution', 'waha'].map(provider => ({ provider, ingressMs: quantiles(envelopes.filter(e => e.provider === provider).map(e => e.ingressMs)), applicationMs: quantiles(envelopes.filter(e => e.provider === provider).map(e => e.applicationMs)) })),
+        finalizationMs: quantiles(envelopes.flatMap(e => e.applicationFinalizationMs === null ? [] : [e.applicationFinalizationMs])), visibilityDelayMs: quantiles(envelopes.flatMap(e => e.visibilityDelayMs === null ? [] : [e.visibilityDelayMs])),
+        pollQueryMs: quantiles(pollTimings.map(p => p.durationMs)), pollGapMs: quantiles(pollTimings.flatMap(p => p.gapMs === null ? [] : [p.gapMs])),
+        sweep: { totalMs: sweepMs, overlapEndMs, observedContentionYields: firstTurnYields, advancedConnections: yielded.filter(isAdvanced).length, claimedBackoffConnections: yielded.filter(c => !isAdvanced(c) && !!c.historyRecoveryNextAttemptAt).length,
+          untouchedConnections: yielded.filter(c => !c.historyRecoveryNextAttemptAt && !c.historyRecoveryLeaseUntil).length, firstTurnRuntimeRecovered, firstTurnPersistedIdentities: firstTurnRecovered, laterTurnRequired, laterTurnProgressProved },
+        hostBefore, hostAtObservation: { loadAverage: loadavg(), freeBytes: freemem() }, resources, envelopes, pollTimings };
+      const diagnosticPath = join(process.cwd(), '../../validation-artifacts', `load-observations-${Date.now()}.json`); await mkdir(join(process.cwd(), '../../validation-artifacts'), { recursive: true });
+      await writeFile(diagnosticPath, JSON.stringify(observations, null, 2));
+      console.info('SYNTHETIC_LOAD_OBSERVATIONS', JSON.stringify({ file: diagnosticPath, ingressMs: observations.ingressMs, applicationMs: observations.applicationMs, overlapApplicationMs: observations.overlapApplicationMs, visibilityDelayMs: observations.visibilityDelayMs, pollQueryMs: observations.pollQueryMs, pollGapMs: observations.pollGapMs, sweep: observations.sweep }));
+      if (diagnosticControl) { console.info('DIAGNOSTIC_CONTROL_ONLY: recovery disabled; no qualification evidence emitted'); return; }
       expect(acceptMs).toHaveLength(160); expect(ingressP95Ms).toBeLessThan(500); expect(applicationP95Ms).toBeLessThan(2000);
-      const overlapApplicationP95Ms = percentile(overlapProgress.map(p => applicationObservedAt.get(p.receiptId)! - receiptSentAt.get(p.receiptId)!), .95); expect(overlapApplicationP95Ms).toBeLessThan(2000);
+      expect(overlapApplicationP95Ms).toBeLessThan(2000);
       expect(sweepMs).toBeLessThan(6500); expect((logs.join('').match(/Provider gap_recovery step failed/g) ?? []).length).toBe(firstTurnYields); expect(counts.size).toBe(3);
       const perTurnRequests = [...counts].map(([session, total]) => Math.max(firstTurnCounts.get(session) ?? 0, total - (firstTurnCounts.get(session) ?? 0)));
       for (const count of perTurnRequests) expect(count).toBeLessThanOrEqual(4);
@@ -234,7 +280,7 @@ describe.skipIf(!databaseUrl || !brokerUrl)('ingress in the production stage (re
       const cpuWindowSeconds = resources.at(-1)!.cpuPercent - resources[0]!.cpuPercent;
       const resourceDurationMs = resources.at(-1)!.elapsedMs - resources[0]!.elapsedMs;
       await writeQualificationEvidence('load', startedAt, { canonicalMessages: 80, dualProviderEnvelopes: 160, oracleIdentities: 83, canonicalAddresses: 2930,
-        durationMs: Date.now()-began, trafficDurationMs, ingressP95Ms, applicationP95Ms, applicationClock: 'client send to first externally observed applied receipt (25 ms polling upper bound)', overlapEnvelopes: overlapProgress.length, overlapApplicationP95Ms, recovery: { connections: 3, sweepMs, timingSource: 'existing compiled runtime sweep-observer gaps.maxMs', overlapEndMs, requestsPerConnection: perTurnRequests, observedContentionYields: firstTurnYields, firstTurnAdvancedConnections: yielded.filter(isAdvanced).length, firstTurnClaimedBackoffConnections: yielded.filter(c => !isAdvanced(c) && !!c.historyRecoveryNextAttemptAt).length, untouchedConnectionsAfterContention: yielded.filter(c => !c.historyRecoveryNextAttemptAt && !c.historyRecoveryLeaseUntil).length, firstTurnPersistedIdentities: firstTurnRecovered, firstTurnRuntimeRecovered, fixtureOnlyRescheduledNextAttempt: true, backoffAndResumeProved: true, unexpectedFailures: 0, providerHttp: { pageReads: [...counts.values()].reduce((a,b)=>a+b,0), versionProbes: versionRequests, lidLookups: 0, total: [...counts.values()].reduce((a,b)=>a+b,0) + versionRequests }, executor: 'compiled ingress-worker runtime loop on same event loop as application', historicalEffects: historical.length, autonomousHistoricalEffects: 0 },
+        durationMs: Date.now()-began, trafficDurationMs, ingressP95Ms, applicationP95Ms, applicationClock: 'client send to first externally observed applied receipt (25 ms polling upper bound)', overlapEnvelopes: overlapProgress.length, overlapApplicationP95Ms, recovery: { connections: 3, sweepMs, timingSource: 'existing compiled runtime sweep-observer gaps.maxMs', overlapEndMs, requestsPerConnection: perTurnRequests, observedContentionYields: firstTurnYields, firstTurnAdvancedConnections: yielded.filter(isAdvanced).length, firstTurnClaimedBackoffConnections: yielded.filter(c => !isAdvanced(c) && !!c.historyRecoveryNextAttemptAt).length, untouchedConnectionsAfterContention: yielded.filter(c => !c.historyRecoveryNextAttemptAt && !c.historyRecoveryLeaseUntil).length, firstTurnPersistedIdentities: firstTurnRecovered, firstTurnRuntimeRecovered, fixtureOnlyRescheduledNextAttempt: laterTurnRequired, progressOrResumeProved: true, laterTurnRequired, laterTurnProgressProved, unexpectedFailures: 0, providerHttp: { pageReads: [...counts.values()].reduce((a,b)=>a+b,0), versionProbes: versionRequests, lidLookups: 0, total: [...counts.values()].reduce((a,b)=>a+b,0) + versionRequests }, executor: 'compiled ingress-worker runtime loop on same event loop as application', historicalEffects: historical.length, autonomousHistoricalEffects: 0 },
         restartDuplicatePreserved: true, resources: { sampleIntervalMs: 250, sampleCount: resources.length, durationMs: resources.at(-1)!.elapsedMs, method: 'ps cumulative CPU time delta over sampled traffic window and RSS KiB summed across ingress/worker children and test parent; time resolution <=1 second', baseline: { rssKiB: resources[0]!.rssKiB }, cpuWindowSeconds, averageCpuPercent: cpuWindowSeconds / (resourceDurationMs/1000) * 100, maximumRssKiB: Math.max(...resources.map(r => r.rssKiB)) } });
     } finally { observingStopped = true; await observing; clearInterval(sampler); await recovery; await new Promise<void>(resolve => provider.close(() => resolve())); }
   }, 90_000);

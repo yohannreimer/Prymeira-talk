@@ -63,8 +63,10 @@ export function validateQualificationEvidence(report, { kind, sha, sourceState, 
       || !Number.isInteger(m.overlapEnvelopes) || m.overlapEnvelopes < 10 || !Number.isFinite(m.overlapApplicationP95Ms) || m.overlapApplicationP95Ms < 0 || m.overlapApplicationP95Ms >= 2000
       || m.recovery?.connections !== 3 || m.recovery?.autonomousHistoricalEffects !== 0 || m.recovery?.unexpectedFailures !== 0 || !Number.isFinite(m.recovery?.sweepMs) || m.recovery.sweepMs < 0 || m.recovery.sweepMs >= 6500
       || !Array.isArray(m.recovery?.requestsPerConnection) || m.recovery.requestsPerConnection.length !== 3 || m.recovery.requestsPerConnection.some(n => !Number.isInteger(n) || n < 1 || n > 4)
-      || !Number.isInteger(m.recovery?.observedContentionYields) || m.recovery.observedContentionYields < 0 || m.recovery.observedContentionYields > 3 || m.recovery?.backoffAndResumeProved !== true
+      || !Number.isInteger(m.recovery?.observedContentionYields) || m.recovery.observedContentionYields < 0 || m.recovery.observedContentionYields > 3 || m.recovery?.progressOrResumeProved !== true
       || ![m.recovery.firstTurnAdvancedConnections, m.recovery.firstTurnClaimedBackoffConnections, m.recovery.untouchedConnectionsAfterContention].every(n => Number.isInteger(n) && n >= 0) || m.recovery.firstTurnAdvancedConnections + m.recovery.firstTurnClaimedBackoffConnections + m.recovery.untouchedConnectionsAfterContention !== 3
+      || m.recovery.laterTurnRequired !== (m.recovery.firstTurnAdvancedConnections < 3)
+      || (m.recovery.laterTurnRequired ? (m.recovery.laterTurnProgressProved !== true || m.recovery.fixtureOnlyRescheduledNextAttempt !== true) : (m.recovery.laterTurnProgressProved !== null || m.recovery.fixtureOnlyRescheduledNextAttempt !== false))
       || !m.restartDuplicatePreserved || !Number.isInteger(m.resources?.sampleCount) || m.resources.sampleCount < 10 || !Number.isFinite(m.resources?.durationMs) || m.resources.durationMs < 9000 || !Number.isFinite(m.resources?.averageCpuPercent) || m.resources.averageCpuPercent < 0 || !Number.isFinite(m.resources?.cpuWindowSeconds) || m.resources.cpuWindowSeconds < 0 || !Number.isFinite(m.resources?.maximumRssKiB) || m.resources.maximumRssKiB <= 0)
       throw new Error('load: missing oracle, bounded concurrency, latency or resource qualification');
   } else if (kind === 'upgrade') {

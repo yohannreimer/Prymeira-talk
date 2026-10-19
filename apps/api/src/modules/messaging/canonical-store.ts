@@ -54,7 +54,7 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
   const lockAndScope = enterCanonicalTransaction;
   const outboundGate = createOutboundObservationGate({ hash });
   async function graph(tx: Tx, scope: Scope) {
-    const rows = await tx.canonicalAddress.findMany({ where: scope });
+    const rows = await tx.canonicalAddress.findMany({ where: scope, select: { id: true, redirectId: true } });
     const parents = new Map(rows.map(r => [r.id, r.redirectId]));
     function root(id: string) {
       const seen = new Set<string>();
