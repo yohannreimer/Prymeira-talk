@@ -74,10 +74,12 @@ jobs:
           done
           git rev-parse HEAD > validation-artifacts/controller-sha.txt
           uname -a > validation-artifacts/platform.txt
+          lscpu -J > validation-artifacts/cpu.json
       - name: Build all variants on one pinned local Node base, no image publication
         run: |
           set -eu
-          docker pull node:22-alpine
+          docker pull node@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402
+          docker tag node@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402 node:22-alpine
           docker image inspect node:22-alpine --format '{{json .}}' > validation-artifacts/common-node-base.json
           for pair in A_ingress:99f65ed54a2ca729434b39786bdcb6394d8f9388 A_worker:51b1fdd75341013b613737e61d3e89b787cec8be A_api:c9d49c82d6d64131921588dbf79166ee254f067e N:f2ff10305183d0a866d2564067f82f520dc7258b; do
             name=${pair%%:*}
@@ -99,6 +101,7 @@ jobs:
       - name: Paired actual visible UI with current VPS and candidate
         env:
           UI_COMPARISON_PILOT: false
+          UI_COMPARISON_PROFILES: busy
           TALK_COMPARE_PG_ID: ${{ job.services.postgres.id }}
           TALK_COMPARE_RABBIT_ID: ${{ job.services.rabbitmq.id }}
         run: node .github/ui-comparison/run.mjs

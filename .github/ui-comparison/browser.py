@@ -38,6 +38,15 @@ try:
   if rendered.count(): rendered.first.click()
   page.locator('[data-message-id]').first.wait_for(state='visible',timeout=30000)
   page.wait_for_function("document.querySelectorAll('[data-message-id]').length >= 1")
+  thread=page.locator('.message-thread')
+  thread.hover()
+  page.mouse.wheel(0,100000)
+  page.wait_for_function("(() => {const e=document.querySelector('.message-thread');return !!e && e.scrollHeight-e.clientHeight-e.scrollTop<=2;})()")
+  page.wait_for_timeout(300)
+  initial=thread.evaluate("e=>({scrollTop:e.scrollTop,scrollHeight:e.scrollHeight,clientHeight:e.clientHeight,distanceFromBottom:e.scrollHeight-e.clientHeight-e.scrollTop})")
+  warm=page.locator('[data-message-id="'+config['warmupMessageId']+'"]')
+  assert warm.is_visible() and initial['distanceFromBottom']<=2,initial
+  save('initial-viewport.json',{'at':time.time()*1000,'thread':initial,'warmupMessageId':config['warmupMessageId'],'warmupVisible':warm.is_visible(),'setup':'Initial user wheel to latest messages before offers; no scrolling during measurement'})
   for _ in range(12):
    start=time.time()*1000; browser_clock=page.evaluate('performance.timeOrigin+performance.now()'); end=time.time()*1000
    clocks.append({'start':start,'browser':browser_clock,'end':end,'offset':browser_clock-(start+end)/2,'uncertainty':(end-start)/2})
