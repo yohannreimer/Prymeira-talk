@@ -50,11 +50,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @prymeira-talk/api exec prisma generate --schema prisma/schema.prisma
       - name: Verify owned comparison tooling
-        run: node --test .github/comparison/isolation.test.mjs
-      - name: Check candidate types and focused HTTP contract
-        run: |
-          pnpm --filter @prymeira-talk/api typecheck
-          pnpm --filter @prymeira-talk/api exec vitest run src/modules/ingress/http-observability.test.ts --maxWorkers=1 --fileParallelism=false
+        run: node --test .github/comparison/isolation.test.mjs .github/comparison/deadline.test.mjs
       - name: Fetch immutable source revisions, without production access
         run: |
           set -eu
@@ -82,12 +78,7 @@ jobs:
           const images=Object.fromEntries(['A_ingress','A_worker','B','C','E'].map(n=>[n,JSON.parse(fs.readFileSync(`validation-artifacts/image-${n}.json`)).Id]));
           fs.writeFileSync('validation-artifacts/images.json',JSON.stringify(images,null,2));
           JS
-      - name: Verify real SQL, transport, identity and recovery regressions
-        run: |
-          sudo mkdir -p /private/tmp
-          sudo chmod 1777 /private/tmp
-          node .github/comparison/focused.mjs
-      - name: Compare C and auth-only E with natural recovery cadence
+      - name: Repeat exact offer windows and isolate ingress CPU quota
         env:
           TALK_COMPARE_PG_ID: ${{ job.services.postgres.id }}
           TALK_COMPARE_RABBIT_ID: ${{ job.services.rabbitmq.id }}

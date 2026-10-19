@@ -1,3 +1,4 @@
+import { waitUntilDeadline } from '../../../.github/comparison/deadline.mjs';
 import { createHash, createHmac, randomUUID } from 'node:crypto';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
@@ -206,13 +207,13 @@ describe.skipIf(!databaseUrl || !brokerUrl)('isolated matched VPS comparison (di
       };
       const offered: Array<Promise<unknown>> = [];
       for (let i = 0; i < 80; i++) {
-        const scheduled=began+i*125;if(Date.now()<scheduled)await new Promise(r=>setTimeout(r,scheduled-Date.now()));
+        const scheduled=began+i*125;await waitUntilDeadline(scheduled);
         const id=`${prefix}${i}`,timestamp=Math.floor(Date.now()/1000);sentAt.set(id,Date.now());
         const evo=upsert(id,{conversation:'synthetic controlled load'});
         const wa={event:'message.any',session:wahaSession,payload:{id:`false_15550001111@c.us_${id}`,from:'15550001111@c.us',fromMe:false,body:'synthetic controlled load',timestamp}};
         offered.push(offer(i,'evolution',id,evo),offer(i,'waha',id,wa,{'x-webhook-hmac-algorithm':'sha512','x-webhook-hmac':createHmac('sha512','rehearsal-waha-secret-1234567').update(JSON.stringify(wa)).digest('hex')}));
       }
-      if(Date.now()<began+10000)await new Promise(r=>setTimeout(r,began+10000-Date.now()));
+      await waitUntilDeadline(began+10000);
       const trafficDurationMs=Date.now()-began;await Promise.all(offered);
       const durableReceipts = await db.ingressReceipt.findMany({where:{workspaceId,authenticatedDigest:{in:httpOutcomes.map(o=>o.digest)}},select:{id:true,authenticatedDigest:true}});
       const durableDigests=new Set(durableReceipts.map(r=>r.authenticatedDigest));
