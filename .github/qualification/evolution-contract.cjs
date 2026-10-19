@@ -1,0 +1,21 @@
+const assert=require('node:assert/strict'),fs=require('node:fs'),{randomUUID}=require('node:crypto');
+const {PrismaClient,Prisma}=require('@prisma/client');
+const url=new URL(process.env.DATABASE_CONNECTION_URI);assert.equal(url.hostname,'127.0.0.1');assert.equal(url.port,'55439');assert.equal(url.pathname,'/evolution_contract');
+const methods=JSON.parse(fs.readFileSync('/talk-methods.json','utf8')),AsyncFunction=Object.getPrototypeOf(async function(){}).constructor;
+const bind=name=>{const m=methods[name];return new AsyncFunction(...m.parameters,'be','H',m.body.slice(1,-1));};
+const db=new PrismaClient(),main=bind('fetchMessages'),chats=bind('fetchChats');
+(async()=>{try{
+ const i1=await db.instance.create({data:{name:'synthetic-contract-'+randomUUID()}}),i2=await db.instance.create({data:{name:'synthetic-other-'+randomUUID()}});
+ const context={instanceId:i1.id,prismaRepository:db,configService:{get:()=>({PROVIDER:'postgresql'})}},sdk={Prisma},normalize=()=>{throw Error('Phone normalization is outside this contract');};
+ const T=1700000000,jid='15550001111@s.whatsapp.net',other='15550002222@s.whatsapp.net',dense='synthetic-dense@g.us';
+ const row=(id,jid,stamp,instanceId=i1.id,fromMe=false)=>({key:{id,remoteJid:jid,fromMe},messageType:'conversation',message:{conversation:'synthetic contract fixture'},source:'web',messageTimestamp:stamp,instanceId,pushName:'Synthetic'});
+ await db.message.createMany({data:[row('before',jid,T-1),row('lower',jid,T),row('middle-a',jid,T+1),row('middle-b',jid,T+1,i1.id,true),row('upper',jid,T+2),row('after',jid,T+3),row('other-chat',other,T+1),row('other-instance',jid,T+1,i2.id)]});
+ const input=page=>({where:{key:{remoteJid:jid},messageTimestamp:{gte:new Date(T*1000).toISOString(),lte:new Date((T+2)*1000).toISOString()}},offset:2,page});
+ const read=async p=>(await main.call(context,input(p),sdk,normalize)).messages;
+ const a=await read(1),b=await read(2),c=await read(3);assert.equal(a.total,4);assert.equal(a.pages,2);assert.equal(a.currentPage,1);assert.equal(c.records.length,0);assert.deepEqual([...a.records,...b.records].map(x=>x.key.id).sort(),['lower','middle-a','middle-b','upper']);assert([...a.records,...b.records].every(x=>x.instanceId===i1.id&&x.key.remoteJid===jid));assert(a.records[0].messageTimestamp>=a.records[1].messageTimestamp);
+ await db.message.createMany({data:Array.from({length:5001},(_,n)=>row('dense-'+n,dense,T+500))});
+ const denseResult=(await main.call(context,{where:{key:{remoteJid:dense},messageTimestamp:{gte:new Date((T+499)*1000).toISOString(),lte:new Date((T+501)*1000).toISOString()}},offset:5000,page:1},sdk,normalize)).messages;
+ assert.equal(denseResult.total,5001);assert.equal(denseResult.pages,2);assert.equal(denseResult.records.length,5000);
+ const catalogA=await chats.call(context,{take:2,skip:0},sdk,normalize),catalogB=await chats.call(context,{take:2,skip:2},sdk,normalize);assert.equal(catalogA.length,2);assert.equal(catalogB.length,1);assert.deepEqual([...catalogA,...catalogB].map(x=>x.remoteJid).sort(),[jid,other,dense].sort());
+ console.log(JSON.stringify({kind:'real-evolution-image-postgres-contract',passed:true,tests:['ISO inclusive gte/lte','DESC pagination and terminal empty page','same-chat/same-instance isolation with actual Prisma OR semantics','declared5001 total bounded5000 result','real SQL chat catalog take/skip'],version:require('/evolution/package.json').version,node:process.version,arch:process.arch,providerSessions:0,limitations:['No WhatsApp pairing or transport','No full Evolution HTTP/licensing middleware execution']}));
+}finally{await db.$disconnect();}})().catch(e=>{console.error(e);process.exitCode=1;});

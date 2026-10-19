@@ -8,6 +8,11 @@ on:
         required: true
         default: 9e1cc2c587b83ed03c6f937253ff74c294dda0df
 
+      full_gate:
+        type: boolean
+        description: Run the full source gate; disable only when qualifying unchanged source images after a complete gate
+        default: true
+
 permissions:
   contents: read
 
@@ -16,6 +21,7 @@ env:
 
 jobs:
   validate:
+    if: ${{ inputs.full_gate }}
     name: Validate exact revision
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -99,12 +105,70 @@ jobs:
   exact-images:
     name: Build and inspect exact Linux amd64 images
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 35
+    services:
+      postgres:
+        image: postgres:16.13-alpine@sha256:4e6e670bb069649261c9c18031f0aded7bb249a5b6664ddec29c013a89310d50
+        env:
+          POSTGRES_USER: talk_test
+          POSTGRES_PASSWORD: talk_test
+          POSTGRES_DB: postgres
+          PGDATA: /var/lib/postgresql/data/talk_fixture
+        ports:
+          - 55439:5432
+        options: >-
+          --health-cmd "pg_isready -U talk_test -d postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+      rabbitmq:
+        image: rabbitmq:3.12.14-alpine@sha256:97907aceae0a6fbfb24847724adadf12f536a2b9bf547a42bc9dad153ed74e99
+        env:
+          RABBITMQ_DEFAULT_USER: talk_test
+          RABBITMQ_DEFAULT_PASS: talk_test
+          RABBITMQ_DEFAULT_VHOST: talk_test
+        ports:
+          - 56739:5672
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      TALK_TEST_POSTGRES_PORT: 55439
+      TALK_TEST_AMQP_PORT: 56739
+      TALK_TEST_POSTGRES_DATA_DIRECTORY: /var/lib/postgresql/data/talk_fixture
+      TALK_TEST_DATABASE_ADMIN_URL: postgresql://talk_test:talk_test@127.0.0.1:55439/postgres
+      REHEARSAL_DATABASE_URL: postgresql://talk_test:talk_test@127.0.0.1:55439/talk_rehearsal
+      INGRESS_TEST_AMQP_URL: amqp://talk_test:talk_test@127.0.0.1:56739/talk_test
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.candidate_sha }}
           persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: .validation/orchestrator
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.0.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.23.3
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @prymeira-talk/api exec prisma generate --schema prisma/schema.prisma
+      - name: Create databases only in the owned disposable GitHub service
+        run: |
+          cd apps/api
+          node --input-type=module <<'JS'
+          import pg from 'pg';
+          const db=new pg.Client({connectionString:process.env.TALK_TEST_DATABASE_ADMIN_URL});await db.connect();
+          const row=(await db.query("SELECT current_setting('data_directory') AS directory")).rows[0];if(row.directory!==process.env.TALK_TEST_POSTGRES_DATA_DIRECTORY)throw Error('Unowned PostgreSQL');
+          await db.query('CREATE DATABASE talk_rehearsal');await db.query('CREATE DATABASE evolution_contract');await db.end();
+          JS
+      - name: Prepare isolated candidate schema
+        env:
+          DATABASE_URL: ${{ env.REHEARSAL_DATABASE_URL }}
+        run: pnpm --filter @prymeira-talk/api exec prisma migrate deploy --schema prisma/schema.prisma
       - name: Record immutable source and execution platform
         run: |
           set -eu
@@ -120,6 +184,17 @@ jobs:
           set -eu
           docker image inspect talk-qualification-api --format '{{json .}}' > validation-artifacts/api-image.json
           docker run --rm --network none --entrypoint sh talk-qualification-api -ec 'node --version; ffmpeg -version; pdftotext -v; fc-match Helvetica; node -e "require(\"@prisma/client\")"' > validation-artifacts/api-runtime.log 2>&1
+      - name: Exercise HTTP to broker to worker inside the exact API image
+        run: |
+          set -eu
+          export TALK_QUAL_API_IMAGE="$(docker image inspect talk-qualification-api --format '{{.Id}}')"
+          export TALK_QUAL_CONTAINER_LABEL="talk-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          export NODE_OPTIONS="--import=file://$GITHUB_WORKSPACE/.validation/orchestrator/.github/qualification/image-spawn.mjs"
+          export DEBUG_REHEARSAL=1
+          mkdir -p apps/api/tmp
+          printf '%s\n' 'Resource samples in the original test measure Docker client processes in this run. They do not measure container RSS/CPU; do not interpret those fields as container resources.' > validation-artifacts/container-resource-boundary.txt
+          cd apps/api
+          pnpm exec vitest run src/modules/ingress/production-stage.postgres.test.ts -t 'qualifies 80 canonical' --maxWorkers=1 --fileParallelism=false --reporter=default --reporter=json --outputFile.json="$GITHUB_WORKSPACE/validation-artifacts/api-container-flow.tests.json"
       - name: Build and execute pinned real GOWS adapter contract without provider sessions
         run: |
           set -eu
@@ -133,6 +208,24 @@ jobs:
           docker pull --platform linux/amd64 "$image"
           docker image inspect "$image" --format '{{json .}}' > validation-artifacts/evolution-image.json
           docker run --rm --network none --entrypoint node "$image" -e 'const p=require("./package.json");console.log(JSON.stringify({version:p.version,node:process.version,arch:process.arch}));if(process.arch!=="x64")process.exit(1)' > validation-artifacts/evolution-runtime.log
+      - name: Execute pinned Evolution compiled readers against real isolated PostgreSQL
+        run: |
+          set -eu
+          image=evoapicloud/evolution-api@sha256:b4a18ed5213d34a0845f841ba9afae1b67940457d021b42af863eae67dc2cfbd
+          cid=$(docker create --network none "$image")
+          docker cp "$cid:/evolution/dist/main.js" .validation/evolution-main.js
+          docker rm "$cid"
+          mkdir -p apps/api/tmp
+          cp .validation/orchestrator/.github/qualification/extract-evolution.mjs apps/api/tmp/extract-evolution.mjs
+          node apps/api/tmp/extract-evolution.mjs .validation/evolution-main.js .validation/evolution-methods.json validation-artifacts/evolution-method-provenance.json
+          export DATABASE_CONNECTION_URI=postgresql://talk_test:talk_test@127.0.0.1:55439/evolution_contract
+          docker run --rm --network host --env DATABASE_CONNECTION_URI --entrypoint sh "$image" -ec './node_modules/.bin/prisma db push --schema=./prisma/postgresql-schema.prisma --skip-generate' > validation-artifacts/evolution-schema.log 2>&1
+          docker run --rm --network host --read-only --tmpfs /tmp:rw,size=128m --cap-drop=ALL --security-opt=no-new-privileges --env DATABASE_CONNECTION_URI --mount "type=bind,src=$GITHUB_WORKSPACE/.validation/evolution-methods.json,dst=/talk-methods.json,readonly" --mount "type=bind,src=$GITHUB_WORKSPACE/.validation/orchestrator/.github/qualification/evolution-contract.cjs,dst=/evolution/talk-contract.cjs,readonly" --entrypoint node "$image" /evolution/talk-contract.cjs > validation-artifacts/evolution-postgres-contract.log 2>&1
+      - name: Stop any remaining task-labelled candidate containers
+        if: always()
+        run: |
+          ids=$(docker ps -aq --filter "label=talk.qual=talk-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}")
+          if [ -n "$ids" ]; then docker rm -f $ids; fi
       - name: Preserve image qualification evidence (no registry push)
         if: always()
         uses: actions/upload-artifact@v4

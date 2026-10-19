@@ -1,0 +1,22 @@
+import cp from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
+import { realpathSync } from 'node:fs';
+import path from 'node:path';
+import { randomUUID } from 'node:crypto';
+const original=cp.spawn;
+cp.spawn=function(command,args=[],options={}){
+ if(command!==process.execPath||!['dist/ingress.js','dist/ingress-worker.js'].includes(args[0]))return original(command,args,options);
+ const image=process.env.TALK_QUAL_API_IMAGE;if(!/^sha256:[a-f0-9]{64}$/.test(image??''))throw Error('Expected immutable local API image ID');
+ const inherited=options.env??{},root=realpathSync(path.dirname(inherited.INGRESS_PRIVATE_ROOT??''));
+ if(!/^\/tmp\/talk-prod-rehearsal-[A-Za-z0-9]+$/.test(root))throw Error('Only task rehearsal mount permitted');
+ const sealed={NODE_ENV:'production'};
+ for(const[k,v]of Object.entries(inherited))if(v!==undefined&&(k.startsWith('INGRESS_')||k==='DATABASE_URL'||k==='TALK_MEDIA_STORE_PATH'||['EVOLUTION_API_BASE_URL','EVOLUTION_API_KEY','WAHA_API_BASE_URL','WAHA_API_KEY'].includes(k)))sealed[k]=v;
+ for(const key of ['DATABASE_URL','INGRESS_AMQP_URL','EVOLUTION_API_BASE_URL','WAHA_API_BASE_URL'])if(sealed[key]&&new URL(sealed[key]).hostname!=='127.0.0.1')throw Error('Non-loopback fixture URL');
+ if(new URL(sealed.DATABASE_URL).pathname!=='/talk_rehearsal'||new URL(sealed.DATABASE_URL).port!=='55439'||new URL(sealed.INGRESS_AMQP_URL).pathname!=='/talk_test'||new URL(sealed.INGRESS_AMQP_URL).port!=='56739'||!path.resolve(sealed.TALK_MEDIA_STORE_PATH).startsWith(root+'/'))throw Error('Wrong owned fixture');
+ const label=process.env.TALK_QUAL_CONTAINER_LABEL;if(!/^[a-zA-Z0-9-]+$/.test(label??''))throw Error('Invalid task label');
+ const dockerArgs=['run','--rm','--pull','never','--name','talk-qual-'+randomUUID(),'--label','talk.qual='+label,'--network','host','--read-only','--tmpfs','/tmp:rw,size=128m','--cap-drop=ALL','--security-opt=no-new-privileges','--user',`${process.getuid()}:${process.getgid()}`,'--mount',`type=bind,src=${root},dst=${root}`];
+ for(const key of Object.keys(sealed))dockerArgs.push('--env',key);
+ dockerArgs.push('--entrypoint','node',image,...args);
+ return original('docker',dockerArgs,{...options,env:{PATH:process.env.PATH,HOME:process.env.HOME,DOCKER_HOST:'unix:///var/run/docker.sock',...sealed}});
+};
+syncBuiltinESMExports();
