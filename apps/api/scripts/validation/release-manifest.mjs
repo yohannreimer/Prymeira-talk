@@ -7,7 +7,7 @@ import { releaseManifest } from './validation.mjs';
 const root = fileURLToPath(new URL('../../../../', import.meta.url)), output = join(root, 'validation-artifacts');
 const validation = JSON.parse(await readFile(join(output, 'validation-all.json'), 'utf8'));
 if (validation.sourceState !== 'clean-checkout') throw new Error('Release requires validation from a clean exact-SHA checkout');
-for (const required of ['typecheck', 'unit', 'api-build', 'web-build', 'disposable-migrations', 'postgres-rabbit-integration'])
+for (const required of ['typecheck', 'unit', 'contextual-followup-replay', 'api-build', 'web-build', 'disposable-migrations', 'postgres-rabbit-integration'])
   if (!validation.phases.includes(required)) throw new Error(`Missing validation evidence: ${required}`);
 const readDigest = async name => JSON.parse(await readFile(join(output, `image-${name}.json`), 'utf8'));
 const [api, web, waha] = await Promise.all([readDigest('api'), readDigest('web'), readDigest('waha')]);

@@ -7,10 +7,20 @@ import { enterCanonicalWorkspaceTransaction } from './canonical-boundary.js';
 import { equal, json, sha } from './canonical-values.js';
 import { normalizeChatAddress, record } from './whatsapp-identity.js';
 import type { OutboundRequest } from './outbound-intents.js';
+import { resolveContextualFollowupEngine } from '../followups/contextual-followup-engine.js';
+import { contextualAnchorCurrent, readContextualSnapshotInTransaction } from '../followups/contextual-followup-snapshot.js';
+import { requiresHumanReview, contextualKindAllowsAutomatic } from '../followups/contextual-followup-policy.js';
+import { nextBusinessStart } from '../followups/business-time.js';
+import { blocksAutonomousAgent } from '../assistant/assistant-policy.js';
+import { decideContextualFollowup } from '../harness/agentes/followup/index.js';
 type Tx = Prisma.TransactionClient;
 // The whitelist is part of the contract: no caller chooses which mandatory fields
 // constitute freshness. Every snapshot compares the complete selected record.
 const specs = {
+    contextual_agent: { table: 'ai_agents', fields: ['id', 'status', 'type', 'rules_digest'] },
+    contextual_followup: { table: 'conversation_followups', fields: ['id', 'conversation_id', 'agent_id', 'session_id', 'kind', 'status', 'active_key', 'step_index', 'anchor_message_id', 'anchor_message_at', 'anchor_ingested_at', 'scheduled_at', 'locked_at', 'attempts', 'final_body', 'cancelled_at', 'sent_at', 'updated_at', 'decision_digest'] },
+    contextual_session: { table: 'ai_agent_sessions', fields: ['id', 'conversation_id', 'agent_id', 'status', 'prospecting_generation', 'source_campaign_id', 'source_recipient_id', 'first_response_message_id', 'first_response_at', 'handoff_reason', 'handoff_action_completed_at', 'metadata_digest'] },
+    contextual_channel: { table: 'channels', fields: ['id', 'policy_digest'] },
     conversation: {
         table: 'conversations', fields: [
             'id', 'channel_id', 'contact_id', 'status', 'assigned_user_id', 'department_id', 'ai_control_status', 'ai_control_updated_at', 'active_agent_session_id', 'updated_at'
@@ -95,6 +105,11 @@ export async function captureOutboundDomainFenceInTransaction(tx: Tx, workspaceI
     }>>(Prisma.sql `SELECT to_jsonb(t) AS value FROM ${Prisma.raw(spec.table)} t WHERE workspace_id=${workspaceId} AND ${Prisma.raw(kind === 'campaign_throttle' ? 'channel_id' : 'id')}=${id}::uuid FOR SHARE`);
     if (!rows[0])
         return null;
+    const value = rows[0]!.value;
+    if (kind === 'contextual_agent') value.rules_digest = sha(JSON.stringify(json(value)));
+    if (kind === 'contextual_followup') value.decision_digest = sha(JSON.stringify(json(value.decision)));
+    if (kind === 'contextual_session') value.metadata_digest = sha(JSON.stringify(json(value.metadata)));
+    if (kind === 'contextual_channel') value.policy_digest = sha(JSON.stringify(json(value)));
     const expected = Object.fromEntries(spec.fields.map(field => [field, rows[0]!.value[field] ?? null]));
     return { kind, id, expected: json(expected) as Prisma.InputJsonObject };
 }
@@ -106,10 +121,11 @@ export async function verifyOutboundDomainInTransaction(tx: Tx, scope: {
 }, request: OutboundRequest): Promise<'valid' | 'domain_proof_required' | 'stale_domain'> {
     await enterCanonicalWorkspaceTransaction(tx, scope.workspaceId);
     const origin = request.origin, kind = origin.kind === 'attachment_part' ? origin.parentKind : origin.kind;
+    const contextual = kind === 'followup' && request.domainFences?.some(f => f.kind === 'contextual_followup');
     if (kind === 'human')
         return request.actor.kind === 'user' && origin.originId === request.actor.id ? 'valid' : 'stale_domain';
     const required: Record<string, OutboundFenceKind[]> = {
-        agent_reply: ['conversation', 'agent_reply', 'agent', 'session'], automation_node: ['conversation', 'automation_run', 'automation_rule'], campaign_recipient: ['conversation', 'campaign_recipient', 'campaign'], prospecting_delivery: ['conversation', 'prospecting_reservation', 'agent', 'session'], assistant_send: ['conversation', 'assistant_send', 'assistant_suggestion', 'assistant_state'], followup: ['conversation', 'followup', 'agent']
+        agent_reply: ['conversation', 'agent_reply', 'agent', 'session'], automation_node: ['conversation', 'automation_run', 'automation_rule'], campaign_recipient: ['conversation', 'campaign_recipient', 'campaign'], prospecting_delivery: ['conversation', 'prospecting_reservation', 'agent', 'session'], assistant_send: ['conversation', 'assistant_send', 'assistant_suggestion', 'assistant_state'], followup: contextual ? ['conversation', 'contextual_followup', 'contextual_agent', 'contextual_channel'] : ['conversation', 'followup', 'agent']
     };
     const fences = request.domainFences;
     if (!Array.isArray(fences) || fences.some(f => !f || !known(f.kind)) || !required[kind] || required[kind]!.some(k => fences.filter(f => f.kind === k).length !== 1))
@@ -124,7 +140,7 @@ export async function verifyOutboundDomainInTransaction(tx: Tx, scope: {
             return 'stale_domain';
         byKind.set(f.kind as OutboundFenceKind, current.expected as Prisma.JsonObject);
     }
-    const row = (k: OutboundFenceKind) => byKind.get(k) ?? {};
+    const row = (k: OutboundFenceKind) => byKind.get(k) ?? (contextual && k === 'agent' ? byKind.get('contextual_agent') : contextual && k === 'followup' ? byKind.get('contextual_followup') : contextual && k === 'session' ? byKind.get('contextual_session') : undefined) ?? {};
     const conv = row('conversation'), session = row('session'), agent = row('agent');
     const now = (await tx.$queryRaw<Array<{
         now: Date;
@@ -142,9 +158,9 @@ export async function verifyOutboundDomainInTransaction(tx: Tx, scope: {
             return 'stale_domain';
         if (agent.status !== 'active')
             return 'stale_domain';
-        const humanFollowup = kind === 'followup' && request.actor.kind === 'user' && row('followup').kind === 'human_commercial';
-        if (humanFollowup && row('followup').session_id === null) {
-            if (conv.active_agent_session_id !== null || byKind.has('session'))
+        const humanFollowup = !contextual && kind === 'followup' && request.actor.kind === 'user' && row('followup').kind === 'human_commercial';
+        if ((humanFollowup || contextual) && row('followup').session_id === null) {
+            if (conv.active_agent_session_id !== null || byKind.has('session') || byKind.has('contextual_session'))
                 return 'stale_domain';
             const channel = await tx.channel.findFirst({ where: { workspaceId: scope.workspaceId, id: scope.channelId } });
             const configured = readAssistantSettings(channel?.encryptedConfig);
@@ -152,7 +168,7 @@ export async function verifyOutboundDomainInTransaction(tx: Tx, scope: {
                 return 'stale_domain';
         }
         else {
-            if (!byKind.has('session'))
+            if (!byKind.has(contextual ? 'contextual_session' : 'session'))
                 return 'domain_proof_required';
             const allowed = humanFollowup ? ['active', 'paused_by_human', 'handoff_requested'] : ['active'];
             if (!allowed.includes(String(session.status)) || session.agent_id !== agent.id || session.conversation_id !== request.conversationId
@@ -179,6 +195,25 @@ export async function verifyOutboundDomainInTransaction(tx: Tx, scope: {
         const p = row('followup');
         if (p.id !== origin.originId || p.conversation_id !== request.conversationId || p.agent_id !== agent.id || p.session_id !== (session.id ?? null) || p.status !== 'processing' || !p.locked_at || time(p.locked_at) <= now - DEFAULT_FOLLOWUP_PROCESSING_LEASE_MS || p.cancelled_at || p.sent_at || !p.active_key || !beforeNow(p.scheduled_at) || request.existingMessageId !== p.id || p.final_body !== request.message.body)
             return 'stale_domain';
+        const actual = await tx.conversationFollowup.findFirst({ where: { workspaceId: scope.workspaceId, id: String(p.id) } });
+        const engine = resolveContextualFollowupEngine({ decision: actual?.decision });
+        if (!contextual && engine.status !== 'legacy') return 'domain_proof_required';
+        if (contextual) {
+            if (!actual || engine.status !== 'contextual' || row('contextual_channel').id !== scope.channelId) return 'stale_domain';
+            const decision = record(actual.decision), approval = record(decision.contextualApproval), output = record(record(decision.contextualFollowup).output);
+            if (!equal(approval.actor, request.actor) || time(approval.claimAt) !== time(p.locked_at) || approval.bodyHash !== sha(request.message.body ?? '')
+                || approval.policyRevision !== engine.engine.policyRevision || output.type !== 'customer_message' || record(decision.contextualFollowup).reviewApproved !== true) return 'stale_domain';
+            const snapshot = await readContextualSnapshotInTransaction(tx, actual, engine.engine.profile, new Date(now));
+            if (snapshot.status !== 'ready' || snapshot.policyRevision !== engine.engine.policyRevision || !await contextualAnchorCurrent(tx, actual, request.existingMessageId)) return 'stale_domain';
+            const move = decideContextualFollowup({ ficha: { contextualFollowup: { version: 1, analysis: record(decision.contextualFollowup).analysis as never, sentAttempts: snapshot.context.sentAttempts } }, context: snapshot.context, maxAttempts: snapshot.plan.steps.length });
+            if (move.type !== 'customer_message' || !equal(move.evidenceMessageIds, output.evidenceMessageIds)) return 'stale_domain';
+            if (nextBusinessStart({ from: new Date(now), ...snapshot.plan }).getTime() > now) return 'stale_domain';
+            if (request.actor.kind === 'agent' && (request.message.body !== output.body || requiresHumanReview({ delivery: snapshot.plan.humanCommercialDelivery,
+                profileAllowsAutomatic: !blocksAutonomousAgent({ assistant: snapshot.policyInputs.channel.assistant }),
+                legacyKindAllowsAutomatic: contextualKindAllowsAutomatic(actual.kind, move.pendingItem.kind), reviewApproved: true,
+                risk: /R\$|\d\s*%|desconto|garantid[oa]/i.test(request.message.body ?? '') ? 'commercial' : 'none' }))) return 'stale_domain';
+            return 'valid';
+        }
         const anchor = await tx.message.findFirst({
             where: {
                 workspaceId: scope.workspaceId, conversationId: request.conversationId, id: String(p.anchor_message_id), direction: 'inbound'
