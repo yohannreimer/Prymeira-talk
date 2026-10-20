@@ -11,6 +11,7 @@ export function resourceExperimentOrder() {
   return [ ['A','vps'], ['A','raised'], ['N','raised'], ['N','vps'], ['N','vps'], ['N','raised'], ['A','raised'], ['A','vps'] ]
     .map(([variant, resourceProfile]) => ({ profile: 'busy', variant, resourceProfile }));
 }
+export function topologyExperimentOrder(){return ['N','F','FD','F','N'].map(variant=>({variant,profile:'busy',resourceProfile:'raised'}));}
 export function twoCpuSet(allowed) {
   if (!Array.isArray(allowed) || allowed.length < 2 || allowed.some(n => !Number.isSafeInteger(n) || n < 0) || new Set(allowed).size !== allowed.length) throw Error('At least two distinct allowed CPUs required');
   return [...allowed].sort((a,b) => a-b).slice(0,2).join(',');

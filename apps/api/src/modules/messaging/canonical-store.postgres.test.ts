@@ -505,4 +505,58 @@ describe.skipIf(!url)('canonical transactional store on PostgreSQL', () => {
     }
   });
 
+  it('budgets channel graph reads and established authority work for mirrored live messages', async () => {
+    const c = await context(), w = await context(c.workspaceId, c.channelId, 'waha');
+    await persist(msg(c, 'BUDGET_WARM'));
+    // Count actual queries against the real database, without a wall-clock assertion.
+    let graphs = 0, membershipProbes = 0;
+    const observed = new PrismaClient({ datasources: { db: { url } }, log: [{ emit: 'event', level: 'query' }] });
+    observed.$on('query', e => {
+      if (e.query.includes('"id", "public"."canonical_addresses"."redirect_id" FROM')) graphs++;
+      if (e.query.includes('FROM "public"."canonical_chat_members"') && e.query.includes('"conversation_id" =')) membershipProbes++;
+    });
+    try {
+      const first = await store.persist(observed, msg(c, 'BUDGET_LIVE'), { receiptKey: 'budget-evolution' });
+      expect(first.outcome).toBe('created');
+      expect.soft(graphs, 'one topology read for a stable channel during one application').toBe(1);
+      // Prisma 6.19 uses two SELECT probes for this existing-member no-op upsert.
+      expect.soft(membershipProbes, 'an established authority is resolved once').toBe(2);
+      graphs = 0; membershipProbes = 0;
+      const mirror = await store.persist(observed, msg(w, 'BUDGET_LIVE'), { receiptKey: 'budget-waha' });
+      expect(mirror).toMatchObject({ messageId: first.messageId, allowOperationalEffects: false });
+      expect.soft(graphs, 'the mirror still checks identity without reloading the same graph').toBe(1);
+      expect.soft(membershipProbes).toBe(2);
+    } finally { await observed.$disconnect(); }
+  });
+  it('invalidates operation topology after new addresses and redirects in one mapping batch', async () => {
+    const c = await context(), w = await context(c.workspaceId, c.channelId, 'waha');
+    // The existing lower root forces the PN to redirect. The third pair creates
+    // an address after an earlier graph read, exercising both invalidations.
+    const scope = { workspaceId: c.workspaceId, channelId: c.channelId };
+    const pnId = 'ffffffff-' + randomUUID().slice(9), lidId = '00000000-' + randomUUID().slice(9);
+    await db.canonicalAddress.createMany({ data: [{ ...scope, id: pnId }, { ...scope, id: lidId }] });
+    await db.canonicalAddressAlias.createMany({ data: [{ ...scope, addressId: pnId, address: PN }, { ...scope, addressId: lidId, address: '700202@lid' }] });
+    const warm = await persist(msg(c, 'MAPPING_WARM'));
+    const event = msg(c, 'MAPPING_BATCH');
+    event.addressMappings = ['700201@lid', '700202@lid', '700203@lid'].map(lid => ({ role: 'chat', lid, pn: PN, source: 'evolution.remoteJidAlt' }));
+    const first = await persist(event);
+    expect(first).toMatchObject({ outcome: 'created', conversationId: warm.conversationId });
+    const mirror = await persist(msg(w, 'MAPPING_BATCH', '700203@lid'));
+    expect(mirror).toMatchObject({ messageId: first.messageId, conversationId: first.conversationId, allowOperationalEffects: false });
+    expect(await db.message.count({ where: { workspaceId: c.workspaceId } })).toBe(2);
+  });
+  it('starts a fresh topology for a later application even inside the same transaction', async () => {
+    const c = await context();
+    const result = await db.$transaction(async tx => {
+      const first = await store.persistInTransaction(tx, msg(c, 'SCOPE_FIRST'), { receiptKey: 'scope-first' });
+      const scope = { workspaceId: c.workspaceId, channelId: c.channelId }, address = '15550007777@s.whatsapp.net';
+      const inserted = await tx.canonicalAddress.create({ data: scope });
+      await tx.canonicalAddressAlias.create({ data: { ...scope, addressId: inserted.id, address } });
+      const second = await store.persistInTransaction(tx, msg(c, 'SCOPE_SECOND', address), { receiptKey: 'scope-second' });
+      return { first, second };
+    });
+    expect(result.first.outcome).toBe('created'); expect(result.second.outcome).toBe('created');
+    expect(result.second.conversationId).not.toBe(result.first.conversationId);
+  });
+
 });

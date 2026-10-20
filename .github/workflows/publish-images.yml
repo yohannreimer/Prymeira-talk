@@ -1,4 +1,4 @@
-name: Isolated remaining message latency diagnosis
+name: Isolated canonical topology performance comparison
 on:
   workflow_dispatch:
 permissions:
@@ -68,7 +68,7 @@ jobs:
         run: |
           set -eu
           mkdir -p validation-artifacts .validation/variants
-          for sha in 99f65ed54a2ca729434b39786bdcb6394d8f9388 51b1fdd75341013b613737e61d3e89b787cec8be 1d7aa19ed9c4a48532937408b9ece782c53d5cd6 c9d49c82d6d64131921588dbf79166ee254f067e f2ff10305183d0a866d2564067f82f520dc7258b; do
+          for sha in 99f65ed54a2ca729434b39786bdcb6394d8f9388 51b1fdd75341013b613737e61d3e89b787cec8be 1d7aa19ed9c4a48532937408b9ece782c53d5cd6 c9d49c82d6d64131921588dbf79166ee254f067e f2ff10305183d0a866d2564067f82f520dc7258b "$GITHUB_SHA"; do
             git fetch --no-tags origin "$sha"
             mkdir -p ".validation/variants/$sha"
             git archive "$sha" | tar -x -C ".validation/variants/$sha"
@@ -82,34 +82,57 @@ jobs:
           docker pull node@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402
           docker tag node@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402 node:22-alpine
           docker image inspect node:22-alpine --format '{{json .}}' > validation-artifacts/common-node-base.json
-          for pair in A_ingress:99f65ed54a2ca729434b39786bdcb6394d8f9388 A_worker:51b1fdd75341013b613737e61d3e89b787cec8be A_api:c9d49c82d6d64131921588dbf79166ee254f067e N:f2ff10305183d0a866d2564067f82f520dc7258b; do
+          for pair in A_ingress:99f65ed54a2ca729434b39786bdcb6394d8f9388 A_worker:51b1fdd75341013b613737e61d3e89b787cec8be A_api:c9d49c82d6d64131921588dbf79166ee254f067e N:f2ff10305183d0a866d2564067f82f520dc7258b F:$GITHUB_SHA; do
             name=${pair%%:*}
             sha=${pair#*:}
             docker build --platform linux/amd64 --label "org.opencontainers.image.revision=$sha" -f ".validation/variants/$sha/apps/api/Dockerfile" -t "talk-compare-${name,,}" ".validation/variants/$sha"
             docker image inspect "talk-compare-${name,,}" --format '{{json .}}' > "validation-artifacts/image-$name.json"
           done
-          for pair in A_web:1d7aa19ed9c4a48532937408b9ece782c53d5cd6 N_web:f2ff10305183d0a866d2564067f82f520dc7258b; do
+          for pair in A_web:1d7aa19ed9c4a48532937408b9ece782c53d5cd6 N_web:f2ff10305183d0a866d2564067f82f520dc7258b F_web:$GITHUB_SHA; do
             name=${pair%%:*}
             sha=${pair#*:}
             docker build --platform linux/amd64 -f ".validation/variants/$sha/apps/web/Dockerfile" -t "talk-compare-${name,,}" ".validation/variants/$sha"
             docker image inspect "talk-compare-${name,,}" --format '{{json .}}' > "validation-artifacts/image-$name.json"
           done
-          cp -a .validation/variants/f2ff10305183d0a866d2564067f82f520dc7258b .validation/variants/f2ff10305183d0a866d2564067f82f520dc7258b-diagnostic
-          node .github/ui-comparison/trace-instrument.mjs .validation/variants/f2ff10305183d0a866d2564067f82f520dc7258b-diagnostic
-          cp .validation/variants/f2ff10305183d0a866d2564067f82f520dc7258b-diagnostic/diagnostic-patches.json validation-artifacts/
-          docker build --platform linux/amd64 -f .validation/variants/f2ff10305183d0a866d2564067f82f520dc7258b-diagnostic/apps/api/Dockerfile -t talk-compare-d .validation/variants/f2ff10305183d0a866d2564067f82f520dc7258b-diagnostic
-          docker image inspect talk-compare-d --format '{{json .}}' > validation-artifacts/image-D.json
+          cp -a ".validation/variants/$GITHUB_SHA" ".validation/variants/$GITHUB_SHA-diagnostic"
+          node .github/ui-comparison/trace-instrument.mjs ".validation/variants/$GITHUB_SHA-diagnostic"
+          cp ".validation/variants/$GITHUB_SHA-diagnostic/diagnostic-patches.json" validation-artifacts/
+          docker build --platform linux/amd64 -f ".validation/variants/$GITHUB_SHA-diagnostic/apps/api/Dockerfile" -t talk-compare-fd ".validation/variants/$GITHUB_SHA-diagnostic"
+          docker image inspect talk-compare-fd --format '{{json .}}' > validation-artifacts/image-FD.json
           node --input-type=module <<'JS'
           import fs from 'node:fs';
-          const images=Object.fromEntries(['A_ingress','A_worker','A_api','N','A_web','N_web','D'].map(n=>[n,JSON.parse(fs.readFileSync(`validation-artifacts/image-${n}.json`)).Id]));
+          const images=Object.fromEntries(['A_ingress','A_worker','A_api','N','A_web','N_web','F','F_web','FD'].map(n=>[n,JSON.parse(fs.readFileSync(`validation-artifacts/image-${n}.json`)).Id]));
           fs.writeFileSync('validation-artifacts/images.json',JSON.stringify(images,null,2));
+          JS
+      - name: Qualify canonical invariants with actual PostgreSQL and RabbitMQ
+        env:
+          DATABASE_URL: postgresql://talk_test:talk_test@127.0.0.1:55439/messaging_test
+          MESSAGING_TEST_DATABASE_URL: postgresql://talk_test:talk_test@127.0.0.1:55439/messaging_test
+        run: |
+          node --input-type=module <<'JS'
+          import {createRequire} from 'node:module';
+          const require=createRequire(new URL('./apps/api/package.json',import.meta.url)),{Client}=require('pg');
+          const u=new URL(process.env.TALK_TEST_DATABASE_ADMIN_URL);
+          if(u.hostname!=='127.0.0.1'||u.port!=='55439'||u.pathname!=='/postgres')throw Error('Owned admin only');
+          const db=new Client({connectionString:u.href});await db.connect();
+          if((await db.query("SHOW data_directory")).rows[0].data_directory!=='/var/lib/postgresql/data/talk_fixture')throw Error('Owned data directory only');
+          await db.query('CREATE DATABASE messaging_test');await db.end();
+          JS
+          pnpm --filter @prymeira-talk/api exec prisma migrate deploy --schema prisma/schema.prisma
+          pnpm --filter @prymeira-talk/api build:prod
+          pnpm --filter @prymeira-talk/api exec vitest run src/modules/messaging/canonical-store.postgres.test.ts src/modules/messaging/canonical-foundation.postgres.test.ts src/modules/messaging/canonical-reducers.postgres.test.ts src/modules/messaging/outbound-fences.postgres.test.ts src/modules/messaging/outbound-intents.postgres.test.ts src/modules/messaging/conversation-preview.postgres.test.ts src/modules/ingress/application.postgres.test.ts --maxWorkers=1 --fileParallelism=false --reporter=json --outputFile="$GITHUB_WORKSPACE/validation-artifacts/topology-postgres.json"
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';const d=JSON.parse(fs.readFileSync('validation-artifacts/topology-postgres.json'));
+          if(!d.success||d.numTotalTests<352||d.numPendingTests||d.numFailedTests||d.numPassedTests!==d.numTotalTests)throw Error('Nonempty, unskipped PostgreSQL/Rabbit qualification required');
+          console.log('TOPOLOGY_INVARIANTS',JSON.stringify({passed:d.numPassedTests,failed:d.numFailedTests,pending:d.numPendingTests}));
           JS
       - name: Paired actual visible UI with current VPS and candidate
         env:
           UI_COMPARISON_PILOT: false
           UI_COMPARISON_PROFILES: busy
           UI_COMPARISON_LIMIT_EXPERIMENT: false
-          UI_COMPARISON_TRACE_EXPERIMENT: true
+          UI_COMPARISON_TRACE_EXPERIMENT: false
+          UI_COMPARISON_FIX_EXPERIMENT: true
           TALK_COMPARE_PG_ID: ${{ job.services.postgres.id }}
           TALK_COMPARE_RABBIT_ID: ${{ job.services.rabbitmq.id }}
         run: node .github/ui-comparison/run.mjs

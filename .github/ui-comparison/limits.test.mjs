@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {limitsFor, resourceExperimentOrder, twoCpuSet, assertCpuSet} from './limits.mjs';
+import {limitsFor, resourceExperimentOrder, twoCpuSet, assertCpuSet, topologyExperimentOrder} from './limits.mjs';
 test('raised experiment preserves the entire API quota and no role exceeds two CPUs', () => {
   const base=limitsFor('vps'), raised=limitsFor('raised');
   assert.deepEqual(raised.api, base.api);
@@ -24,3 +24,5 @@ test('shared affinity selects two allowed CPUs and rejects broad/untrusted CPU s
   for(const value of [[],[0],[0,0],[-1,0],[0,1.5]]) assert.throws(()=>twoCpuSet(value));
   for(const value of ['',undefined,'0','0-3','0,0','0,1,2','0,1; other']) assert.throws(()=>assertCpuSet(value));
 });
+
+test('topology comparison keeps raised quotas and balanced uninstrumented controls',()=>{const plan=topologyExperimentOrder();assert.deepEqual(plan.map(s=>s.variant),['N','F','FD','F','N']);assert(plan.every(s=>s.resourceProfile==='raised'&&s.profile==='busy'));});

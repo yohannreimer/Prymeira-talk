@@ -45,7 +45,19 @@ type MessageEvent = Extract<NormalizedMessagingEvent, { kind: 'message' }>;
  * Do not wrap a history batch or network I/O in this transaction. Runtime ingress and
  * provider recovery use this store; consult docs/messaging/README.md before changing it.
  */
-export function createCanonicalStore({ hash = sha }: { hash?: (value: string) => string } = {}) {
+type StoreOptions = { hash?: (value: string) => string };
+type AddressGraph = { root(id: string): string; family(id: string): string[] };
+export function createCanonicalStore({ hash = sha }: StoreOptions = {}) {
+  // One application owns its snapshot. Never retain it across messages, calls or
+  // transactions, including two applications inside the same caller transaction.
+  const persistInTransaction = (tx: Tx, event: NormalizedMessagingEvent, options: CanonicalStoreOptions) =>
+    createCanonicalStoreSession({ hash }, true).persistInTransaction(tx, event, options);
+  return { ...createCanonicalStoreSession({ hash }), persistInTransaction,
+    persist: (db: PrismaClient, event: NormalizedMessagingEvent, options: CanonicalStoreOptions) =>
+      db.$transaction(tx => persistInTransaction(tx, event, options), { isolationLevel: 'ReadCommitted' }) };
+}
+function createCanonicalStoreSession({ hash = sha }: StoreOptions, snapshot = false) {
+  const graphs = snapshot ? new Map<string, AddressGraph>() : null;
   function digest(value: unknown) {
     const result = hash(stable(value));
     if (!/^[a-f0-9]{1,64}$/.test(result)) throw new Error('Invalid canonical hash');
@@ -53,7 +65,10 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
   }
   const lockAndScope = enterCanonicalTransaction;
   const outboundGate = createOutboundObservationGate({ hash });
-  async function graph(tx: Tx, scope: Scope) {
+  async function graph(tx: Tx, scope: Scope): Promise<AddressGraph> {
+    const cacheKey = JSON.stringify([scope.workspaceId, scope.channelId]);
+    const cached = graphs?.get(cacheKey);
+    if (cached) return cached;
     const rows = await tx.canonicalAddress.findMany({ where: scope, select: { id: true, redirectId: true } });
     const parents = new Map(rows.map(r => [r.id, r.redirectId]));
     function root(id: string) {
@@ -65,7 +80,9 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
       if (!parents.has(id)) throw new Error('Invalid canonical address scope');
       return id;
     }
-    return { root, family: (id: string) => rows.filter(r => root(r.id) === root(id)).map(r => r.id) };
+    const result = { root, family: (id: string) => rows.filter(r => root(r.id) === root(id)).map(r => r.id) };
+    graphs?.set(cacheKey, result);
+    return result;
   }
   async function address(tx: Tx, scope: Scope, value: string) {
     const normalized = normalizeChatAddress(value);
@@ -73,6 +90,7 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
     const alias = await tx.canonicalAddressAlias.findUnique({ where: { workspaceId_channelId_address: { ...scope, address: normalized } } });
     if (alias) return (await graph(tx, scope)).root(alias.addressId);
     const created = await tx.canonicalAddress.create({ data: scope });
+    graphs?.clear();
     await tx.canonicalAddressAlias.create({ data: { ...scope, addressId: created.id, address: normalized } });
     return created.id;
   }
@@ -202,6 +220,7 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
         // The representative is only an identity root, never a conversation authority.
         const [root, other] = [a, b].sort();
         await tx.canonicalAddress.update({ where: { id: other! }, data: { redirectId: root! } });
+        graphs?.clear();
         const family = (await graph(tx, scope)).family(root!);
         if (await tx.canonicalChat.count({ where: { ...scope, addressId: { in: family } } })) await chat(tx, scope, root!, false);
         await rekey(tx, scope, family);
@@ -550,7 +569,12 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
     if (alias.identityId && alias.identityId !== identity?.id) return hold('native_alias_identity_conflict');
     if (!identity) {
       // Before any new contact/history, respect demonstrated existing authorities.
-      canonicalChat = await chat(tx, scope, chatAddress, true, key.chatAddress!.endsWith('@g.us') || key.direction === 'outbound' ? null : event.pushName, c.mode === 'history');
+      // The workspace boundary still excludes other writers. The intervening
+      // identity/gate inspection is read-only, so an established authority from
+      // the first resolution remains valid. Missing authority still takes the
+      // original creation path; review was already held above.
+      if (!canonicalChat.operationConversationId)
+        canonicalChat = await chat(tx, scope, chatAddress, true, key.chatAddress!.endsWith('@g.us') || key.direction === 'outbound' ? null : event.pushName, c.mode === 'history');
       result.conversationId = canonicalChat.operationConversationId;
       if (!result.conversationId) return hold('missing_conversation_authority');
       let messageId: string;
