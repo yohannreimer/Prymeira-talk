@@ -1,4 +1,4 @@
-name: Isolated effect batch and worker concurrency
+name: Isolated lock SQL and commit timing
 on:
   workflow_dispatch:
 permissions:
@@ -56,7 +56,7 @@ jobs:
           python3 .github/ui-comparison/observer-test.py
           python3 .github/ui-comparison/viewport-test.py
       - name: Verify owned comparison tooling
-        run: node --test .github/comparison/isolation.test.mjs .github/comparison/deadline.test.mjs .github/ui-comparison/analyze.test.mjs .github/ui-comparison/limits.test.mjs .github/ui-comparison/trace.test.mjs .github/ui-comparison/concurrency-plan.test.mjs .github/ui-comparison/terminal.test.mjs
+        run: node --test .github/comparison/isolation.test.mjs .github/comparison/deadline.test.mjs .github/ui-comparison/analyze.test.mjs .github/ui-comparison/limits.test.mjs .github/ui-comparison/trace.test.mjs .github/ui-comparison/concurrency-plan.test.mjs .github/ui-comparison/terminal.test.mjs .github/ui-comparison/transaction-timing.test.mjs
       - name: Verify composed current API candidate
         run: |
           pnpm --filter @prymeira-talk/api typecheck
@@ -68,7 +68,7 @@ jobs:
         run: |
           set -eu
           mkdir -p validation-artifacts .validation/variants
-          for sha in 4dd6a608a3fb916a64a94a45d583c60bf6e6c38e "$GITHUB_SHA"; do
+          for sha in 84fdda859a4498f7e8ff8dde0143e2d590fa4e71; do
             git fetch --no-tags origin "$sha"
             mkdir -p ".validation/variants/$sha"
             git archive "$sha" | tar -x -C ".validation/variants/$sha"
@@ -103,37 +103,35 @@ jobs:
           if(!d.success||d.numTotalTests<454||d.numPendingTests||d.numFailedTests||d.numPassedTests!==d.numTotalTests)throw Error('Nonempty, unskipped PostgreSQL/Rabbit qualification required');
           console.log('EFFECT_BATCH_INVARIANTS',JSON.stringify({passed:d.numPassedTests,failed:d.numFailedTests,pending:d.numPendingTests}));
           JS
-      - name: Build immutable reference and candidate images without publication
+      - name: Build immutable current and diagnostic worker images without publication
         run: |
           set -eu
+          sha=84fdda859a4498f7e8ff8dde0143e2d590fa4e71
+          test "$(git rev-parse "$sha:apps")" = "$(git rev-parse HEAD:apps)"
+          test "$(git rev-parse "$sha:packages")" = "$(git rev-parse HEAD:packages)"
           docker pull node@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402
           docker tag node@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402 node:22-alpine
           docker image inspect node:22-alpine --format '{{json .}}' > validation-artifacts/common-node-base.json
-          for pair in R:4dd6a608a3fb916a64a94a45d583c60bf6e6c38e C:$GITHUB_SHA; do
-            name=${pair%%:*}
-            sha=${pair#*:}
-            docker build --platform linux/amd64 --label "org.opencontainers.image.revision=$sha" -f ".validation/variants/$sha/apps/api/Dockerfile" -t "talk-effects-${name,,}" ".validation/variants/$sha"
-            docker image inspect "talk-effects-${name,,}" --format '{{json .}}' > "validation-artifacts/image-$name.json"
-            docker build --platform linux/amd64 -f ".validation/variants/$sha/apps/web/Dockerfile" -t "talk-effects-${name,,}-web" ".validation/variants/$sha"
-            docker image inspect "talk-effects-${name,,}-web" --format '{{json .}}' > "validation-artifacts/image-${name}_web.json"
-          done
-          for n in 1 2; do
-            dest=".validation/variants/$GITHUB_SHA-prefetch-$n"
-            cp -a ".validation/variants/$GITHUB_SHA" "$dest"
-            node .github/ui-comparison/concurrency-plan.mjs "$dest" "$n"
-            cp "$dest/prefetch-patch.json" "validation-artifacts/prefetch-$n-patch.json"
-            docker build --platform linux/amd64 --label "org.opencontainers.image.revision=$GITHUB_SHA" --label "talk.compare.prefetch=$n" -f "$dest/apps/api/Dockerfile" -t "talk-effects-c$n" "$dest"
-            docker image inspect "talk-effects-c$n" --format '{{json .}}' > "validation-artifacts/image-C$n.json"
-          done
+          docker build --platform linux/amd64 --label "org.opencontainers.image.revision=$sha" -f ".validation/variants/$sha/apps/api/Dockerfile" -t talk-timing-c ".validation/variants/$sha"
+          docker image inspect talk-timing-c --format '{{json .}}' > validation-artifacts/image-C.json
+          docker build --platform linux/amd64 -f ".validation/variants/$sha/apps/web/Dockerfile" -t talk-timing-c-web ".validation/variants/$sha"
+          docker image inspect talk-timing-c-web --format '{{json .}}' > validation-artifacts/image-C_web.json
+          dest=".validation/variants/$sha-transaction-timing"
+          cp -a ".validation/variants/$sha" "$dest"
+          node .github/ui-comparison/transaction-timing-instrument.mjs "$dest"
+          cp "$dest/transaction-timing-patch.json" validation-artifacts/transaction-timing-patch.json
+          git diff --no-index ".validation/variants/$sha/apps/api/src" "$dest/apps/api/src" > validation-artifacts/diagnostic-source.patch || test "$?" = 1
+          docker build --platform linux/amd64 --label "org.opencontainers.image.revision=$sha" --label talk.compare.transaction-timing=true -f "$dest/apps/api/Dockerfile" -t talk-timing-t "$dest"
+          docker image inspect talk-timing-t --format '{{json .}}' > validation-artifacts/image-T.json
           node --input-type=module <<'JS'
-          import fs from 'node:fs';const images=Object.fromEntries(['R','C','C1','C2','R_web','C_web'].map(n=>[n,JSON.parse(fs.readFileSync(`validation-artifacts/image-${n}.json`)).Id]));
+          import fs from 'node:fs';const images=Object.fromEntries(['C','T','C_web'].map(n=>[n,JSON.parse(fs.readFileSync(`validation-artifacts/image-${n}.json`)).Id]));
           fs.writeFileSync('validation-artifacts/images.json',JSON.stringify(images,null,2));
           JS
-      - name: Paired batch and prefetch comparison, synthetic UI and terminal drain
+      - name: Measure lock SQL and commit with paired controls and terminal drain
         env:
           TALK_COMPARE_PG_ID: ${{ job.services.postgres.id }}
           TALK_COMPARE_RABBIT_ID: ${{ job.services.rabbitmq.id }}
-        run: node .github/ui-comparison/effects-concurrency.mjs
+        run: node .github/ui-comparison/transaction-timing-experiment.mjs
       - name: Stop only comparison-labelled containers
         if: always()
         run: |
@@ -143,7 +141,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: effects-concurrency-${{ github.sha }}
+          name: transaction-timing-${{ github.sha }}
           path: validation-artifacts/
           if-no-files-found: error
           retention-days: 7
