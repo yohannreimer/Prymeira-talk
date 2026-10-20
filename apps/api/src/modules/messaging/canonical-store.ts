@@ -569,12 +569,7 @@ function createCanonicalStoreSession({ hash = sha }: StoreOptions, snapshot = fa
     if (alias.identityId && alias.identityId !== identity?.id) return hold('native_alias_identity_conflict');
     if (!identity) {
       // Before any new contact/history, respect demonstrated existing authorities.
-      // The workspace boundary still excludes other writers. The intervening
-      // identity/gate inspection is read-only, so an established authority from
-      // the first resolution remains valid. Missing authority still takes the
-      // original creation path; review was already held above.
-      if (!canonicalChat.operationConversationId)
-        canonicalChat = await chat(tx, scope, chatAddress, true, key.chatAddress!.endsWith('@g.us') || key.direction === 'outbound' ? null : event.pushName, c.mode === 'history');
+      canonicalChat = await chat(tx, scope, chatAddress, true, key.chatAddress!.endsWith('@g.us') || key.direction === 'outbound' ? null : event.pushName, c.mode === 'history');
       result.conversationId = canonicalChat.operationConversationId;
       if (!result.conversationId) return hold('missing_conversation_authority');
       let messageId: string;

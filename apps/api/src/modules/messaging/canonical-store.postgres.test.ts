@@ -505,7 +505,7 @@ describe.skipIf(!url)('canonical transactional store on PostgreSQL', () => {
     }
   });
 
-  it('budgets channel graph reads and established authority work for mirrored live messages', async () => {
+  it('budgets channel graph reads without caching authority checks for mirrored live messages', async () => {
     const c = await context(), w = await context(c.workspaceId, c.channelId, 'waha');
     await persist(msg(c, 'BUDGET_WARM'));
     // Count actual queries against the real database, without a wall-clock assertion.
@@ -520,7 +520,7 @@ describe.skipIf(!url)('canonical transactional store on PostgreSQL', () => {
       expect(first.outcome).toBe('created');
       expect.soft(graphs, 'one topology read for a stable channel during one application').toBe(1);
       // Prisma 6.19 uses two SELECT probes for this existing-member no-op upsert.
-      expect.soft(membershipProbes, 'an established authority is resolved once').toBe(2);
+      expect.soft(membershipProbes, 'creator retains both authority checks').toBe(4);
       graphs = 0; membershipProbes = 0;
       const mirror = await store.persist(observed, msg(w, 'BUDGET_LIVE'), { receiptKey: 'budget-waha' });
       expect(mirror).toMatchObject({ messageId: first.messageId, allowOperationalEffects: false });
@@ -557,6 +557,36 @@ describe.skipIf(!url)('canonical transactional store on PostgreSQL', () => {
     });
     expect(result.first.outcome).toBe('created'); expect(result.second.outcome).toBe('created');
     expect(result.second.conversationId).not.toBe(result.first.conversationId);
+  });
+
+  it('rechecks conversation authority if a legacy contact writer adds a claimant during identity inspection', async () => {
+    const c = await context(), phone = '5547999123456', chatAddress = `${phone}@s.whatsapp.net`;
+    await persist(msg(c, 'AUTHORITY_WARM', chatAddress));
+    let inserted = false;
+    const result = await db.$transaction(tx => {
+      // Contacts/startConversation are legacy writers without the canonical
+      // advisory lock. Reproduce their committed second phone variant exactly
+      // between the first authority lookup and the identity-bucket inspection.
+      const observed = new Proxy(tx, { get(target, key) {
+        if (key !== 'canonicalMessageIdentity') return Reflect.get(target, key);
+        return new Proxy(target.canonicalMessageIdentity, { get(model, operation) {
+          if (operation !== 'findMany') return Reflect.get(model, operation);
+          return async (args: Parameters<typeof model.findMany>[0]) => {
+            if (!inserted) {
+              inserted = true;
+              const contact = await db.contact.create({ data: { workspaceId: c.workspaceId, phone } });
+              await db.conversation.create({ data: { workspaceId: c.workspaceId, channelId: c.channelId, contactId: contact.id } });
+            }
+            return model.findMany(args);
+          };
+        } });
+      } });
+      return store.persistInTransaction(observed, msg(c, 'AUTHORITY_RACE', chatAddress), { receiptKey: 'authority-race' });
+    });
+    expect(inserted).toBe(true);
+    expect(result).toMatchObject({ outcome: 'held', allowOperationalEffects: false, identityId: null });
+    expect(await db.canonicalChat.findUnique({ where: { id: result.chatId! } })).toMatchObject({ state: 'review', operationConversationId: null });
+    expect(await db.canonicalMessageIdentity.count({ where: { workspaceId: c.workspaceId, rawId: 'AUTHORITY_RACE' } })).toBe(0);
   });
 
 });
