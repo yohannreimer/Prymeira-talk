@@ -26,6 +26,7 @@ import { createEffectHandlers } from './effect-handlers.js';
 import { buildApp } from '../../test/build-app.js';
 import { createMessageMediaService } from '../conversations/message-media.js';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import http from 'node:http';
 const databaseUrl = process.env.MESSAGING_TEST_DATABASE_URL, brokerUrl = process.env.INGRESS_TEST_AMQP_URL;
 const peer = '15550001111@s.whatsapp.net', secret = 'application-fixture-only';
@@ -45,9 +46,9 @@ describe.skipIf(!databaseUrl || !brokerUrl)('stage 1B canonical application with
     const workspaces: string[] = [], namespaces: string[] = [], publishers: ConfirmedIngressPublisher[] = [], consumers: IngressTransportConsumer[] = [], children: ChildProcess[] = [];
     const apps: ReturnType<typeof createIngressHttp>[] = [];
     beforeAll(async () => {
-        readIngressEnvironment({ TALK_TEST_POSTGRES_PORT: process.env.TALK_TEST_POSTGRES_PORT, TALK_TEST_AMQP_PORT: process.env.TALK_TEST_AMQP_PORT, INGRESS_TRANSPORT_STAGE: 'isolated-1b', DATABASE_URL: databaseUrl, INGRESS_AMQP_URL: brokerUrl, INGRESS_NAMESPACE: 'talk.isolated.application_test', INGRESS_WORKSPACE_ALLOWLIST: 'fixture', INGRESS_PRIVATE_ROOT: '/private/tmp/unused' });
+        readIngressEnvironment({ TALK_TEST_POSTGRES_PORT: process.env.TALK_TEST_POSTGRES_PORT, TALK_TEST_AMQP_PORT: process.env.TALK_TEST_AMQP_PORT, INGRESS_TRANSPORT_STAGE: 'isolated-1b', DATABASE_URL: databaseUrl, INGRESS_AMQP_URL: brokerUrl, INGRESS_NAMESPACE: 'talk.isolated.application_test', INGRESS_WORKSPACE_ALLOWLIST: 'fixture', INGRESS_PRIVATE_ROOT: join(tmpdir(), 'talk-application-unused') });
         db = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
-        root = await mkdtemp('/private/tmp/talk-application-');
+        root = await mkdtemp(join(tmpdir(), 'talk-application-'));
         const files = new IngressPrivateStore(root);
         await files.initialize();
         journal = new IngressJournal(db, files);
