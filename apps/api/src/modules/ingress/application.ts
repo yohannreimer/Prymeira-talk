@@ -1,3 +1,4 @@
+import { createReceiptEffectBatch, type ReceiptEffectBatch } from './effect-batch.js';
 import { setTimeout as delay } from 'node:timers/promises';
 import { refreshOwnedConversationPreviewInTransaction, selectConversationPreviewInTransaction } from '../messaging/conversation-preview.js';
 import { wellFormedPresentation } from '../messaging/well-formed-presentation.js';
@@ -325,22 +326,23 @@ export class IngressApplicationService {
             const sourceMessage = await tx.message.findFirst({ where: { workspaceId: receipt.workspaceId, id: result.messageId }, select: { hiddenByReset: true } });
             if (sourceMessage?.hiddenByReset) return;
         }
+        const effects = createReceiptEffectBatch(tx, receipt, eventIndex);
         event = wellFormedPresentation(event);
         if (result.conversationId)
             await lockProspectingConversation(tx, source.workspaceId, result.conversationId);
         if (event.kind === 'message' && result.messageId && result.conversationId && result.outcome !== 'held')
-            await this.contactAnnotations(tx, receipt, eventIndex, event, result);
+            await this.contactAnnotations(tx, event, result, effects);
         if (event.kind === 'message' && result.outcome !== 'held' && result.messageId && result.conversationId)
-            await this.preparePresentationMedia(tx, receipt, eventIndex, event, result);
+            await this.preparePresentationMedia(tx, receipt, eventIndex, event, result, effects);
         if (event.kind === 'message') {
             if (result.allowOperationalEffects && result.outcome === 'created')
-                await this.messageHooks(tx, receipt, eventIndex, event, result);
+                await this.messageHooks(tx, event, result, effects);
             else if (result.messageId && result.conversationId) {
                 if (result.outcome !== 'held' && source.mode === 'live')
-                    await this.exactEcho(tx, receipt, eventIndex, event, result);
+                    await this.exactEcho(tx, event, result, effects);
                 if (result.changes.length) {
                     const current = await tx.message.findUniqueOrThrow({ where: { id: result.messageId } });
-                    await this.invalidate(tx, receipt, eventIndex, result, `content:${result.messageId}:${sha(stable([current.body, current.mediaUrl, current.metadata, current.status]))}`);
+                    this.invalidate(effects, result, `content:${result.messageId}:${sha(stable([current.body, current.mediaUrl, current.metadata, current.status]))}`);
                 }
             }
         }
@@ -348,11 +350,12 @@ export class IngressApplicationService {
             const current = await tx.message.findUniqueOrThrow({ where: { id: result.messageId } });
             if (event.kind === 'edit' || event.kind === 'revoke')
                 await refreshOwnedConversationPreviewInTransaction(tx, source, { conversationId: result.conversationId, messageId: current.id, preview: current.body });
-            await this.invalidate(tx, receipt, eventIndex, result, `action:${result.messageId}:${sha(stable([event.kind, event.target, 'action' in event ? event.action : null, 'order' in event ? event.order : null, 'patch' in event ? event.patch : null, 'status' in event ? event.status : null, 'recipient' in event ? event.recipient : null]))}`);
+            this.invalidate(effects, result, `action:${result.messageId}:${sha(stable([event.kind, event.target, 'action' in event ? event.action : null, 'order' in event ? event.order : null, 'patch' in event ? event.patch : null, 'status' in event ? event.status : null, 'recipient' in event ? event.recipient : null]))}`);
             if (event.kind === 'edit' || event.kind === 'encrypted_edit' || event.kind === 'revoke') {
-                await this.effect(tx, receipt, eventIndex, 'content.reconcile', `action:${result.actionId}`, result.messageId, result.conversationId, result.observationId, { kind: event.kind, actionId: result.actionId });
+                effects.add('content.reconcile', `action:${result.actionId}`, result.messageId, result.conversationId, result.observationId, { kind: event.kind, actionId: result.actionId });
             }
         }
+        await effects.flush();
     }
     private source(receipt: IngressReceipt): TrustedMessagingContext {
         const { acceptedFacts: _facts, ...source } = record(receipt.source);
@@ -388,16 +391,15 @@ export class IngressApplicationService {
         return null; // Health/eligible/status is deliberately not receive authority.
     }
     private async effect(tx: Tx, receipt: IngressReceipt, eventIndex: number, kind: string, logicalKey: string, messageId: string | null, conversationId: string | null, observationId: string | null, frozen: unknown) {
-        const frontier = await tx.ingressFrontier.findUniqueOrThrow({ where: { receiptId_eventIndex: { receiptId: receipt.id, eventIndex } } });
-        const scope = { workspaceId: receipt.workspaceId, channelId: receipt.channelId };
-        await tx.ingressEffect.upsert({ where: { workspaceId_channelId_logicalKey_kind: { ...scope, logicalKey, kind } }, update: {}, create: { ...scope, receiptId: receipt.id, eventIndex, messageId, conversationId, kind, logicalKey,
-                cause: json({ receiptId: receipt.id, eventIndex, frontierId: String(frontier.id), receiptOrdinal: String(receipt.ordinal), observationId, messageId, source: receipt.source, origin: 'authenticated_ingress' }), frozen: json(frozen) } });
+        const effects = createReceiptEffectBatch(tx, receipt, eventIndex);
+        effects.add(kind, logicalKey, messageId, conversationId, observationId, frozen);
+        await effects.flush();
     }
-    private async invalidate(tx: Tx, receipt: IngressReceipt, index: number, result: CanonicalStoreResult, key: string) {
+    private invalidate(effects: ReceiptEffectBatch, result: CanonicalStoreResult, key: string) {
         for (const kind of ['realtime.message', 'realtime.conversation'])
-            await this.effect(tx, receipt, index, kind, key, result.messageId, result.conversationId, result.observationId, { changes: result.changes, outcome: result.outcome });
+            effects.add(kind, key, result.messageId, result.conversationId, result.observationId, { changes: result.changes, outcome: result.outcome });
     }
-    private async preparePresentationMedia(tx: Tx, receipt: IngressReceipt, index: number, event: MessageEvent, result: CanonicalStoreResult) {
+    private async preparePresentationMedia(tx: Tx, receipt: IngressReceipt, index: number, event: MessageEvent, result: CanonicalStoreResult, effects: ReceiptEffectBatch) {
         if (!event.media?.hasMedia)
             return;
         const message = await tx.message.findUniqueOrThrow({ where: { id: result.messageId! } });
@@ -407,7 +409,7 @@ export class IngressApplicationService {
         // echo does not reacquire a provider copy or replace the prepared result.
         if (await tx.outboundIntent.findUnique({ where: { messageId: message.id } }))
             return;
-        await this.effect(tx, receipt, index, 'media.prepare', `message:${message.id}`, message.id, result.conversationId, result.observationId, {
+        effects.add('media.prepare', `message:${message.id}`, message.id, result.conversationId, result.observationId, {
             presentationOnly: true, privateReceiptId: receipt.id, eventIndex: index, mediaKind: event.media.kind, type: message.type,
             mode: event.context.mode, isGroup: event.key.chatAddress?.endsWith('@g.us') === true, dependsOn: [],
             // Identifiers only (no content): lets any process fetch the bytes from the provider that received
@@ -416,7 +418,7 @@ export class IngressApplicationService {
                 key: event.key, mimeType: event.attachment.mimeType ?? null }
         });
     }
-    private async contactAnnotations(tx: Tx, receipt: IngressReceipt, index: number, event: MessageEvent, result: CanonicalStoreResult) {
+    private async contactAnnotations(tx: Tx, event: MessageEvent, result: CanonicalStoreResult, effects: ReceiptEffectBatch) {
         const conversationId = result.conversationId!;
         const workspaceId = event.context.workspaceId;
         const conversation = await tx.conversation.findUniqueOrThrow({ where: { workspaceId_id: { workspaceId, id: conversationId } }, include: { contact: true } });
@@ -426,7 +428,7 @@ export class IngressApplicationService {
         if (!isGroup && !conversation.contact.name?.trim() && event.key.direction === 'inbound' && event.pushName?.trim())
             await tx.contact.updateMany({ where: { workspaceId, id: conversation.contactId, name: conversation.contact.name }, data: { name: event.pushName.trim().slice(0, 120) } });
         if (isGroup && (!conversation.contact.name?.trim() || conversation.contact.name === groupFallbackName(event.key.chatAddress!)))
-            await this.effect(tx, receipt, index, 'contact.group_metadata', `contact:${conversation.contactId}:group_metadata`, result.messageId, conversationId, result.observationId, {
+            effects.add('contact.group_metadata', `contact:${conversation.contactId}:group_metadata`, result.messageId, conversationId, result.observationId, {
                 contactId: conversation.contactId, chatId: result.chatId, chatAddress: event.key.chatAddress, nativeChatAddress: event.key.nativeChatAddress,
                 originalName: conversation.contact.name, provider: event.context.provider, mode: event.context.mode, presentationOnly: true, dependsOn: []
             });
@@ -434,7 +436,7 @@ export class IngressApplicationService {
         if (lid)
             await tx.contact.update({ where: { workspaceId_id: { workspaceId, id: conversation.contactId } }, data: { customFields: json({ ...record(conversation.contact.customFields), evolutionLid: lid }) } });
     }
-    private async exactEcho(tx: Tx, receipt: IngressReceipt, index: number, event: MessageEvent, result: CanonicalStoreResult) {
+    private async exactEcho(tx: Tx, event: MessageEvent, result: CanonicalStoreResult, effects: ReceiptEffectBatch) {
         if (event.key.direction !== 'outbound' || event.key.chatAddress?.endsWith('@g.us'))
             return;
         const { workspaceId, channelId } = event.context;
@@ -458,9 +460,9 @@ export class IngressApplicationService {
         if (!inbound && !conversation.lastMessageAt)
             await tx.conversation.update({ where: { id: conversation.id }, data: { hiddenUntilReply: true } });
         await selectConversationPreviewInTransaction(tx, event.context, { conversationId: conversation.id, messageId: message.id, preview: event.content.preview, selection: 'echo' });
-        await this.effect(tx, receipt, index, 'realtime.conversation', key, message.id, conversation.id, result.observationId, { talkEcho: true, hiddenCampaign: true, intentId: intent.id, bindingId: binding.id });
+        effects.add('realtime.conversation', key, message.id, conversation.id, result.observationId, { talkEcho: true, hiddenCampaign: true, intentId: intent.id, bindingId: binding.id });
     }
-    private async messageHooks(tx: Tx, receipt: IngressReceipt, index: number, event: MessageEvent, result: CanonicalStoreResult) {
+    private async messageHooks(tx: Tx, event: MessageEvent, result: CanonicalStoreResult, effects: ReceiptEffectBatch) {
         if (!result.messageId || !result.conversationId)
             throw new Error('Created message lacks domain scope');
         const { workspaceId, channelId } = event.context, conversationId = result.conversationId;
@@ -511,8 +513,8 @@ export class IngressApplicationService {
             control: humanTookControl ? 'human_controlled' : conversation.aiControlStatus, activeAgentSessionId: conversation.activeAgentSessionId,
             requiresContentReady: !!event.media?.hasMedia, assistantSettings: readAssistantSettings(conversation.channel.encryptedConfig) };
         const key = `message:${message.id}`;
-        await this.invalidate(tx, receipt, index, result, key);
-        const obligation = async (kind: string, extra: unknown = {}) => this.effect(tx, receipt, index, kind, key, message.id, conversationId, result.observationId, { ...frozen, dependsOn: ['assistant.message', 'agent.debounce', 'automation.occurrence', 'triage.message', 'handoff.brief'].includes(kind) && message.direction === 'inbound' ? [...(kind === 'handoff.brief' || kind === 'triage.message' ? [] : ['prospecting.inbound']), ...(event.media?.hasMedia ? ['media.prepare'] : [])] : [], ...record(extra) });
+        this.invalidate(effects, result, key);
+        const obligation = async (kind: string, extra: unknown = {}) => effects.add(kind, key, message.id, conversationId, result.observationId, { ...frozen, dependsOn: ['assistant.message', 'agent.debounce', 'automation.occurrence', 'triage.message', 'handoff.brief'].includes(kind) && message.direction === 'inbound' ? [...(kind === 'handoff.brief' || kind === 'triage.message' ? [] : ['prospecting.inbound']), ...(event.media?.hasMedia ? ['media.prepare'] : [])] : [], ...record(extra) });
         if (isGroup || message.type === 'system')
             return;
         if (humanTookControl)

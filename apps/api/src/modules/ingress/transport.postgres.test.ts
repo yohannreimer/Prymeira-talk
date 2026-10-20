@@ -1,5 +1,6 @@
+import { tmpdir } from 'node:os';
 import { createHash, createHmac, randomUUID } from 'node:crypto';
-import { mkdtemp, rename, rm, stat } from 'node:fs/promises';
+import { mkdtemp, realpath, rename, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
 import amqp, { type ChannelModel } from 'amqplib';
@@ -34,7 +35,7 @@ describe.skipIf(!databaseUrl || !brokerUrl)('isolated ingress PostgreSQL + actua
     readIngressEnvironment({ TALK_TEST_POSTGRES_PORT: process.env.TALK_TEST_POSTGRES_PORT, TALK_TEST_AMQP_PORT: process.env.TALK_TEST_AMQP_PORT, INGRESS_TRANSPORT_STAGE: 'isolated-1a', DATABASE_URL: databaseUrl, INGRESS_AMQP_URL: brokerUrl,
       INGRESS_NAMESPACE: 'talk.isolated.test', INGRESS_WORKSPACE_ALLOWLIST: 'fixture', INGRESS_PRIVATE_ROOT: '/private/tmp/unused' });
     db = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
-    root = await mkdtemp('/private/tmp/talk-ingress-'); files = new IngressPrivateStore(root); await files.initialize();
+    root = await realpath(await mkdtemp(join(tmpdir(), 'talk-ingress-'))); files = new IngressPrivateStore(root); await files.initialize();
     journal = new IngressJournal(db, files); admin = await amqp.connect(brokerUrl!);
   });
   afterAll(async () => {

@@ -1,3 +1,4 @@
+import {terminalComplete,ownedQueueCounts} from './terminal.mjs';
 import {limitsFor,assertCpuSet} from './limits.mjs';
 import {makeEnvelopes} from './payloads.mjs';
 import fs from 'node:fs';import path from 'node:path';import cp from 'node:child_process';import http from 'node:http';import {randomUUID,createHash,createHmac} from 'node:crypto';import {createRequire} from 'node:module';
@@ -75,10 +76,31 @@ try{
  await Promise.all(tasks);save('offers.json',{began,count,rate,duration,offeredUntil:Date.now(),offers});
  const drain=Date.now()+150000;let complete=false;
  while(Date.now()<drain){const live=JSON.parse(fs.readFileSync(path.join(output,'browser-live.json'),'utf8'));const seen=new Set(live.times.filter(t=>t.phase==='visibleAfterTwoFrames').map(t=>t.marker));const admitted=new Set(offers.filter(o=>o.target&&o.status===202).map(o=>o.marker));const totalAdmitted=new Set(offers.filter(o=>o.status===202).map(o=>o.marker));const applied=await db.message.count({where:{workspaceId,body:{startsWith:'TALKUI_'}}});if(admitted.size>0&&[...admitted].every(x=>seen.has(x))&&applied>=totalAdmitted.size){complete=true;break;}await sleep(250);}
- save('resource-after-load.json',resourceSnapshot());polling=false;waiting=false;await pollPromise;if(waitPromise)await waitPromise;save('database-waits.json',waitSamples);save('database-observations.json',observations);save('final-oracles.json',{complete,identities:await db.canonicalMessageIdentity.findMany({where:{workspaceId,rawId:{startsWith:'UI-SYNTH-'}}}),messages:await db.message.findMany({where:{workspaceId,body:{startsWith:'TALKUI_'}}}),effects:await db.ingressEffect.findMany({where:{workspaceId}}),applications:await db.ingressApplication.findMany({where:{workspaceId}}),receipts:await db.ingressReceipt.findMany({where:{workspaceId},select:{id:true,authenticatedDigest:true,createdAt:true}})});
+ save('resource-after-load.json',resourceSnapshot());polling=false;waiting=false;await pollPromise;if(waitPromise)await waitPromise;save('database-waits.json',waitSamples);save('database-observations.json',observations);
+ const readOracles=async()=>({complete,identities:await db.canonicalMessageIdentity.findMany({where:{workspaceId,rawId:{startsWith:'UI-SYNTH-'}}}),messages:await db.message.findMany({where:{workspaceId,body:{startsWith:'TALKUI_'}}}),effects:await db.ingressEffect.findMany({where:{workspaceId}}),applications:await db.ingressApplication.findMany({where:{workspaceId}}),receipts:await db.ingressReceipt.findMany({where:{workspaceId},select:{id:true,authenticatedDigest:true,createdAt:true}})});
+ const cutoff=await readOracles();save('latency-cutoff-oracles.json',cutoff);
  fs.writeFileSync(path.join(output,'stop-browser'),'');await until(()=>browser.exitCode!==null,15000);if(browser.exitCode!==0)throw Error('Browser observation failed');
+ let terminal={required:!!config.terminalDrain,complete:!config.terminalDrain};
+ if(config.terminalDrain){
+  const began=Date.now(),receiptIds=[...new Set(offers.map(o=>o.data.receiptId).filter(Boolean))],messageIds=cutoff.identities.map(i=>i.messageId),expected={applications:count*2,effects:count*10};let counts=null;
+  const end=Date.now()+60000;
+  while(Date.now()<end){
+   const apps=await db.ingressApplication.groupBy({by:['state'],where:{receiptId:{in:receiptIds}},_count:{_all:true}}),effects=await db.ingressEffect.groupBy({by:['state'],where:{messageId:{in:messageIds}},_count:{_all:true}});
+   const sum=rows=>rows.reduce((n,r)=>n+r._count._all,0),n=(rows,state)=>rows.find(r=>r.state===state)?._count._all??0;
+   counts={applications:sum(apps),applied:n(apps,'applied'),effects:sum(effects),done:n(effects,'done'),failed:n(effects,'failed')};
+   if(receiptIds.length===expected.applications&&messageIds.length===count&&terminalComplete(counts,expected))break;
+   await sleep(100);
+  }
+  const brokerId=process.env.TALK_COMPARE_RABBIT_ID;if(!/^[a-f0-9]{64}$/.test(brokerId??''))throw Error('Exact owned broker container required');
+  const stdout=cp.execFileSync('docker',['exec',brokerId,'rabbitmqctl','list_queues','-q','-p','talk_test','name','messages_ready','messages_unacknowledged'],{encoding:'utf8',timeout:15000});
+  const queues=ownedQueueCounts(stdout,env.INGRESS_NAMESPACE),queuesEmpty=queues.every(q=>q.ready===0&&q.unacknowledged===0);
+  terminal={required:true,complete:receiptIds.length===expected.applications&&messageIds.length===count&&terminalComplete(counts,expected)&&queuesEmpty,began,endedAt:Date.now(),counts,expected,queues};
+  save('resource-after-terminal.json',resourceSnapshot());
+ }
+ save('terminal-drain.json',terminal);save('final-oracles.json',await readOracles());
+
  if(config.diagnostic){cp.execFileSync('docker',['kill','--signal=SIGUSR2',label+'-worker']);const profile=path.join(root,'worker.cpuprofile');await until(()=>fs.existsSync(profile),15000);fs.copyFileSync(profile,path.join(output,'worker.cpuprofile'));}
- save('slot-result.json',{complete,endedAt:Date.now(),count,profile:config.profile});
+ save('slot-result.json',{complete:complete&&terminal.complete,latencyComplete:complete,terminalComplete:terminal.complete,endedAt:Date.now(),count,profile:config.profile});
 }finally{
  polling=false;waiting=false;if(waitPromise)await waitPromise.catch(()=>undefined);if(pollPromise)await pollPromise.catch(()=>undefined);
  fs.writeFileSync(path.join(output,'stop-browser'),'');

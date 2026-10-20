@@ -1,7 +1,9 @@
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { createServer, connect, type Socket } from 'node:net';
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, realpath, rm } from 'node:fs/promises';
 import amqp from 'amqplib';
 import { PrismaClient } from '@prisma/client';
 import { beforeAll, describe, it, expect } from 'vitest';
@@ -118,7 +120,7 @@ describe.skipIf(!brokerUrl || !databaseUrl)('owned real RabbitMQ setup cancellat
   }
   for (const [name, number, method] of [['publisher handshake', 1, 10 * 65536 + 41], ['publisher channel', 1, 20 * 65536 + 11], ['consumer topology', 2, 50 * 65536 + 11], ['consumer registration', 2, 60 * 65536 + 21]] as const) {
     it(`runtime shutdown cancels ${name} before a session is assigned`, async () => {
-      const namespace = `talk.isolated.${randomUUID()}`, proxy = await silentResponse(method, number), privateRoot = await mkdtemp('/private/tmp/ingress-setup-');
+      const namespace = `talk.isolated.${randomUUID()}`, proxy = await silentResponse(method, number), privateRoot = await realpath(await mkdtemp(join(tmpdir(), 'ingress-setup-')));
       const runtime = await createIngressRuntime({ databaseUrl: databaseUrl!, amqpUrl: proxy.url, namespace, privateRoot, workspaceAllowlist: new Set([randomUUID()]), port: 4011, evolutionSecret: '', wahaSecret: '', evolutionAliases: [] }, true);
       try {
         await within(proxy.reached); const start = Date.now(); await within(runtime.close());
@@ -131,7 +133,7 @@ describe.skipIf(!brokerUrl || !databaseUrl)('owned real RabbitMQ setup cancellat
   }
   for (const [name, number, method] of [['publisher handshake', 1, 10 * 65536 + 10], ['consumer topology', 2, 50 * 65536 + 11]] as const) {
     it(`compiled worker SIGTERM exits during ${name}`, async () => {
-      const namespace = `talk.isolated.${randomUUID()}`, proxy = await silentResponse(method, number), privateRoot = await mkdtemp('/private/tmp/ingress-setup-child-');
+      const namespace = `talk.isolated.${randomUUID()}`, proxy = await silentResponse(method, number), privateRoot = await realpath(await mkdtemp(join(tmpdir(), 'ingress-setup-child-')));
       const child = spawn(process.execPath, ['src/modules/ingress/transport-setup-child.fixture.mjs'], { env: { ...process.env,
         DATABASE_URL: databaseUrl!, INGRESS_AMQP_URL: brokerUrl!, INGRESS_TEST_PROXY_URL: proxy.url,
         INGRESS_TRANSPORT_STAGE: 'isolated-1a', INGRESS_NAMESPACE: namespace, INGRESS_PRIVATE_ROOT: privateRoot,
@@ -154,7 +156,7 @@ describe.skipIf(!brokerUrl || !databaseUrl)('owned real RabbitMQ setup cancellat
   }
   for (const number of [1, 2]) {
     it(`runtime replaces silent ${number === 1 ? 'publisher' : 'consumer'} setup after its deadline`, async () => {
-      const namespace = `talk.isolated.${randomUUID()}`, proxy = await silentResponse(50 * 65536 + 11, number), privateRoot = await mkdtemp('/private/tmp/ingress-setup-');
+      const namespace = `talk.isolated.${randomUUID()}`, proxy = await silentResponse(50 * 65536 + 11, number), privateRoot = await realpath(await mkdtemp(join(tmpdir(), 'ingress-setup-')));
       const runtime = await createIngressRuntime({ databaseUrl: databaseUrl!, amqpUrl: proxy.url, namespace, privateRoot, workspaceAllowlist: new Set([randomUUID()]), port: 4011, evolutionSecret: '', wahaSecret: '', evolutionAliases: [] }, true);
       const admin = await amqp.connect(brokerUrl!);
       try {

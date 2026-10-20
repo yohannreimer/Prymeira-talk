@@ -1,5 +1,5 @@
 import { randomUUID, createHmac } from 'node:crypto';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { PrismaClient } from '@prisma/client';
 import amqp, { type ChannelModel } from 'amqplib';
@@ -48,7 +48,7 @@ describe.skipIf(!databaseUrl || !brokerUrl)('stage 1B canonical application with
     beforeAll(async () => {
         readIngressEnvironment({ TALK_TEST_POSTGRES_PORT: process.env.TALK_TEST_POSTGRES_PORT, TALK_TEST_AMQP_PORT: process.env.TALK_TEST_AMQP_PORT, INGRESS_TRANSPORT_STAGE: 'isolated-1b', DATABASE_URL: databaseUrl, INGRESS_AMQP_URL: brokerUrl, INGRESS_NAMESPACE: 'talk.isolated.application_test', INGRESS_WORKSPACE_ALLOWLIST: 'fixture', INGRESS_PRIVATE_ROOT: join(tmpdir(), 'talk-application-unused') });
         db = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
-        root = await mkdtemp(join(tmpdir(), 'talk-application-'));
+        root = await realpath(await mkdtemp(join(tmpdir(), 'talk-application-')));
         const files = new IngressPrivateStore(root);
         await files.initialize();
         journal = new IngressJournal(db, files);
@@ -666,6 +666,24 @@ describe.skipIf(!databaseUrl || !brokerUrl)('stage 1B canonical application with
         async function submit(body: unknown) { const response = await f.app.inject({ method: 'POST', url: `/webhooks/meta/${f.workspaceId}`, headers: { 'content-type': 'application/json', 'x-hub-signature-256': `sha256=${createHmac('sha256', secret).update(JSON.stringify(body)).digest('hex')}` }, payload: JSON.stringify(body) }); expect(response.statusCode).toBe(202); return response.json().receiptId as string; }
         return { ...f, meta, phoneNumberId, value, submit };
     }
+    it('effect batch failure on a later Meta position preserves the first committed position and resumes exactly once', async () => {
+        const f = await metaFixture();
+        const id = await f.submit(f.value([{ id: 'wamid.effects1', from: '15550001111', type: 'text', text: { body: 'one' }, timestamp: '1700000000' }, { id: 'wamid.effects2', from: '15550001111', type: 'text', text: { body: 'two' }, timestamp: '1700000005' }]));
+        await failInsert('ingress_effects', f.workspaceId, async () => {
+            await expect(service.apply(id)).rejects.toThrow('fixture rollback');
+            expect(await db.ingressEventProgress.findMany({ where: { receiptId: id } })).toEqual([expect.objectContaining({ eventIndex: 0, state: 'applied' })]);
+            expect(await db.message.count({ where: { workspaceId: f.workspaceId } })).toBe(1);
+            expect(await db.ingressEffect.count({ where: { receiptId: id, eventIndex: 0 } })).toBe(10);
+            expect(await db.ingressEffect.count({ where: { receiptId: id, eventIndex: 1 } })).toBe(0);
+            expect(await db.ingressApplication.findUnique({ where: { receiptId: id } })).toBeNull();
+        }, 1);
+        const firstEffects = await db.ingressEffect.findMany({ where: { receiptId: id, eventIndex: 0 }, orderBy: { id: 'asc' } });
+        await service.apply(id); await service.apply(id);
+        expect(await db.message.count({ where: { workspaceId: f.workspaceId } })).toBe(2);
+        expect(await db.ingressEffect.count({ where: { receiptId: id } })).toBe(20);
+        expect(await db.ingressEffect.findMany({ where: { receiptId: id, eventIndex: 0 }, orderBy: { id: 'asc' } })).toEqual(firstEffects);
+        expect(await db.conversation.findFirst({ where: { workspaceId: f.workspaceId } })).toMatchObject({ unreadCount: 2 });
+    });
     it('Meta partial batch crash resumes positions, opens window once per live message and retains unsupported media held', async () => {
         const f = await metaFixture();
         const id = await f.submit(f.value([{ id: 'wamid.batch1', from: '15550001111', type: 'text', text: { body: 'one' }, timestamp: '1700000000' }, { id: 'wamid.batch2', from: '15550001111', type: 'text', text: { body: 'two' }, timestamp: '1700000005' }]));
@@ -1059,4 +1077,41 @@ describe.skipIf(!databaseUrl || !brokerUrl)('stage 1B canonical application with
             expect(JSON.stringify(await db.ingressEffect.findMany({ where: { workspaceId: f.workspaceId } }))).not.toContain('synthetic-private-qr');
         });
     });
+    it.each([1, 2, 8])('prefetch %s preserves two workspaces on one queue after interrupted delivery and mirrors', async prefetch => {
+        const f = await fixture(), g = await fixture();
+        const app = createIngressHttp({ db, journal, publisher: () => f.publisher, evolutionSecret: secret, wahaSecret: secret, workspaceAllowlist: new Set([f.workspaceId, g.workspaceId]) });
+        apps.push(app);
+        const receipts: string[] = [];
+        for (const target of [f, g]) for (let n = 0; n < 8; n++) for (const provider of ['evolution', 'waha'] as const) {
+            const stanza = `shared-${n}`, text = `synthetic workspace ${target.workspaceId} message ${n}`;
+            const input = provider === 'evolution' ? { event: 'MESSAGES_UPSERT', instance: target.evo.sessionName, data: { key: { id: stanza, remoteJid: peer, fromMe: false }, message: { conversation: text }, messageTimestamp: 1700000000 + n } }
+                : { id: randomUUID(), event: 'message.any', session: target.waha.sessionName, payload: { id: `false_${peer}_${stanza}`, from: peer, fromMe: false, body: text, timestamp: 1700000000 + n } };
+            const raw = JSON.stringify(input), headers = provider === 'evolution' ? { 'x-prymeira-talk-secret': secret } : { 'x-webhook-hmac': createHmac('sha512', secret).update(raw).digest('hex'), 'x-webhook-hmac-algorithm': 'sha512' };
+            const response = await app.inject({ method: 'POST', url: `/webhooks/${provider}/${target.workspaceId}`, headers: { 'content-type': 'application/json', ...headers }, payload: raw });
+            expect(response.statusCode).toBe(202); receipts.push(response.json().receiptId);
+        }
+        let entered = false, release!: () => void;
+        const blocked = new Promise<void>(resolve => { release = resolve; });
+        const first = await IngressTransportConsumer.start({ url: brokerUrl!, namespace: f.namespace, journal, publisher: () => f.publisher, prefetch,
+            application: { async apply(id: string) { entered = true; await blocked; return service.apply(id); } } });
+        consumers.push(first);
+        try { await until(async () => entered, value => value); await first.close(); }
+        finally { release(); }
+        const resumed = await IngressTransportConsumer.start({ url: brokerUrl!, namespace: f.namespace, journal, publisher: () => f.publisher, application: service, prefetch });
+        consumers.push(resumed);
+        await until(() => db.ingressApplication.count({ where: { receiptId: { in: receipts }, state: 'applied' } }), count => count === receipts.length);
+        await resumed.close();
+        const allIds = new Set<string>();
+        for (const target of [f, g]) {
+            const messages = await db.message.findMany({ where: { workspaceId: target.workspaceId } });
+            expect(messages).toHaveLength(8);
+            expect(messages.every(m => m.body?.startsWith(`synthetic workspace ${target.workspaceId} message `))).toBe(true);
+            expect(new Set(messages.map(m => m.conversationId)).size).toBe(1);
+            for (const m of messages) { expect(allIds.has(m.id)).toBe(false); allIds.add(m.id); }
+            expect(await db.canonicalMessageIdentity.count({ where: { workspaceId: target.workspaceId, contentState: 'ready' } })).toBe(8);
+            expect(await db.ingressEffect.count({ where: { workspaceId: target.workspaceId } })).toBe(80);
+            expect(await db.conversation.findFirst({ where: { workspaceId: target.workspaceId } })).toMatchObject({ unreadCount: 8 });
+        }
+    }, 30000);
+
 });

@@ -1,4 +1,4 @@
-name: Isolated canonical topology performance comparison
+name: Isolated effect batch and worker concurrency
 on:
   workflow_dispatch:
 permissions:
@@ -6,7 +6,7 @@ permissions:
 jobs:
   compare:
     runs-on: ubuntu-24.04
-    timeout-minutes: 80
+    timeout-minutes: 100
     services:
       postgres:
         image: postgres:16.13-alpine@sha256:4e6e670bb069649261c9c18031f0aded7bb249a5b6664ddec29c013a89310d50
@@ -56,19 +56,19 @@ jobs:
           python3 .github/ui-comparison/observer-test.py
           python3 .github/ui-comparison/viewport-test.py
       - name: Verify owned comparison tooling
-        run: node --test .github/comparison/isolation.test.mjs .github/comparison/deadline.test.mjs .github/ui-comparison/analyze.test.mjs .github/ui-comparison/limits.test.mjs .github/ui-comparison/trace.test.mjs
+        run: node --test .github/comparison/isolation.test.mjs .github/comparison/deadline.test.mjs .github/ui-comparison/analyze.test.mjs .github/ui-comparison/limits.test.mjs .github/ui-comparison/trace.test.mjs .github/ui-comparison/concurrency-plan.test.mjs .github/ui-comparison/terminal.test.mjs
       - name: Verify composed current API candidate
         run: |
           pnpm --filter @prymeira-talk/api typecheck
           mkdir -p apps/api/tmp
           cp .github/ui-comparison/payload-contract.test.ts apps/api/tmp/ui-payload-contract.test.ts
-          pnpm --filter @prymeira-talk/api exec vitest run tmp/ui-payload-contract.test.ts src/modules/channels/outbound-router.safety.test.ts src/modules/channels/outbound-router.destination.test.ts src/modules/channels/outbound-router.read.test.ts src/modules/channels/outbound-routing.test.ts src/modules/followups/contextual-followup-policy.test.ts src/modules/followups/contextual-followup-engine.test.ts src/modules/followups/contextual-followup-context.test.ts src/modules/followups/contextual-followup-profiles.test.ts src/modules/harness/agentes/followup/followup.test.ts --maxWorkers=1 --fileParallelism=false
+          pnpm --filter @prymeira-talk/api exec vitest run tmp/ui-payload-contract.test.ts src/modules/ingress/effect-batch.test.ts src/modules/ingress/runtime.test.ts src/modules/ingress/application.retry.test.ts src/modules/ingress/effect-handlers.test.ts src/modules/ingress/consumer-observability.test.ts src/modules/channels/outbound-router.safety.test.ts src/modules/channels/outbound-router.destination.test.ts src/modules/channels/outbound-router.read.test.ts src/modules/channels/outbound-routing.test.ts src/modules/followups/contextual-followup-policy.test.ts src/modules/followups/contextual-followup-engine.test.ts src/modules/followups/contextual-followup-context.test.ts src/modules/followups/contextual-followup-profiles.test.ts src/modules/harness/agentes/followup/followup.test.ts --maxWorkers=1 --fileParallelism=false
           pnpm --filter @prymeira-talk/api harness:replay-contextual-followups
       - name: Fetch immutable source revisions, without production access
         run: |
           set -eu
           mkdir -p validation-artifacts .validation/variants
-          for sha in 99f65ed54a2ca729434b39786bdcb6394d8f9388 51b1fdd75341013b613737e61d3e89b787cec8be 1d7aa19ed9c4a48532937408b9ece782c53d5cd6 c9d49c82d6d64131921588dbf79166ee254f067e f2ff10305183d0a866d2564067f82f520dc7258b "$GITHUB_SHA"; do
+          for sha in 4dd6a608a3fb916a64a94a45d583c60bf6e6c38e "$GITHUB_SHA"; do
             git fetch --no-tags origin "$sha"
             mkdir -p ".validation/variants/$sha"
             git archive "$sha" | tar -x -C ".validation/variants/$sha"
@@ -97,60 +97,53 @@ jobs:
           JS
           pnpm --filter @prymeira-talk/api exec prisma migrate deploy --schema prisma/schema.prisma
           pnpm --filter @prymeira-talk/api build:prod
-          pnpm --filter @prymeira-talk/api exec vitest run src/modules/messaging/canonical-store.postgres.test.ts src/modules/messaging/canonical-foundation.postgres.test.ts src/modules/messaging/canonical-reducers.postgres.test.ts src/modules/messaging/outbound-fences.postgres.test.ts src/modules/messaging/outbound-intents.postgres.test.ts src/modules/messaging/conversation-preview.postgres.test.ts src/modules/ingress/application.postgres.test.ts --maxWorkers=1 --fileParallelism=false --reporter=default --reporter=json --outputFile="$GITHUB_WORKSPACE/validation-artifacts/topology-postgres.json"
+          pnpm --filter @prymeira-talk/api exec vitest run src/modules/messaging/canonical-store.postgres.test.ts src/modules/messaging/canonical-foundation.postgres.test.ts src/modules/messaging/canonical-reducers.postgres.test.ts src/modules/messaging/outbound-fences.postgres.test.ts src/modules/messaging/outbound-intents.postgres.test.ts src/modules/messaging/conversation-preview.postgres.test.ts src/modules/ingress/application.postgres.test.ts src/modules/ingress/effect-batch.postgres.test.ts src/modules/ingress/effect-runner.postgres.test.ts src/modules/ingress/recertification-queue.postgres.test.ts src/modules/ingress/transport.postgres.test.ts src/modules/ingress/publication-lease.postgres.test.ts src/modules/ingress/setup.rabbit.test.ts --maxWorkers=1 --fileParallelism=false --reporter=default --reporter=json --outputFile="$GITHUB_WORKSPACE/validation-artifacts/topology-postgres.json"
           node --input-type=module <<'JS'
           import fs from 'node:fs';const d=JSON.parse(fs.readFileSync('validation-artifacts/topology-postgres.json'));
-          if(!d.success||d.numTotalTests<352||d.numPendingTests||d.numFailedTests||d.numPassedTests!==d.numTotalTests)throw Error('Nonempty, unskipped PostgreSQL/Rabbit qualification required');
-          console.log('TOPOLOGY_INVARIANTS',JSON.stringify({passed:d.numPassedTests,failed:d.numFailedTests,pending:d.numPendingTests}));
+          if(!d.success||d.numTotalTests<454||d.numPendingTests||d.numFailedTests||d.numPassedTests!==d.numTotalTests)throw Error('Nonempty, unskipped PostgreSQL/Rabbit qualification required');
+          console.log('EFFECT_BATCH_INVARIANTS',JSON.stringify({passed:d.numPassedTests,failed:d.numFailedTests,pending:d.numPendingTests}));
           JS
-      - name: Build all variants on one pinned local Node base, no image publication
+      - name: Build immutable reference and candidate images without publication
         run: |
           set -eu
           docker pull node@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402
           docker tag node@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402 node:22-alpine
           docker image inspect node:22-alpine --format '{{json .}}' > validation-artifacts/common-node-base.json
-          for pair in A_ingress:99f65ed54a2ca729434b39786bdcb6394d8f9388 A_worker:51b1fdd75341013b613737e61d3e89b787cec8be A_api:c9d49c82d6d64131921588dbf79166ee254f067e N:f2ff10305183d0a866d2564067f82f520dc7258b F:$GITHUB_SHA; do
+          for pair in R:4dd6a608a3fb916a64a94a45d583c60bf6e6c38e C:$GITHUB_SHA; do
             name=${pair%%:*}
             sha=${pair#*:}
-            docker build --platform linux/amd64 --label "org.opencontainers.image.revision=$sha" -f ".validation/variants/$sha/apps/api/Dockerfile" -t "talk-compare-${name,,}" ".validation/variants/$sha"
-            docker image inspect "talk-compare-${name,,}" --format '{{json .}}' > "validation-artifacts/image-$name.json"
+            docker build --platform linux/amd64 --label "org.opencontainers.image.revision=$sha" -f ".validation/variants/$sha/apps/api/Dockerfile" -t "talk-effects-${name,,}" ".validation/variants/$sha"
+            docker image inspect "talk-effects-${name,,}" --format '{{json .}}' > "validation-artifacts/image-$name.json"
+            docker build --platform linux/amd64 -f ".validation/variants/$sha/apps/web/Dockerfile" -t "talk-effects-${name,,}-web" ".validation/variants/$sha"
+            docker image inspect "talk-effects-${name,,}-web" --format '{{json .}}' > "validation-artifacts/image-${name}_web.json"
           done
-          for pair in A_web:1d7aa19ed9c4a48532937408b9ece782c53d5cd6 N_web:f2ff10305183d0a866d2564067f82f520dc7258b F_web:$GITHUB_SHA; do
-            name=${pair%%:*}
-            sha=${pair#*:}
-            docker build --platform linux/amd64 -f ".validation/variants/$sha/apps/web/Dockerfile" -t "talk-compare-${name,,}" ".validation/variants/$sha"
-            docker image inspect "talk-compare-${name,,}" --format '{{json .}}' > "validation-artifacts/image-$name.json"
+          for n in 1 2; do
+            dest=".validation/variants/$GITHUB_SHA-prefetch-$n"
+            cp -a ".validation/variants/$GITHUB_SHA" "$dest"
+            node .github/ui-comparison/concurrency-plan.mjs "$dest" "$n"
+            cp "$dest/prefetch-patch.json" "validation-artifacts/prefetch-$n-patch.json"
+            docker build --platform linux/amd64 --label "org.opencontainers.image.revision=$GITHUB_SHA" --label "talk.compare.prefetch=$n" -f "$dest/apps/api/Dockerfile" -t "talk-effects-c$n" "$dest"
+            docker image inspect "talk-effects-c$n" --format '{{json .}}' > "validation-artifacts/image-C$n.json"
           done
-          cp -a ".validation/variants/$GITHUB_SHA" ".validation/variants/$GITHUB_SHA-diagnostic"
-          node .github/ui-comparison/trace-instrument.mjs ".validation/variants/$GITHUB_SHA-diagnostic"
-          cp ".validation/variants/$GITHUB_SHA-diagnostic/diagnostic-patches.json" validation-artifacts/
-          docker build --platform linux/amd64 -f ".validation/variants/$GITHUB_SHA-diagnostic/apps/api/Dockerfile" -t talk-compare-fd ".validation/variants/$GITHUB_SHA-diagnostic"
-          docker image inspect talk-compare-fd --format '{{json .}}' > validation-artifacts/image-FD.json
           node --input-type=module <<'JS'
-          import fs from 'node:fs';
-          const images=Object.fromEntries(['A_ingress','A_worker','A_api','N','A_web','N_web','F','F_web','FD'].map(n=>[n,JSON.parse(fs.readFileSync(`validation-artifacts/image-${n}.json`)).Id]));
+          import fs from 'node:fs';const images=Object.fromEntries(['R','C','C1','C2','R_web','C_web'].map(n=>[n,JSON.parse(fs.readFileSync(`validation-artifacts/image-${n}.json`)).Id]));
           fs.writeFileSync('validation-artifacts/images.json',JSON.stringify(images,null,2));
           JS
-      - name: Paired actual visible UI with current VPS and candidate
+      - name: Paired batch and prefetch comparison, synthetic UI and terminal drain
         env:
-          UI_COMPARISON_PILOT: false
-          UI_COMPARISON_PROFILES: busy
-          UI_COMPARISON_LIMIT_EXPERIMENT: false
-          UI_COMPARISON_TRACE_EXPERIMENT: false
-          UI_COMPARISON_FIX_EXPERIMENT: true
           TALK_COMPARE_PG_ID: ${{ job.services.postgres.id }}
           TALK_COMPARE_RABBIT_ID: ${{ job.services.rabbitmq.id }}
-        run: node .github/ui-comparison/run.mjs
+        run: node .github/ui-comparison/effects-concurrency.mjs
       - name: Stop only comparison-labelled containers
         if: always()
         run: |
           ids=$(docker ps -aq --filter "label=talk.compare=vps-compare-$GITHUB_RUN_ID")
           if [ -n "$ids" ]; then docker rm -f $ids; fi
-      - name: Preserve synthetic comparison evidence only
+      - name: Preserve synthetic evidence only
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: visible-message-comparison-${{ github.sha }}
+          name: effects-concurrency-${{ github.sha }}
           path: validation-artifacts/
           if-no-files-found: error
-          retention-days: 3
+          retention-days: 7

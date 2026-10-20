@@ -1,5 +1,7 @@
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, realpath, rm } from 'node:fs/promises';
 import { PrismaClient } from '@prisma/client';
 import { describe, expect, it, vi } from 'vitest';
 import { IngressJournal } from './journal.js';
@@ -14,7 +16,7 @@ describe.skipIf(!databaseUrl)('initial publication lease with PostgreSQL', () =>
     const workspaceId = randomUUID(), namespace = `talk.lease.${randomUUID()}`;
     const channel = await db.channel.create({ data: { workspaceId, provider: 'evolution', providerKey: randomUUID() } });
     const connection = await db.channelConnection.create({ data: { workspaceId, channelId: channel.id, provider: 'evolution', sessionName: channel.providerKey } });
-    const root = await mkdtemp('/private/tmp/talk-publication-lease-');
+    const root = await realpath(await mkdtemp(join(tmpdir(), 'talk-publication-lease-')));
     const files = new IngressPrivateStore(root); await files.initialize();
     const journal = new IngressJournal(db, files);
     const publisher = { ready: true, namespace, deadlineMs: 2000, publish: vi.fn().mockResolvedValue(undefined) } as unknown as ConfirmedIngressPublisher;
