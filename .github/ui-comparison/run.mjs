@@ -1,3 +1,4 @@
+import os from 'node:os';import {limitsFor,resourceExperimentOrder,twoCpuSet} from './limits.mjs';
 import fs from 'node:fs';import path from 'node:path';import cp from 'node:child_process';import {createRequire} from 'node:module';
 const require=createRequire(new URL('../../apps/api/package.json',import.meta.url)),pg=require('pg');const root=process.cwd(),art=path.join(root,'validation-artifacts');
 const label='vps-compare-'+process.env.GITHUB_RUN_ID;if(!/^vps-compare-[0-9]+$/.test(label)||process.env.GITHUB_ACTIONS!=='true')throw Error('Owned CI only');
@@ -13,13 +14,28 @@ if(fingerprints.A_ingress.files['dist/ingress.js']!=='264d3e4205fea8f1ca8cdc8301
 for(const[k,v]of Object.entries(fingerprints))if(!k.endsWith('_web')&&(v.node!=='v22.23.3'||v.arch!=='x64'||v.prisma.client!=='6.19.3'))throw Error('Wrong runtime');
 const url=new URL(process.env.TALK_TEST_DATABASE_ADMIN_URL);if(url.hostname!=='127.0.0.1'||url.port!=='55439'||url.pathname!=='/postgres')throw Error('Unowned admin');const admin=new pg.Client({connectionString:url.href});await admin.connect();if((await admin.query("SELECT current_setting('data_directory') AS d")).rows[0].d!=='/var/lib/postgresql/data/talk_fixture')throw Error('Unowned DB');
 const variants={A:{ingress:images.A_ingress,worker:images.A_worker,api:images.A_api,web:images.A_web},N:{ingress:images.N,worker:images.N,api:images.N,web:images.N_web}};
-const pilot=process.env.UI_COMPARISON_PILOT==='true';const profiles=(process.env.UI_COMPARISON_PROFILES??'sustained,busy').split(',');if(!profiles.length||profiles.some(p=>!['sustained','busy'].includes(p)))throw Error('Undeclared profile');const order=pilot?[{variant:'A',profile:'sustained'},{variant:'N',profile:'sustained'}]:profiles.flatMap(profile=>['A','N','N','A'].map(variant=>({profile,variant})));
-const summary={controller:run('git',['rev-parse','HEAD']),candidate:N,variants,order,pilot,limits:{ingress:{cpu:.5,MiB:512},worker:{cpu:.75,MiB:768},api:{cpu:2,MiB:2048},web:{cpu:1,MiB:1024}},slots:[],startedAt:new Date().toISOString()};save('comparison-plan.json',summary);
+const limitExperiment=process.env.UI_COMPARISON_LIMIT_EXPERIMENT==='true';
+let cpuSet=null;
+if(limitExperiment){
+ const allowed=JSON.parse(run('python3',['-c','import os,json; print(json.dumps(sorted(os.sched_getaffinity(0))))']));cpuSet=twoCpuSet(allowed);
+ const fixtures={postgres:process.env.TALK_COMPARE_PG_ID,rabbitmq:process.env.TALK_COMPARE_RABBIT_ID};
+ for(const [role,id]of Object.entries(fixtures)){
+  if(!/^[a-f0-9]{64}$/.test(id??''))throw Error('Exact owned CI service ID required');
+  const inspected=JSON.parse(run('docker',['inspect',id]))[0];
+  const expectedImage=role==='postgres'?'postgres:16.13-alpine@sha256:4e6e670bb069649261c9c18031f0aded7bb249a5b6664ddec29c013a89310d50':'rabbitmq:3.12.14-alpine@sha256:97907aceae0a6fbfb24847724adadf12f536a2b9bf547a42bc9dad153ed74e99';
+  if(inspected.Config.Image!==expectedImage)throw Error('Unexpected fixture image');
+  run('docker',['update','--cpuset-cpus',cpuSet,id]);
+ }
+ run('taskset',['-apc',cpuSet,String(process.pid)]);
+ save('shared-cpu-boundary.json',{cpuSet,allowedBefore:allowed,controllerAffinity:JSON.parse(run('python3',['-c','import os,json; print(json.dumps(sorted(os.sched_getaffinity(0))))'])),fixtures:Object.fromEntries(Object.entries(fixtures).map(([role,id])=>{const x=JSON.parse(run('docker',['inspect',id]))[0];return[role,{id:x.Id,image:x.Config.Image,cpuSet:x.HostConfig.CpusetCpus}]})),scope:'Application, PostgreSQL, RabbitMQ, offer generator, browser and observer share these same two logical CPUs; other VPS services are absent.'});
+}
+const pilot=process.env.UI_COMPARISON_PILOT==='true';const profiles=(process.env.UI_COMPARISON_PROFILES??'sustained,busy').split(',');if(!profiles.length||profiles.some(p=>!['sustained','busy'].includes(p)))throw Error('Undeclared profile');if(limitExperiment&&(pilot||profiles.join(',')!=='busy'))throw Error('Resource experiment requires complete busy profile');const order=limitExperiment?resourceExperimentOrder():pilot?[{variant:'A',profile:'sustained'},{variant:'N',profile:'sustained'}]:profiles.flatMap(profile=>['A','N','N','A'].map(variant=>({profile,variant})));
+const summary={controller:run('git',['rev-parse','HEAD']),candidate:N,variants,order,pilot,limitExperiment,cpuSet,limits:limitsFor('vps'),resourceProfiles:limitExperiment?{vps:limitsFor('vps'),raised:limitsFor('raised')}:undefined,slots:[],startedAt:new Date().toISOString()};save('comparison-plan.json',summary);
 try{for(const [index,slot]of order.entries()){
  cleanup();await admin.query('DROP DATABASE IF EXISTS talk_rehearsal');await admin.query('CREATE DATABASE talk_rehearsal');
  run('pnpm',['--filter','@prymeira-talk/api','exec','prisma','migrate','deploy','--schema',path.join(root,'.validation/variants',slot.variant==='A'?B:N,'apps/api/prisma/schema.prisma')],{env:{...process.env,DATABASE_URL:process.env.REHEARSAL_DATABASE_URL}});
- const name=`${String(index+1).padStart(2,'0')}-${slot.profile}-${slot.variant}`,output=path.join(art,name);fs.mkdirSync(output,{recursive:true});const config={...slot,pilot,output,label,images:variants[slot.variant]};fs.writeFileSync(path.join(output,'config.json'),JSON.stringify(config,null,2));
- let stopped=false;const samples=[];const sampler=(async()=>{while(!stopped){const found=ids();if(found.length){const result=cp.spawnSync('docker',['stats','--no-stream','--format','{{json .}}',...found,process.env.TALK_COMPARE_PG_ID,process.env.TALK_COMPARE_RABBIT_ID],{encoding:'utf8',timeout:7000});samples.push({at:Date.now(),exit:result.status,lines:(result.stdout??'').trim().split('\n').filter(Boolean).map(s=>JSON.parse(s))});}await new Promise(r=>setTimeout(r,1000));}})();
+ const name=`${String(index+1).padStart(2,'0')}-${slot.profile}-${slot.variant}${limitExperiment?'-'+slot.resourceProfile:''}`,output=path.join(art,name);fs.mkdirSync(output,{recursive:true});const config={...slot,pilot,output,label,cpuSet,limits:limitsFor(slot.resourceProfile??'vps'),images:variants[slot.variant]};fs.writeFileSync(path.join(output,'config.json'),JSON.stringify(config,null,2));
+ let stopped=false;const samples=[];const sampler=(async()=>{while(!stopped){const found=ids();if(found.length){const result=cp.spawnSync('docker',['stats','--no-stream','--format','{{json .}}',...found,process.env.TALK_COMPARE_PG_ID,process.env.TALK_COMPARE_RABBIT_ID],{encoding:'utf8',timeout:7000});samples.push({at:Date.now(),host:{loadavg:os.loadavg(),freeMemory:os.freemem(),cpuPressure:fs.readFileSync('/proc/pressure/cpu','utf8')},exit:result.status,lines:(result.stdout??'').trim().split('\n').filter(Boolean).map(s=>JSON.parse(s))});}await new Promise(r=>setTimeout(r,1000));}})();
  const log=fs.openSync(path.join(output,'slot-process.log'),'w');let result;
  try{result=await new Promise(resolve=>{const child=cp.spawn('node',['.github/ui-comparison/slot.mjs',path.join(output,'config.json')],{stdio:['ignore',log,log]});const timer=setTimeout(()=>child.kill('SIGTERM'),370000);child.on('close',(exit,signal)=>{clearTimeout(timer);resolve({exit,signal});});});}finally{stopped=true;await sampler;fs.closeSync(log);cleanup();fs.writeFileSync(path.join(output,'resources.json'),JSON.stringify(samples,null,2));}
  let evidence=null;try{evidence=JSON.parse(fs.readFileSync(path.join(output,'slot-result.json')));}catch{}

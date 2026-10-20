@@ -1,4 +1,4 @@
-name: Isolated visible message comparison
+name: Isolated visible message resource comparison
 on:
   workflow_dispatch:
 permissions:
@@ -6,7 +6,7 @@ permissions:
 jobs:
   compare:
     runs-on: ubuntu-24.04
-    timeout-minutes: 65
+    timeout-minutes: 80
     services:
       postgres:
         image: postgres:16.13-alpine@sha256:4e6e670bb069649261c9c18031f0aded7bb249a5b6664ddec29c013a89310d50
@@ -55,7 +55,7 @@ jobs:
           python3 -m playwright install --with-deps chromium
           python3 .github/ui-comparison/observer-test.py
       - name: Verify owned comparison tooling
-        run: node --test .github/comparison/isolation.test.mjs .github/comparison/deadline.test.mjs .github/ui-comparison/analyze.test.mjs
+        run: node --test .github/comparison/isolation.test.mjs .github/comparison/deadline.test.mjs .github/ui-comparison/analyze.test.mjs .github/ui-comparison/limits.test.mjs
       - name: Verify composed current API candidate
         run: |
           pnpm --filter @prymeira-talk/api typecheck
@@ -102,6 +102,7 @@ jobs:
         env:
           UI_COMPARISON_PILOT: false
           UI_COMPARISON_PROFILES: busy
+          UI_COMPARISON_LIMIT_EXPERIMENT: true
           TALK_COMPARE_PG_ID: ${{ job.services.postgres.id }}
           TALK_COMPARE_RABBIT_ID: ${{ job.services.rabbitmq.id }}
         run: node .github/ui-comparison/run.mjs
