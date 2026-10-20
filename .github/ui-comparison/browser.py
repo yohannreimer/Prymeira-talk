@@ -2,6 +2,7 @@
 import json, pathlib, sys, time, traceback
 from urllib.parse import urlsplit
 from playwright.sync_api import sync_playwright
+from viewport import wait_until_latest
 config=json.loads(pathlib.Path(sys.argv[1]).read_text()); out=pathlib.Path(config['output'])
 def save(name,obj):
  temporary=out/(name+'.tmp'); temporary.write_text(json.dumps(obj,ensure_ascii=False,indent=2)); temporary.replace(out/name)
@@ -41,7 +42,7 @@ try:
   thread=page.locator('.message-thread')
   thread.hover()
   page.mouse.wheel(0,100000)
-  page.wait_for_function("(() => {const e=document.querySelector('.message-thread');return !!e && e.scrollHeight-e.clientHeight-e.scrollTop<=2;})()")
+  wait_until_latest(page, thread)
   page.wait_for_timeout(300)
   initial=thread.evaluate("e=>({scrollTop:e.scrollTop,scrollHeight:e.scrollHeight,clientHeight:e.clientHeight,distanceFromBottom:e.scrollHeight-e.clientHeight-e.scrollTop})")
   warm=page.locator('[data-message-id="'+config['warmupMessageId']+'"]')

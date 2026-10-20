@@ -54,6 +54,7 @@ jobs:
           python3 -m pip install playwright==1.64.0
           python3 -m playwright install --with-deps chromium
           python3 .github/ui-comparison/observer-test.py
+          python3 .github/ui-comparison/viewport-test.py
       - name: Verify owned comparison tooling
         run: node --test .github/comparison/isolation.test.mjs .github/comparison/deadline.test.mjs .github/ui-comparison/analyze.test.mjs .github/ui-comparison/limits.test.mjs
       - name: Verify composed current API candidate
