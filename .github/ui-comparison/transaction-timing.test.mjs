@@ -1,5 +1,5 @@
 import {test} from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs';import path from 'node:path';import os from 'node:os';
-import {createTimingCollector,assertTimingFixture} from './transaction-timing-runtime.mjs';
+import {createTimingCollector,assertTimingFixture,rawTimingCategory} from './transaction-timing-runtime.mjs';
 import {prepareTimingVariant} from './transaction-timing-instrument.mjs';
 import {sanitizePostgresDurations} from './transaction-timing-log.mjs';
 const first='00000000-0000-4000-8000-000000000001',second='00000000-0000-4000-8000-000000000002';
@@ -51,4 +51,9 @@ test('instrumentation changes only listed diagnostic archive files and refuses r
 
 test('outside a traced receipt native Prisma promises are returned unchanged',()=>{
  const c=createTimingCollector(),original={then(){},prismaPromise:true};const db=c.wrapClient({message:{findMany(){return original;}},$executeRaw(){return original;}});assert.equal(db.message.findMany(),original);assert.equal(db.$executeRaw`SELECT 1`,original);
+});
+
+test('raw graph and membership timing categories export only operation names',()=>{
+ assert.equal(rawTimingCategory([['WITH canonical_graph_redirects AS (...)']]),'graph');
+ assert.equal(rawTimingCategory([['INSERT INTO "canonical_chat_members" VALUES (...)']]),'membership_insert');
 });

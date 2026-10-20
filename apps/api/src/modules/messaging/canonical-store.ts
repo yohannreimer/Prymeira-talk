@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+import { canonicalAddressGraph, readCanonicalAddressGraphRows } from './canonical-address-graph.js';
 import { isDomainlessEvolutionTarget } from '../evolution/evolution-receipt-key.js';
 import { createOutboundObservationGate } from './outbound-observation-gate.js';
 import { wellFormedPresentation } from './well-formed-presentation.js';
@@ -46,7 +48,7 @@ type MessageEvent = Extract<NormalizedMessagingEvent, { kind: 'message' }>;
  * provider recovery use this store; consult docs/messaging/README.md before changing it.
  */
 type StoreOptions = { hash?: (value: string) => string };
-type AddressGraph = { root(id: string): string; family(id: string): string[] };
+type AddressGraph = { view: ReturnType<typeof canonicalAddressGraph>; complete: boolean; seeds: string[] };
 export function createCanonicalStore({ hash = sha }: StoreOptions = {}) {
   // One application owns its snapshot. Never retain it across messages, calls or
   // transactions, including two applications inside the same caller transaction.
@@ -58,6 +60,9 @@ export function createCanonicalStore({ hash = sha }: StoreOptions = {}) {
 }
 function createCanonicalStoreSession({ hash = sha }: StoreOptions, snapshot = false) {
   const graphs = snapshot ? new Map<string, AddressGraph>() : null;
+  // Mapping/revision/adoption and non-message paths keep the complete read, so a
+  // large mapping batch never turns into one sparse query per new seed.
+  let sparseTopology = snapshot;
   function digest(value: unknown) {
     const result = hash(stable(value));
     if (!/^[a-f0-9]{1,64}$/.test(result)) throw new Error('Invalid canonical hash');
@@ -65,30 +70,22 @@ function createCanonicalStoreSession({ hash = sha }: StoreOptions, snapshot = fa
   }
   const lockAndScope = enterCanonicalTransaction;
   const outboundGate = createOutboundObservationGate({ hash });
-  async function graph(tx: Tx, scope: Scope): Promise<AddressGraph> {
+  async function graph(tx: Tx, scope: Scope, requestedSeeds?: string[]) {
+    const seeds = sparseTopology ? requestedSeeds : undefined;
     const cacheKey = JSON.stringify([scope.workspaceId, scope.channelId]);
     const cached = graphs?.get(cacheKey);
-    if (cached) return cached;
-    const rows = await tx.canonicalAddress.findMany({ where: scope, select: { id: true, redirectId: true } });
-    const parents = new Map(rows.map(r => [r.id, r.redirectId]));
-    function root(id: string) {
-      const seen = new Set<string>();
-      while (parents.get(id)) {
-        if (seen.has(id)) throw new Error('Canonical address redirect cycle');
-        seen.add(id); id = parents.get(id)!;
-      }
-      if (!parents.has(id)) throw new Error('Invalid canonical address scope');
-      return id;
-    }
-    const result = { root, family: (id: string) => rows.filter(r => root(r.id) === root(id)).map(r => r.id) };
-    graphs?.set(cacheKey, result);
-    return result;
+    if (cached && (cached.complete || (seeds !== undefined && seeds.every(id => cached.view.has(id))))) return cached.view;
+    const requested = seeds === undefined ? undefined : [...new Set([...(cached?.seeds ?? []), ...seeds])];
+    const rows = await readCanonicalAddressGraphRows(tx, scope, requested);
+    const view = canonicalAddressGraph(rows);
+    graphs?.set(cacheKey, { view, complete: requested === undefined, seeds: requested ?? [] });
+    return view;
   }
   async function address(tx: Tx, scope: Scope, value: string) {
     const normalized = normalizeChatAddress(value);
     if (!normalized) throw new Error('Invalid canonical address');
     const alias = await tx.canonicalAddressAlias.findUnique({ where: { workspaceId_channelId_address: { ...scope, address: normalized } } });
-    if (alias) return (await graph(tx, scope)).root(alias.addressId);
+    if (alias) return (await graph(tx, scope, [alias.addressId])).root(alias.addressId);
     const created = await tx.canonicalAddress.create({ data: scope });
     graphs?.clear();
     await tx.canonicalAddressAlias.create({ data: { ...scope, addressId: created.id, address: normalized } });
@@ -97,7 +94,7 @@ function createCanonicalStoreSession({ hash = sha }: StoreOptions, snapshot = fa
   /** Every conversation that claims the chat: contacts whose phone is any alias in the address family plus the
    * members already recorded. More than one claimant means no conversation may operate it without a decision. */
   async function claimants(tx: Tx, scope: Scope, addressId: string) {
-    const g = await graph(tx, scope), root = g.root(addressId), family = g.family(root);
+    const g = await graph(tx, scope, [addressId]), root = g.root(addressId), family = g.family(root);
     let result = await tx.canonicalChat.findUnique({ where: { workspaceId_channelId_addressId: { ...scope, addressId: root } } });
     if (!result) result = await tx.canonicalChat.create({ data: { ...scope, addressId: root } });
     const aliases = await tx.canonicalAddressAlias.findMany({ where: { ...scope, addressId: { in: family } } });
@@ -120,9 +117,26 @@ function createCanonicalStoreSession({ hash = sha }: StoreOptions, snapshot = fa
       const conversation = await tx.conversation.create({ data: { ...scope, contactId: contact.id, ...(historical ? { aiControlStatus: 'human_controlled' as const } : {}) } });
       ids.add(conversation.id);
     }
-    for (const conversationId of ids) {
-      await tx.canonicalChatMember.upsert({ where: { workspaceId_channelId_chatId_conversationId: { ...scope, chatId: result.id, conversationId } },
-        create: { ...scope, chatId: result.id, conversationId, source: 'demonstrated_contact_address' }, update: {} });
+    // Target only the original logical membership constraint. A PK or another
+    // uniqueness conflict must fail the transaction, not silently omit a member.
+    // The same statement verifies every desired full key (including skipped rows).
+    // No existing source/evidence/identity is updated. Bound statement size while
+    // retaining every claimant and both authority resolutions.
+    const memberships = [...ids];
+    for (let start = 0; start < memberships.length; start += 64) {
+      const values = memberships.slice(start, start + 64).map(conversationId => Prisma.sql`(${randomUUID()}::uuid,
+        ${scope.workspaceId}, ${scope.channelId}::uuid, ${result.id}::uuid, ${conversationId}::uuid, 'demonstrated_contact_address')`);
+      const missing = await tx.$queryRaw<Array<{ conversationId: string }>>`WITH desired(id, workspace_id, channel_id, chat_id, conversation_id, source) AS (
+        VALUES ${Prisma.join(values)}
+      ), inserted AS (
+        INSERT INTO "canonical_chat_members" (id, workspace_id, channel_id, chat_id, conversation_id, source)
+        SELECT * FROM desired ON CONFLICT (workspace_id, channel_id, chat_id, conversation_id) DO NOTHING
+        RETURNING workspace_id, channel_id, chat_id, conversation_id
+      )
+      SELECT d.conversation_id AS "conversationId" FROM desired d
+      WHERE NOT EXISTS (SELECT 1 FROM inserted i WHERE i.workspace_id=d.workspace_id AND i.channel_id=d.channel_id AND i.chat_id=d.chat_id AND i.conversation_id=d.conversation_id)
+        AND NOT EXISTS (SELECT 1 FROM canonical_chat_members m WHERE m.workspace_id=d.workspace_id AND m.channel_id=d.channel_id AND m.chat_id=d.chat_id AND m.conversation_id=d.conversation_id)`;
+      if (missing.length) throw Error('Incomplete canonical memberships');
     }
     // Preserve all original members and message origin FKs; only the root gets authority.
     await tx.canonicalChat.updateMany({ where: { ...scope, id: { in: familyChats.filter(c => c.id !== result!.id).map(c => c.id) } },
@@ -373,8 +387,9 @@ function createCanonicalStoreSession({ hash = sha }: StoreOptions, snapshot = fa
    * JSON predicates let recovery count an exact frontier without loading an unbounded
    * set of payloads. Incomplete targets require an already demonstrated native alias. */
   async function pendingTargetWhere(tx: Tx, identity: CanonicalMessageIdentity): Promise<Prisma.CanonicalActionWhereInput> {
-    const scope = { workspaceId: identity.workspaceId, channelId: identity.channelId }, g = await graph(tx, scope);
+    const scope = { workspaceId: identity.workspaceId, channelId: identity.channelId };
     const origin = await tx.canonicalChat.findUniqueOrThrow({ where: { id: identity.chatId } });
+    const g = await graph(tx, scope, [origin.addressId, ...(identity.senderAddressId ? [identity.senderAddressId] : [])]);
     const addresses = await tx.canonicalAddressAlias.findMany({ where: { ...scope, addressId: { in: g.family(origin.addressId) } } });
     const senders = identity.senderAddressId ? await tx.canonicalAddressAlias.findMany({ where: { ...scope, addressId: { in: g.family(identity.senderAddressId) } } }) : [];
     const field = (name: string, value: Prisma.JsonValue): Prisma.CanonicalActionWhereInput => ({ target: { path: [name], equals: value === null ? Prisma.JsonNull : value } });
@@ -432,6 +447,7 @@ function createCanonicalStoreSession({ hash = sha }: StoreOptions, snapshot = fa
   });
   async function persistObservationInTransaction(tx: Tx, event: NormalizedMessagingEvent, options: CanonicalStoreOptions, replay?: { observation: CanonicalObservation; staleFact: boolean; known: boolean }): Promise<CanonicalStoreResult> {
     event = wellFormedPresentation(event);
+    if (event.kind !== 'message' || event.addressMappings.length || event.currentRevision !== null || options.adoption) sparseTopology = false;
     const c = event.context, scope = scopeOf(c);
     if (c.provider === 'meta_official' && (event.addressMappings.length || (event.kind !== 'control' && (event.kind === 'message' ? event.key : event.target).identityFormat !== 'provider_native'))) throw new Error('Official Meta requires its own native namespace');
     if (!event.providerEventId && !options.receiptKey) throw new Error('Stable ingress receiptKey required');

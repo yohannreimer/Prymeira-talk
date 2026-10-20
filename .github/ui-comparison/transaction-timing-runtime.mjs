@@ -8,7 +8,7 @@ export function assertTimingFixture(env){
 }
 export function rawTimingCategory(args){
  const sql=Array.isArray(args[0])?args[0].join('?'):'';
- return /pg_advisory_xact_lock/.test(sql)?'advisory':/FOR SHARE/.test(sql)?'source_share':/transaction_isolation/.test(sql)?'isolation':'raw';
+ return /canonical_graph_redirects/.test(sql)?'graph':/INSERT INTO "canonical_chat_members"/.test(sql)?'membership_insert':/pg_advisory_xact_lock/.test(sql)?'advisory':/FOR SHARE/.test(sql)?'source_share':/transaction_isolation/.test(sql)?'isolation':'raw';
 }
 export function createTimingCollector({now=()=>performance.now(),wall=()=>Date.now(),maxReceipts=4096,maxQueries=2048}={}){
  const local=new AsyncLocalStorage(),receipts=[],issues=new Set();let active=0;

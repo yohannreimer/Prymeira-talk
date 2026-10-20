@@ -60,8 +60,8 @@ export function createCanonicalReducers({ digest, lockAndScope, resolveActionTar
   const contentActions = (scope: Scope, identityId: string): Prisma.CanonicalActionWhereInput => ({ ...scope, identityId,
     OR: [{ state: 'pending' }, { observation: { reason: 'receipt_key_conflict' } }], kind: { in: ['edit', 'encrypted_edit'] } });
   const contentSnapshots = (scope: Scope, identityId: string): Prisma.CanonicalObservationWhereInput => ({ ...scope, identityId, kind: 'message', state: 'held' });
-  async function unboundContent(tx: Tx, identity: CanonicalMessageIdentity) {
-    return tx.canonicalAction.count({ where: { ...await pendingTargetWhere(tx, identity), identityId: null,
+  async function unboundContent(tx: Tx, identity: CanonicalMessageIdentity, targetWhere?: Prisma.CanonicalActionWhereInput) {
+    return tx.canonicalAction.count({ where: { ...(targetWhere ?? await pendingTargetWhere(tx, identity)), identityId: null,
       state: 'pending', kind: { in: ['edit', 'encrypted_edit', 'revoke'] } } });
   }
 
@@ -300,7 +300,8 @@ export function createCanonicalReducers({ digest, lockAndScope, resolveActionTar
   }
   async function recoverForMessage(tx: Tx, event: MessageEvent, result: CanonicalStoreResult) {
     const targetIdentity = await tx.canonicalMessageIdentity.findUniqueOrThrow({ where: { id: result.identityId! } });
-    const pending = await tx.canonicalAction.findMany({ where: { ...await pendingTargetWhere(tx, targetIdentity), state: 'pending' }, orderBy: { id: 'asc' }, take: 100, include: { observation: true } });
+    const targetWhere = await pendingTargetWhere(tx, targetIdentity);
+    const pending = await tx.canonicalAction.findMany({ where: { ...targetWhere, state: 'pending' }, orderBy: { id: 'asc' }, take: 100, include: { observation: true } });
     const matching = await bindPending(tx, pending, result.identityId!);
     for (const action of matching) {
       const reduced = await reduceAction(tx, action.observation.payload as unknown as ActionEvent, action.observationId);
@@ -308,7 +309,11 @@ export function createCanonicalReducers({ digest, lockAndScope, resolveActionTar
     }
     const stored = await tx.message.findUniqueOrThrow({ where: { id: result.messageId! } });
     const identity = await tx.canonicalMessageIdentity.findUniqueOrThrow({ where: { id: result.identityId! } });
-    if (await unboundContent(tx, identity)) {
+    // Only the empty path executes no binder/reducer that could change aliases.
+    // Native topology is protected by the workspace lock. Reuse only the local
+    // predicate, never a count/readiness decision: the final COUNT stays fresh.
+    // A nonempty frontier recomputes after its actual mutations.
+    if (await unboundContent(tx, identity, pending.length === 0 ? targetWhere : undefined)) {
       if (!record(stored.metadata).deletedAt) await tx.canonicalMessageIdentity.update({ where: { id: identity.id }, data: { contentState: 'pending_reconciliation' } });
       result.outcome = 'held'; result.allowOperationalEffects = false;
       if (!result.reconciliationReasons.length) {

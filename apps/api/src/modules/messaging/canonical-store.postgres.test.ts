@@ -1,3 +1,4 @@
+import { canonicalAddressGraph, readCanonicalAddressGraphRows } from './canonical-address-graph.js';
 import { randomUUID } from 'node:crypto';
 import { Prisma, PrismaClient } from '@prisma/client';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -509,24 +510,189 @@ describe.skipIf(!url)('canonical transactional store on PostgreSQL', () => {
     const c = await context(), w = await context(c.workspaceId, c.channelId, 'waha');
     await persist(msg(c, 'BUDGET_WARM'));
     // Count actual queries against the real database, without a wall-clock assertion.
-    let graphs = 0, membershipProbes = 0;
+    let graphs = 0, membershipProbes = 0, membershipWrites = 0;
     const observed = new PrismaClient({ datasources: { db: { url } }, log: [{ emit: 'event', level: 'query' }] });
     observed.$on('query', e => {
-      if (e.query.includes('"id", "public"."canonical_addresses"."redirect_id" FROM')) graphs++;
+      if (e.query.includes('"id", "public"."canonical_addresses"."redirect_id" FROM') || e.query.includes('canonical_graph_redirects')) graphs++;
       if (e.query.includes('FROM "public"."canonical_chat_members"') && e.query.includes('"conversation_id" =')) membershipProbes++;
+      if (e.query.includes('INSERT INTO "canonical_chat_members"')) membershipWrites++;
     });
     try {
       const first = await store.persist(observed, msg(c, 'BUDGET_LIVE'), { receiptKey: 'budget-evolution' });
       expect(first.outcome).toBe('created');
       expect.soft(graphs, 'one topology read for a stable channel during one application').toBe(1);
-      // Prisma 6.19 uses two SELECT probes for this existing-member no-op upsert.
-      expect.soft(membershipProbes, 'creator retains both authority checks').toBe(4);
-      graphs = 0; membershipProbes = 0;
+      // Each authority resolution still records membership, now without upsert probes.
+      expect.soft(membershipProbes).toBe(0);
+      expect.soft(membershipWrites, 'creator retains both authority checks').toBe(2);
+      graphs = 0; membershipProbes = 0; membershipWrites = 0;
       const mirror = await store.persist(observed, msg(w, 'BUDGET_LIVE'), { receiptKey: 'budget-waha' });
       expect(mirror).toMatchObject({ messageId: first.messageId, allowOperationalEffects: false });
       expect.soft(graphs, 'the mirror still checks identity without reloading the same graph').toBe(1);
-      expect.soft(membershipProbes).toBe(2);
+      expect.soft(membershipProbes).toBe(0);
+      expect.soft(membershipWrites).toBe(1);
     } finally { await observed.$disconnect(); }
+  });
+  it('bounds returned topology and eliminates membership probes and repeated empty-target discovery', async () => {
+    const c = await context(), w = await context(c.workspaceId, c.channelId, 'waha');
+    await persist(msg(c, 'SPARSE_WARM'));
+    await db.canonicalAddress.createMany({ data: Array.from({ length: 2929 }, () => ({ workspaceId: c.workspaceId, channelId: c.channelId })) });
+    const queries: string[] = [];
+    const observed = new PrismaClient({ datasources: { db: { url } }, log: [{ emit: 'event', level: 'query' }] });
+    observed.$on('query', e => queries.push(e.query));
+    const apply = async (event: MessageEvent) => {
+      let graphRows = 0, graphBytes = 0, targetDiscovery = 0, actionCounts = 0;
+      const result = await observed.$transaction(tx => {
+        const measured = new Proxy(tx, { get(target, key) {
+          const value = Reflect.get(target, key, target);
+          if (key === '$queryRaw') return async (...args: unknown[]) => {
+            const result = await (value as (...a: unknown[]) => Promise<unknown>).apply(target, args);
+            if (Array.isArray(args[0]) && (args[0] as string[]).join('?').includes('canonical_graph_redirects') && Array.isArray(result)) { graphRows += result.length; graphBytes += Buffer.byteLength(JSON.stringify(result)); }
+            return result;
+          };
+          if (value && typeof value === 'object' && 'findMany' in value) return new Proxy(value, { get(model, op) {
+            const method = Reflect.get(model, op, model);
+            if (typeof method !== 'function') return method;
+            return async (...args: unknown[]) => {
+              const result = await method.apply(model, args);
+              if (key === 'canonicalAddress' && op === 'findMany') { graphRows += result.length; graphBytes += Buffer.byteLength(JSON.stringify(result)); }
+              if (key === 'canonicalChat' && op === 'findUniqueOrThrow') targetDiscovery++;
+              if (key === 'canonicalAction' && op === 'count') actionCounts++;
+              return result;
+            };
+          } });
+          return typeof value === 'function' ? value.bind(target) : value;
+        } });
+        return store.persistInTransaction(measured, event, { receiptKey: randomUUID() });
+      });
+      return { result, graphRows, graphBytes, targetDiscovery, actionCounts };
+    };
+    try {
+      const first = await apply(msg(c, 'SPARSE_LIVE'));
+      expect(first.result.outcome).toBe('created');
+      expect.soft(first.graphRows, 'exactly the requested isolated address crosses the client boundary').toBe(1);
+      expect.soft(first.targetDiscovery, 'empty frontier retains one local target predicate').toBe(1);
+      expect.soft(first.graphBytes).toBeLessThanOrEqual(200);
+      expect(first.actionCounts, 'fresh SQL count still runs after discovery').toBeGreaterThan(0);
+      const mirror = await apply(msg(w, 'SPARSE_LIVE'));
+      expect(mirror.result).toMatchObject({ messageId: first.result.messageId, allowOperationalEffects: false });
+      expect.soft(mirror.graphRows).toBe(1);
+      expect.soft(mirror.targetDiscovery).toBe(1);
+      expect.soft(mirror.graphBytes).toBeLessThanOrEqual(200);
+      console.info('READ_BUDGET', JSON.stringify({ creator: { rows: first.graphRows, bytes: first.graphBytes, targetDiscovery: first.targetDiscovery }, mirror: { rows: mirror.graphRows, bytes: mirror.graphBytes, targetDiscovery: mirror.targetDiscovery } }));
+      expect(mirror.actionCounts).toBeGreaterThan(0);
+      expect.soft(queries.filter(q => q.includes('FROM "public"."canonical_chat_members"') && q.includes('"conversation_id" ='))).toHaveLength(0);
+      expect(await db.canonicalChatMember.count({ where: { workspaceId: c.workspaceId } })).toBe(1);
+    } finally { await observed.$disconnect(); }
+  });
+  it('keeps complete redirect families while excluding unrelated isolated nodes', async () => {
+    const c = await context(), scope = { workspaceId: c.workspaceId, channelId: c.channelId };
+    const ids = Array.from({ length: 8 }, () => randomUUID());
+    await db.canonicalAddress.createMany({ data: ids.map(id => ({ ...scope, id })) });
+    for (const [a, b] of [[0, 1], [1, 2], [3, 1], [4, 5]]) await db.canonicalAddress.update({ where: { id: ids[a!]! }, data: { redirectId: ids[b!]! } });
+    await db.$transaction(async tx => {
+      const fullRows = await readCanonicalAddressGraphRows(tx, scope), sparseRows = await readCanonicalAddressGraphRows(tx, scope, [ids[2]!, ids[6]!]);
+      const full = canonicalAddressGraph(fullRows), sparse = canonicalAddressGraph(sparseRows);
+      expect(sparseRows).toHaveLength(7); // all five edges/endpoints plus requested isolated node
+      expect(sparse.has(ids[7]!)).toBe(false);
+      for (const id of [ids[0]!, ids[1]!, ids[2]!, ids[3]!, ids[4]!, ids[5]!, ids[6]!]) {
+        expect(sparse.root(id)).toBe(full.root(id)); expect(sparse.family(id).sort()).toEqual(full.family(id).sort());
+      }
+    });
+  });
+  it('still rejects unrelated redirect cycles and foreign workspace/channel seeds', async () => {
+    const c = await context(), other = await context(), otherChannel = await context(c.workspaceId);
+    const scope = { workspaceId: c.workspaceId, channelId: c.channelId };
+    const [seed, a, b] = await Promise.all([0, 1, 2].map(() => db.canonicalAddress.create({ data: scope })));
+    await db.canonicalAddress.update({ where: { id: a!.id }, data: { redirectId: b!.id } });
+    await db.canonicalAddress.update({ where: { id: b!.id }, data: { redirectId: a!.id } });
+    const foreign = await db.canonicalAddress.create({ data: { workspaceId: other.workspaceId, channelId: other.channelId } });
+    const foreignChannel = await db.canonicalAddress.create({ data: { workspaceId: c.workspaceId, channelId: otherChannel.channelId } });
+    await db.$transaction(async tx => {
+      const full = canonicalAddressGraph(await readCanonicalAddressGraphRows(tx, scope));
+      const sparse = canonicalAddressGraph(await readCanonicalAddressGraphRows(tx, scope, [seed!.id, foreign.id, foreignChannel.id]));
+      expect(() => full.family(seed!.id)).toThrow('redirect cycle'); expect(() => sparse.family(seed!.id)).toThrow('redirect cycle');
+      expect(() => sparse.root(foreign.id)).toThrow('address scope'); expect(() => sparse.root(foreignChannel.id)).toThrow('address scope');
+      await expect(readCanonicalAddressGraphRows(tx, scope, [])).rejects.toThrow('requires an address seed');
+    });
+  });
+  it('preserves an existing membership source and identity across both authority resolutions', async () => {
+    const c = await context(); await persist(msg(c, 'MEMBER_WARM'));
+    const member = await db.canonicalChatMember.findFirstOrThrow({ where: { workspaceId: c.workspaceId } });
+    const original = await db.canonicalChatMember.update({ where: { id: member.id }, data: { source: 'operator_evidence_preserved' } });
+    expect((await persist(msg(c, 'MEMBER_NEXT'))).outcome).toBe('created');
+    expect(await db.canonicalChatMember.findUnique({ where: { id: member.id } })).toEqual(original);
+  });
+  it.each(['primary_key', 'suppressed'] as const)('rolls back all membership claimants on unexpected insertion failure: %s', async fault => {
+    const c = await context(); await persist(msg(c, 'MEMBER_COLLISION_WARM'));
+    const existing = await db.canonicalChatMember.findFirstOrThrow({ where: { workspaceId: c.workspaceId } });
+    const phone = '5547999123456';
+    const firstContact = await db.contact.create({ data: { workspaceId: c.workspaceId, phone: '554799123456' } });
+    const secondContact = await db.contact.create({ data: { workspaceId: c.workspaceId, phone } });
+    await db.conversation.create({ data: { workspaceId: c.workspaceId, channelId: c.channelId, contactId: firstContact.id } });
+    const second = await db.conversation.create({ data: { workspaceId: c.workspaceId, channelId: c.channelId, contactId: secondContact.id } });
+    const name = 'member_collision_' + randomUUID().replaceAll('-', '');
+    await db.$executeRawUnsafe(`CREATE FUNCTION ${name}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+      IF NEW.workspace_id='${c.workspaceId}' AND NEW.conversation_id='${second.id}'::uuid THEN ${fault === 'primary_key' ? `NEW.id='${existing.id}'::uuid;` : 'RETURN NULL;'} END IF;
+      RETURN NEW; END $$`);
+    try {
+      await db.$executeRawUnsafe(`CREATE TRIGGER ${name} BEFORE INSERT ON canonical_chat_members FOR EACH ROW EXECUTE FUNCTION ${name}()`);
+      await expect(persist(msg(c, 'MEMBER_COLLISION', phone + '@s.whatsapp.net'))).rejects.toThrow(/23505|duplicate|Unique|Incomplete canonical memberships/i);
+      expect(await db.canonicalChatMember.count({ where: { workspaceId: c.workspaceId } })).toBe(1);
+      expect(await db.canonicalChat.count({ where: { workspaceId: c.workspaceId } })).toBe(1);
+      expect(await db.message.count({ where: { workspaceId: c.workspaceId } })).toBe(1);
+      expect(await db.canonicalObservation.count({ where: { workspaceId: c.workspaceId } })).toBe(1);
+    } finally {
+      await db.$executeRawUnsafe(`DROP TRIGGER IF EXISTS ${name} ON canonical_chat_members`);
+      await db.$executeRawUnsafe(`DROP FUNCTION ${name}()`);
+    }
+    const retried = await persist(msg(c, 'MEMBER_COLLISION', phone + '@s.whatsapp.net'));
+    expect(retried).toMatchObject({ outcome: 'held', allowOperationalEffects: false });
+    expect(retried.reconciliationReasons).toContain('multiple_conversation_authorities');
+    expect(await db.canonicalChatMember.count({ where: { workspaceId: c.workspaceId } })).toBe(3);
+    expect(await db.message.count({ where: { workspaceId: c.workspaceId } })).toBe(1);
+  });
+  it('rechecks fresh pending counts even when the initial target frontier was empty', async () => {
+    const c = await context(), event = msg(c, 'FRESH_PENDING');
+    const edit: NormalizedMessagingEvent = { ...event, kind: 'edit', target: event.key, action: msg(c, 'FRESH_EDIT').key, patch: { field: 'body', body: 'late edit' } };
+    const held = await persist(edit);
+    const action = await db.canonicalAction.findFirstOrThrow({ where: { observationId: held.observationId } });
+    await db.canonicalAction.update({ where: { id: action.id }, data: { state: 'superseded' } });
+    let inserted = false;
+    const result = await db.$transaction(tx => {
+      const observed = new Proxy(tx, { get(target, key) {
+        if (key !== 'canonicalAction') return Reflect.get(target, key);
+        return new Proxy(target.canonicalAction, { get(model, operation) {
+          if (operation !== 'findMany') return Reflect.get(model, operation);
+          return async (args: Parameters<typeof model.findMany>[0]) => {
+            const rows = await model.findMany(args);
+            if (!inserted && rows.length === 0) { inserted = true; await tx.canonicalAction.update({ where: { id: action.id }, data: { state: 'pending' } }); }
+            return rows;
+          };
+        } });
+      } });
+      return store.persistInTransaction(observed, event, { receiptKey: 'fresh-count-original' });
+    });
+    expect(inserted).toBe(true); expect(result).toMatchObject({ outcome: 'held', allowOperationalEffects: false });
+    expect(result.reconciliationReasons).toContain('pending_recovery_budget_exhausted');
+    expect(await db.canonicalMessageIdentity.findUnique({ where: { id: result.identityId! } })).toMatchObject({ contentState: 'pending_reconciliation' });
+    expect(await db.canonicalAction.findUnique({ where: { id: action.id } })).toMatchObject({ state: 'pending', identityId: null });
+  });
+  it('rebuilds target discovery after a nonempty frontier mutates content', async () => {
+    const c = await context(), event = msg(c, 'NONEMPTY_ORIGINAL');
+    await persist({ ...event, kind: 'revoke', target: event.key, action: msg(c, 'NONEMPTY_REVOKE').key });
+    let discoveries = 0;
+    const result = await db.$transaction(tx => {
+      const observed = new Proxy(tx, { get(target, key) {
+        if (key !== 'canonicalChat') return Reflect.get(target, key);
+        return new Proxy(target.canonicalChat, { get(model, operation) {
+          if (operation !== 'findUniqueOrThrow') return Reflect.get(model, operation);
+          return async (args: Parameters<typeof model.findUniqueOrThrow>[0]) => { discoveries++; return model.findUniqueOrThrow(args); };
+        } });
+      } });
+      return store.persistInTransaction(observed, event, { receiptKey: 'nonempty-original' });
+    });
+    expect(discoveries).toBeGreaterThanOrEqual(2); expect(result.allowOperationalEffects).toBe(false);
+    expect((await db.message.findUniqueOrThrow({ where: { id: result.messageId! } })).metadata).toHaveProperty('deletedAt');
   });
   it('invalidates operation topology after new addresses and redirects in one mapping batch', async () => {
     const c = await context(), w = await context(c.workspaceId, c.channelId, 'waha');
@@ -539,10 +705,29 @@ describe.skipIf(!url)('canonical transactional store on PostgreSQL', () => {
     const warm = await persist(msg(c, 'MAPPING_WARM'));
     const event = msg(c, 'MAPPING_BATCH');
     event.addressMappings = ['700201@lid', '700202@lid', '700203@lid'].map(lid => ({ role: 'chat', lid, pn: PN, source: 'evolution.remoteJidAlt' }));
-    const first = await persist(event);
+    let sparseQueries = 0;
+    const observed = new PrismaClient({ datasources: { db: { url } }, log: [{ emit: 'event', level: 'query' }] });
+    observed.$on('query', e => { if (e.query.includes('canonical_graph_redirects')) sparseQueries++; });
+    const first = await (async () => { try { return await store.persist(observed, event, { receiptKey: randomUUID() }); } finally { await observed.$disconnect(); } })();
+    expect(sparseQueries, 'mapping batches retain the full strategy instead of adding per-seed sparse queries').toBe(0);
     expect(first).toMatchObject({ outcome: 'created', conversationId: warm.conversationId });
     const mirror = await persist(msg(w, 'MAPPING_BATCH', '700203@lid'));
     expect(mirror).toMatchObject({ messageId: first.messageId, conversationId: first.conversationId, allowOperationalEffects: false });
+    expect(await db.message.count({ where: { workspaceId: c.workspaceId } })).toBe(2);
+  });
+  it('invalidates a complete mapping snapshot before a new group address is created', async () => {
+    const c = await context();
+    const mapped = msg(c, 'EXISTING_MAPPING');
+    mapped.addressMappings = [{ role: 'chat', lid: LID, pn: PN, source: 'evolution.remoteJidAlt' }];
+    await persist(mapped);
+    // Reusing an already-proven mapping upgrades the seed view to complete,
+    // without writing a redirect. The new group address then needs invalidation.
+    const group = msg(c, 'NEW_GROUP_AFTER_MAPPING', GROUP, PN);
+    group.addressMappings = [{ role: 'sender', lid: LID, pn: PN, source: 'evolution.participantAlt' }];
+    const created = await persist(group);
+    expect(created).toMatchObject({ outcome: 'created', allowOperationalEffects: true });
+    const mirror = await persist(msg(c, 'NEW_GROUP_AFTER_MAPPING', GROUP, LID));
+    expect(mirror).toMatchObject({ messageId: created.messageId, conversationId: created.conversationId, allowOperationalEffects: false });
     expect(await db.message.count({ where: { workspaceId: c.workspaceId } })).toBe(2);
   });
   it('starts a fresh topology for a later application even inside the same transaction', async () => {
