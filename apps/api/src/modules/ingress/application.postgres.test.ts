@@ -1090,17 +1090,18 @@ describe.skipIf(!databaseUrl || !brokerUrl)('stage 1B canonical application with
             const response = await app.inject({ method: 'POST', url: `/webhooks/${provider}/${target.workspaceId}`, headers: { 'content-type': 'application/json', ...headers }, payload: raw });
             expect(response.statusCode).toBe(202); receipts.push(response.json().receiptId);
         }
-        let entered = false, release!: () => void;
+        let entered = 0, finished = 0, release!: () => void;
         const blocked = new Promise<void>(resolve => { release = resolve; });
         const first = await IngressTransportConsumer.start({ url: brokerUrl!, namespace: f.namespace, journal, publisher: () => f.publisher, prefetch,
-            application: { async apply(id: string) { entered = true; await blocked; return service.apply(id); } } });
+            application: { async apply(id: string) { entered++; await blocked; try { return await service.apply(id); } finally { finished++; } } } });
         consumers.push(first);
-        try { await until(async () => entered, value => value); await first.close(); }
+        try { await until(async () => entered, value => value > 0); await first.close(); }
         finally { release(); }
         const resumed = await IngressTransportConsumer.start({ url: brokerUrl!, namespace: f.namespace, journal, publisher: () => f.publisher, application: service, prefetch });
         consumers.push(resumed);
         await until(() => db.ingressApplication.count({ where: { receiptId: { in: receipts }, state: 'applied' } }), count => count === receipts.length);
         await resumed.close();
+        await until(async () => finished, value => value === entered);
         const allIds = new Set<string>();
         for (const target of [f, g]) {
             const messages = await db.message.findMany({ where: { workspaceId: target.workspaceId } });

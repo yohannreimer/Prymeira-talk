@@ -9,3 +9,9 @@ test('broker drain includes exact owned ready and unacknowledged counts',()=>{
  assert.equal(ownedQueueCounts(lines.replace('0\t0','0\t1'),ns)[0].unacknowledged,1);
  assert.throws(()=>ownedQueueCounts(lines.replace(ns+'.dead','foreign.dead'),ns),/Three/);assert.throws(()=>ownedQueueCounts(lines,'talk.prod.real'),/Owned/);
 });
+import {ownedConsumerPrefetch} from './terminal.mjs';
+test('effective prefetch must match both actual owned consumers',()=>{
+ const ns='talk.prod.ui-1234abcd',line=n=>`${ns}.incoming\t${n}\n${ns}.retry\t${n}`;
+ for(const n of [1,2,8])assert.equal(ownedConsumerPrefetch(line(n),ns,n).length,2);
+ assert.throws(()=>ownedConsumerPrefetch(line(8),ns,1),/differs/);assert.throws(()=>ownedConsumerPrefetch(line(1)+'\n'+ns+'.incoming\t1',ns,1),/differs/);assert.throws(()=>ownedConsumerPrefetch(line(1),ns,4),/bounded/);
+});

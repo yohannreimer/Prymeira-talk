@@ -1,4 +1,4 @@
-import {terminalComplete,ownedQueueCounts} from './terminal.mjs';
+import {terminalComplete,ownedQueueCounts,ownedConsumerPrefetch} from './terminal.mjs';
 import {limitsFor,assertCpuSet} from './limits.mjs';
 import {makeEnvelopes} from './payloads.mjs';
 import fs from 'node:fs';import path from 'node:path';import cp from 'node:child_process';import http from 'node:http';import {randomUUID,createHash,createHmac} from 'node:crypto';import {createRequire} from 'node:module';
@@ -56,6 +56,11 @@ try{
  const warm=makeEnvelopes({rawId:'UI-WARMUP-1',phone:'15551000000',text:'Pré-validação sintética dos dois provedores',timestamp:Math.floor(Date.now()/1000),instance,session,index:0}),warmReceipts=[];
  for(const provider of ['evolution','waha']){const raw=JSON.stringify(warm[provider]),headers={'content-type':'application/json',...(provider==='evolution'?{'x-prymeira-talk-secret':secret}:{'x-webhook-hmac-algorithm':'sha512','x-webhook-hmac':createHmac('sha512',wahaSecret).update(raw).digest('hex')})};const r=await fetch(`http://127.0.0.1:18411/webhooks/${provider}/${workspaceId}`,{method:'POST',headers,body:raw,signal:AbortSignal.timeout(10000)});const data=await r.json();if(r.status!==202||!data.receiptId)throw Error('Provider fixture not admitted');warmReceipts.push(data.receiptId);}
  const warmProof=await until(async()=>{const applications=await db.ingressApplication.findMany({where:{receiptId:{in:warmReceipts}}}),identities=await db.canonicalMessageIdentity.findMany({where:{workspaceId,rawId:'UI-WARMUP-1'}});if(applications.length!==2||applications.some(a=>a.state!=='applied')||identities.length!==1||identities[0].contentState!=='ready')return false;const message=await db.message.findUnique({where:{id:identities[0].messageId}});if(message?.body!==warm.evolution.data.message.conversation||message?.conversationId!==conversations[0].id)throw Error('Provider fixture changed content or association');return {applications,identities,message};},30000);save('provider-preflight.json',warmProof);
+ if(config.terminalDrain){
+  const brokerId=process.env.TALK_COMPARE_RABBIT_ID;if(!/^[a-f0-9]{64}$/.test(brokerId??''))throw Error('Exact owned broker container required');
+  const stdout=cp.execFileSync('docker',['exec',brokerId,'rabbitmqctl','list_consumers','-q','-p','talk_test','queue_name','prefetch_count'],{encoding:'utf8',timeout:15000});
+  save('effective-prefetch.json',{at:Date.now(),expected:config.prefetch,consumers:ownedConsumerPrefetch(stdout,env.INGRESS_NAMESPACE,config.prefetch)});
+ }
  const browserConfig=path.join(output,'browser-config.json');save('browser-config.json',{url:'http://127.0.0.1:18476/?conversation='+conversations[0].id,output,warmupMessageId:warmProof.message.id});
  const browserLog=fs.openSync(path.join(output,'browser-process.log'),'w');browser=cp.spawn('python3',['.github/ui-comparison/browser.py',browserConfig],{stdio:['ignore',browserLog,browserLog]});
  await until(()=>{if(browser.exitCode!==null)throw Error('Browser failed');return fs.existsSync(path.join(output,'ready.json'));},90000);
