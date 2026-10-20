@@ -10,6 +10,7 @@ const channel = (over: Partial<Omit<ChannelHealthView, 'level' | 'issues'>> = {}
   workspaceId: 'w', workspaceName: 'Villefer', channelId: 'c', name: 'Geral', phone: '554734353573', status: 'connected',
   connections: [connection('evolution'), connection('waha')],
   traffic: { lastInboundAt: at(0.2), lastOutboundAt: at(0.1), inbound1h: 4, inbound24h: 80, outbound24h: 60 },
+  campaigns: { today: 30, yesterday: 50 },
   acks: { pending: 0, sent: 5, delivered: 30, read: 25, failed: 0 }, history: { status: 'completed', completedAt: at(30) }, ...over });
 
 describe('number health', () => {
