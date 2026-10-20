@@ -100,4 +100,26 @@ describe.skipIf(!url)('receipt effect batching on owned PostgreSQL', () => {
     expect(await db.conversation.findFirst({ where: { workspaceId: f.workspaceId } })).toMatchObject({ unreadCount: 1 });
     expect(await db.ingressEffect.count({ where: { receiptId: receipt.id } })).toBe(10);
   });
+  it('cannot silently skip a different unique constraint instead of the intended logical conflict', async () => {
+    const f = await fixture(), warm = await f.stage(); await service.apply(warm.id);
+    const existing = await db.ingressEffect.findFirstOrThrow({ where: { receiptId: warm.id, kind: 'handoff.brief' } });
+    const receipt = await f.stage(), name = 'batch_key_fault_' + randomUUID().replaceAll('-', '');
+    // A real conflicting primary key must not discard another logical obligation.
+    await db.$executeRawUnsafe(`CREATE FUNCTION ${name}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.workspace_id = '${f.workspaceId}' AND NEW.receipt_id = '${receipt.id}'::uuid AND NEW.kind = 'handoff.brief' THEN NEW.id := '${existing.id}'::uuid; END IF; RETURN NEW; END $$`);
+    await db.$executeRawUnsafe(`CREATE TRIGGER ${name} BEFORE INSERT ON ingress_effects FOR EACH ROW EXECUTE FUNCTION ${name}()`);
+    try {
+      await expect(service.apply(receipt.id)).rejects.toThrow('Incomplete receipt effect batch');
+      expect(await db.message.count({ where: { workspaceId: f.workspaceId } })).toBe(1);
+      expect(await db.ingressEffect.count({ where: { receiptId: receipt.id } })).toBe(0);
+      expect(await db.ingressEventProgress.count({ where: { receiptId: receipt.id } })).toBe(0);
+      expect(await db.ingressApplication.count({ where: { receiptId: receipt.id } })).toBe(0);
+    } finally {
+      await db.$executeRawUnsafe(`DROP TRIGGER ${name} ON ingress_effects`);
+      await db.$executeRawUnsafe(`DROP FUNCTION ${name}()`);
+    }
+    await service.apply(receipt.id);
+    expect(await db.message.count({ where: { workspaceId: f.workspaceId } })).toBe(2);
+    expect(await db.ingressEffect.count({ where: { workspaceId: f.workspaceId } })).toBe(20);
+  });
+
 });

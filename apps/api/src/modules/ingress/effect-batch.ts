@@ -42,7 +42,18 @@ export function createReceiptEffectBatch(tx: Prisma.TransactionClient, receipt: 
           cause: json({ receiptId: receipt.id, eventIndex, frontierId: String(frontier.id), receiptOrdinal: String(receipt.ordinal),
             observationId, messageId: effect.messageId, source: receipt.source, origin: 'authenticated_ingress' })
         }));
-        await tx.ingressEffect.createMany({ data, skipDuplicates: true });
+        const written = await tx.ingressEffect.createMany({ data, skipDuplicates: true });
+        if (written.count < data.length) {
+          // Prisma skips conflicts on ANY unique constraint. Only an existing
+          // full logical key may stand in for a planned obligation; another
+          // conflict must roll back the event rather than silently lose work.
+          const existing = await tx.ingressEffect.findMany({
+            where: { workspaceId: receipt.workspaceId, channelId: receipt.channelId,
+              OR: data.map(({ kind, logicalKey }) => ({ kind, logicalKey })) }, select: { kind: true, logicalKey: true }
+          });
+          const keys = new Set(existing.map(e => JSON.stringify([e.kind, e.logicalKey])));
+          if (data.some(e => !keys.has(JSON.stringify([e.kind, e.logicalKey])))) throw Error('Incomplete receipt effect batch');
+        }
       } finally { pending.clear(); }
     }
   };
