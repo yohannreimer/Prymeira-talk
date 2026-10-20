@@ -47,6 +47,7 @@
 .health-stats div { display: grid; gap: 3px; }
 .health-stats dt { font-size: 10.5px; color: var(--color-text-secondary); }
 .health-stats dd { margin: 0; font-size: 14px; font-weight: 600; }
+.health-campaign-stats { grid-template-columns: repeat(2, 1fr); border-top: 1px solid var(--color-border); padding-top: 10px; }
 .health-issues { display: grid; gap: 6px; margin: 0; padding: 10px 12px; list-style: none; border-radius: 8px; background: var(--color-surface-subtle, #f6f7f8); }
 .health-issues li { display: flex; align-items: flex-start; gap: 7px; font-size: 12.5px; line-height: 1.4; }
 .health-issues li svg { flex: none; margin-top: 1px; }

@@ -1,4 +1,5 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
+import { saoPauloDayStart } from "./supervision-insights.js";
 
 /**
  * The product owner's view of every customer's WhatsApp numbers: are both connections up and on the right phone,
@@ -14,6 +15,7 @@ export type ChannelHealthView = {
   workspaceId: string; workspaceName: string | null; channelId: string; name: string; phone: string | null; status: string;
   connections: ConnectionHealthView[];
   traffic: { lastInboundAt: string | null; lastOutboundAt: string | null; inbound1h: number; inbound24h: number; outbound24h: number };
+  campaigns: { today: number; yesterday: number };
   acks: { pending: number; sent: number; delivered: number; read: number; failed: number };
   history: { status: string | null; completedAt: string | null };
   level: HealthLevel; issues: Array<{ level: Exclude<HealthLevel, "ok">; text: string }>;
@@ -84,7 +86,8 @@ export async function collectPlatformHealth(prisma: PrismaClient, now = new Date
   const channels = await prisma.channel.findMany({ where: { archivedAt: null, provider: "evolution" }, include: { connections: true }, orderBy: [{ workspaceId: "asc" }, { displayName: "asc" }] });
   const ids = channels.map(channel => channel.id);
   if (!ids.length) return { generatedAt: now.toISOString(), channels: [] };
-  const [mirrors, traffic, recent, acks, events] = await Promise.all([
+  const today = saoPauloDayStart(now), yesterday = saoPauloDayStart(new Date(today.getTime() - 1));
+  const [mirrors, traffic, recent, acks, events, campaigns] = await Promise.all([
     prisma.workspaceMirror.findMany({ where: { workspaceId: { in: [...new Set(channels.map(channel => channel.workspaceId))] } } }),
     prisma.$queryRaw<Array<{ channel_id: string; last_in: Date | null; last_out: Date | null }>>(Prisma.sql`
       SELECT c.channel_id::text AS channel_id, max(m.created_at) FILTER (WHERE m.direction = 'inbound') AS last_in, max(m.created_at) FILTER (WHERE m.direction = 'outbound') AS last_out
@@ -103,11 +106,21 @@ export async function collectPlatformHealth(prisma: PrismaClient, now = new Date
       GROUP BY c.channel_id, m.status`),
     prisma.$queryRaw<Array<{ channel_id: string; provider: string; last_at: Date | null; last_1h: Count }>>(Prisma.sql`
       SELECT channel_id::text AS channel_id, provider, max(received_at) AS last_at, count(*) FILTER (WHERE received_at >= ${hour}) AS last_1h
-      FROM canonical_observations WHERE channel_id = ANY(${ids}::uuid[]) AND received_at >= ${day} GROUP BY channel_id, provider`)
+      FROM canonical_observations WHERE channel_id = ANY(${ids}::uuid[]) AND received_at >= ${day} GROUP BY channel_id, provider`),
+    // Count settled campaign recipients, not traffic, attempts or imported WhatsApp history.
+    prisma.$queryRaw<Array<{ channel_id: string; today: Count; yesterday: Count }>>(Prisma.sql`
+      SELECT r.channel_id::text AS channel_id,
+        count(*) FILTER (WHERE r.sent_at >= ${today.toISOString()}::timestamp) AS today,
+        count(*) FILTER (WHERE r.sent_at < ${today.toISOString()}::timestamp) AS yesterday
+      FROM campaign_recipients r JOIN channels ch ON ch.id = r.channel_id AND ch.workspace_id = r.workspace_id
+      WHERE ch.id = ANY(${ids}::uuid[]) AND r.status = 'sent'
+        AND r.sent_at >= ${yesterday.toISOString()}::timestamp AND r.sent_at < ${now.toISOString()}::timestamp
+      GROUP BY r.channel_id`)
   ]);
   const names = new Map(mirrors.map(mirror => [mirror.workspaceId, mirror.name]));
   const views = channels.map(channel => {
     const t = traffic.find(row => row.channel_id === channel.id), r = recent.find(row => row.channel_id === channel.id);
+    const campaign = campaigns.find(row => row.channel_id === channel.id);
     const status = (s: string) => n(acks.find(row => row.channel_id === channel.id && row.status === s)?.total ?? 0);
     const base: Omit<ChannelHealthView, "level" | "issues"> = {
       workspaceId: channel.workspaceId, workspaceName: names.get(channel.workspaceId) ?? null, channelId: channel.id,
@@ -122,6 +135,7 @@ export async function collectPlatformHealth(prisma: PrismaClient, now = new Date
             lastEventAt: iso(event?.last_at), events1h: n(event?.last_1h ?? 0) };
         }),
       traffic: { lastInboundAt: iso(t?.last_in), lastOutboundAt: iso(t?.last_out), inbound1h: n(r?.in_1h ?? 0), inbound24h: n(r?.in_24h ?? 0), outbound24h: n(r?.out_24h ?? 0) },
+      campaigns: { today: n(campaign?.today ?? 0), yesterday: n(campaign?.yesterday ?? 0) },
       acks: { pending: status("pending"), sent: status("sent"), delivered: status("delivered"), read: status("read"), failed: status("failed") },
       history: { status: channel.historyImportStatus, completedAt: iso(channel.historyImportCompletedAt) }
     };

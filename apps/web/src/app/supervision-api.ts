@@ -92,6 +92,7 @@ export type PlatformHealthChannel = {
   workspaceId: string; workspaceName: string | null; channelId: string; name: string; phone: string | null; status: string;
   connections: PlatformHealthConnection[];
   traffic: { lastInboundAt: string | null; lastOutboundAt: string | null; inbound1h: number; inbound24h: number; outbound24h: number };
+  campaigns?: { today: number; yesterday: number };
   acks: { pending: number; sent: number; delivered: number; read: number; failed: number };
   history: { status: string | null; completedAt: string | null };
   level: PlatformHealthLevel; issues: Array<{ level: Exclude<PlatformHealthLevel, "ok">; text: string }>;

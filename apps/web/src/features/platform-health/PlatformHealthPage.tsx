@@ -56,6 +56,10 @@ function ChannelCard({ channel, now }: { channel: PlatformHealthChannel; now: nu
       <div><dt>Enviadas 24 h</dt><dd>{channel.traffic.outbound24h}</dd></div>
       <div><dt>Com ✓✓ (24 h)</dt><dd>{ticks === null ? "—" : `${ticks}%`}</dd></div>
     </dl>
+    <dl className="health-stats health-campaign-stats" aria-label="Mensagens de campanha enviadas · horário de Brasília">
+      <div><dt>Disparos hoje</dt><dd>{channel.campaigns?.today ?? "—"}</dd></div>
+      <div><dt>Disparos ontem</dt><dd>{channel.campaigns?.yesterday ?? "—"}</dd></div>
+    </dl>
     {channel.issues.length ? <ul className="health-issues">
       {channel.issues.map(issue => <li key={issue.text} className={`is-${issue.level}`}><LevelIcon level={issue.level} />{issue.text}</li>)}
     </ul> : <p className="health-fine">Tudo funcionando: duas conexões no mesmo celular, mensagens chegando e confirmações voltando.</p>}
