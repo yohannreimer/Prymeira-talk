@@ -10,7 +10,7 @@ Persist `CTWA_TRACKING_CONFIG` in the production stack environment in Portainer.
 
 Begin with `enabled: true, autoForward: false` for the selected workspace. This permits explicit manual forwarding and keeps the worker from scanning/exporting anything. Leave production `META_WHATSAPP_CONFIG` absent/disabled. A configured Tracking workspace and every persisted `tracking_*` state are refused by the old direct dispatcher.
 
-1. Apply Tracking migration0023, configure its exact `TALK_CTWA_WORKSPACE_ID`, existing Meta dataset/token and verified `META_WHATSAPP_BUSINESS_ACCOUNT_ID`, and publish the reviewed Tracking revision first.
+1. Apply Tracking migration0023, configure its exact `TALK_CTWA_WORKSPACE_ID`, explicit WABA-linked `META_CTWA_DATASET_ID`/`META_CTWA_ACCESS_TOKEN` and verified `META_WHATSAPP_BUSINESS_ACCOUNT_ID` only after separate security approval, and publish the reviewed Tracking revision first.
 2. Build/deploy the API through the normal release gate. No new Talk schema migration or ingress/ingress-worker deployment is needed.
 3. Inspect one authorized persisted LeadSubmitted conversion without changing it:
 
