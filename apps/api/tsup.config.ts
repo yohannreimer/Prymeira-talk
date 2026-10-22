@@ -2,7 +2,7 @@ import { defineConfig } from "tsup";
 
 export default defineConfig({
   // Operator repair remains a dry run unless --apply is explicitly provided.
-  entry: { "prepare-ctwa-receipt": "src/prepare-ctwa-receipt.ts", "repair-paused-prospecting": "src/repair-paused-prospecting.ts", ingress: "src/ingress.ts", "ingress-worker": "src/ingress-worker.ts", "ingress-recover": "src/ingress-recover.ts", "repair-ingress": "src/repair-ingress.ts", "repair-waha-notices": "src/repair-waha-notices.ts", "requeue-media": "src/requeue-media.ts", server: "src/server.ts", "evaluate-inbox-triage": "scripts/evaluate-inbox-triage.ts", "sync-villefer-agents": "scripts/sync-villefer-agents.ts" },
+  entry: { "forward-ctwa-tracking": "src/forward-ctwa-tracking.ts", "prepare-ctwa-receipt": "src/prepare-ctwa-receipt.ts", "repair-paused-prospecting": "src/repair-paused-prospecting.ts", ingress: "src/ingress.ts", "ingress-worker": "src/ingress-worker.ts", "ingress-recover": "src/ingress-recover.ts", "repair-ingress": "src/repair-ingress.ts", "repair-waha-notices": "src/repair-waha-notices.ts", "requeue-media": "src/requeue-media.ts", server: "src/server.ts", "evaluate-inbox-triage": "scripts/evaluate-inbox-triage.ts", "sync-villefer-agents": "scripts/sync-villefer-agents.ts" },
   tsconfig: "tsconfig.production.json",
   format: ["esm"],
   platform: "node",

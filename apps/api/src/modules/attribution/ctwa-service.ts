@@ -1,3 +1,4 @@
+import { hasTrackingOwnership } from './ctwa-tracking-config.js';
 import { Prisma, type PrismaClient, type CtwaAttribution } from '@prisma/client';
 import type { NormalizedMessagingEvent } from '../messaging/normalized-event.js';
 import type { CanonicalStoreResult } from '../messaging/canonical-store.js';
@@ -69,7 +70,7 @@ export class CtwaOperationError extends Error {
 }
 
 export function createCtwaService(db: PrismaClient, options: {
-  secret?: string; fetch?: typeof fetch; timeoutMs?: number;
+  secret?: string; trackingSecret?: string; fetch?: typeof fetch; timeoutMs?: number;
 } = {}) {
   const transport = options.fetch ?? fetch;
   return {
@@ -119,12 +120,14 @@ export function createCtwaService(db: PrismaClient, options: {
       return { id: prepared.id, eventId: prepared.eventId, state: prepared.state };
     },
     async dispatch(workspaceId: string, eventId: string) {
+      if (hasTrackingOwnership(options.trackingSecret, workspaceId)) throw new CtwaOperationError('tracking_owned');
       const config = resolveCtwaConfig(options.secret, workspaceId);
       if (!config) throw new CtwaOperationError('sending_disabled');
       const event = await db.ctwaConversionEvent.findFirst({
         where: { workspaceId, id: eventId }, include: { attribution: true }
       });
       if (!event) throw new CtwaOperationError('not_found', 404);
+      if (event.state.startsWith('tracking_')) throw new CtwaOperationError('tracking_owned');
       if (!['pending_validation', 'failed'].includes(event.state)) throw new CtwaOperationError('not_dispatchable');
       const payload = buildCtwaPayload({
         workspaceId, channelId: event.channelId, attributionId: event.attributionId,

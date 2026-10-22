@@ -1,3 +1,4 @@
+import { createCtwaTrackingWorker } from './modules/attribution/ctwa-tracking-bridge.js';
 import { ctwaRoutes } from './modules/attribution/ctwa.routes.js';
 import { createCtwaService } from './modules/attribution/ctwa-service.js';
 import cors from "@fastify/cors";
@@ -828,7 +829,12 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
     campaignWorker.start();
     app.addHook("onClose", async () => { await campaignWorker.stop(); });
   }
-  if (options.prismaEnabled !== false) await app.register(ctwaRoutes, { service: createCtwaService(app.prisma, { secret: env.META_WHATSAPP_CONFIG }) });
+  if (options.prismaEnabled !== false) await app.register(ctwaRoutes, { service: createCtwaService(app.prisma, { secret: env.META_WHATSAPP_CONFIG, trackingSecret: env.CTWA_TRACKING_CONFIG }) });
+  if (options.prismaEnabled !== false && env.CTWA_TRACKING_CONFIG) {
+    const ctwaTrackingWorker = createCtwaTrackingWorker(app.prisma, { secret: env.CTWA_TRACKING_CONFIG });
+    ctwaTrackingWorker.start();
+    app.addHook('onClose', async () => { await ctwaTrackingWorker.stop(); });
+  }
   await app.register(reportsRoutes);
   await app.register(teamRoutes);
   await app.register(tagsRoutes);

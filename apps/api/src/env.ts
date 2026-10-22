@@ -56,6 +56,7 @@ export const envSchema = z
     EVOLUTION_WEBHOOK_SECRET: z.string().min(1),
     /** Secret JSON map keyed by workspace ID. Disabled/missing blocks all CTWA sends. */
     META_WHATSAPP_CONFIG: optionalNonEmptyString,
+    CTWA_TRACKING_CONFIG: optionalNonEmptyString,
     WAHA_ENABLED: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
     WAHA_API_BASE_URL: optionalUrlWithProtocols(['http:', 'https:']),
     WAHA_API_KEY: optionalNonEmptyString,
