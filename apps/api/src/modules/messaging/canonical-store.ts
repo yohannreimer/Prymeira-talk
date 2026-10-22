@@ -412,6 +412,13 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
     digest, lockAndScope, resolveActionTarget, revisionTuple, address, graph, pendingTargetWhere
   });
   async function persistObservationInTransaction(tx: Tx, event: NormalizedMessagingEvent, options: CanonicalStoreOptions, replay?: { observation: CanonicalObservation; staleFact: boolean; known: boolean }): Promise<CanonicalStoreResult> {
+    // Attribution is auxiliary receipt metadata, not a canonical message fact.
+    // Keep it in the private normalized receipt and caller's event for capture,
+    // but out of new canonical payloads so older rollback normalizers agree too.
+    if (event.kind === 'message') {
+      const { ctwa: _ctwa, ...canonicalEvent } = event;
+      event = canonicalEvent;
+    }
     event = wellFormedPresentation(event);
     const c = event.context, scope = scopeOf(c);
     if (c.provider === 'meta_official' && (event.addressMappings.length || (event.kind !== 'control' && (event.kind === 'message' ? event.key : event.target).identityFormat !== 'provider_native'))) throw new Error('Official Meta requires its own native namespace');
@@ -425,7 +432,7 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
     // Context timing/mode is delivery provenance, never a reason to replay created.
     // Quote/reaction are presentation added later; a redelivery normalized before they existed is still the same fact.
     const envelope = (value: unknown) => {
-      const { context: ignored, ...data } = record(value);
+      const { context: ignored, ctwa: auxiliaryCtwa, ...data } = record(value);
       const { quoted: q, reaction: r, ...content } = record(data.content);
       return data.content === undefined ? data : { ...data, content };
     };

@@ -4,7 +4,7 @@ import { readFile, mkdir, mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { validateInfrastructure, runSerialIntegration, releaseManifest, workspaceUnitCommand } from './validation.mjs';
+import { validateInfrastructure, runSerialIntegration, releaseManifest, workspaceUnitCommand, databaseVariables } from './validation.mjs';
 
 const admin = 'postgresql://fixture:fixture@127.0.0.1:55439/postgres';
 const broker = 'amqp://fixture:fixture@127.0.0.1:56739/talk_test';
@@ -58,4 +58,9 @@ test('workspace unit command forwards Vitest options through real pnpm run', asy
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
     assert.match(result.stdout, /\["--maxWorkers=2"\]/);
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('CTWA opt-in uses the existing disposable messaging database', () => {
+  assert.equal(databaseVariables.CTWA_TEST_DATABASE_URL, 'messaging_test');
+  assert.equal(validateInfrastructure(options).urls[databaseVariables.CTWA_TEST_DATABASE_URL].endsWith('/messaging_test'), true);
 });

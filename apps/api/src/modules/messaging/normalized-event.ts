@@ -54,6 +54,7 @@ interface BaseEvent {
 }
 export type NormalizedMessagingEvent = BaseEvent & (
   | { kind: 'message'; key: WhatsAppMessageKey; content: NormalizedContent; attachment: AttachmentPresentation;
+      ctwa?: { ctwaClid: string; adId?: string };
       media: MediaSourceDescriptor | null; currentRevision: WhatsAppMessageKey | null; pushName: string | null; source: string | null; order: SourceOrder }
   | { kind: 'edit'; target: WhatsAppMessageKey; action: WhatsAppMessageKey; patch: MessageEditPatch; order: SourceOrder }
   | { kind: 'encrypted_edit'; target: WhatsAppMessageKey; action: WhatsAppMessageKey;

@@ -4,6 +4,7 @@ import { join } from 'node:path';
 
 export const integrationDatabases = ['messaging_test', 'campaign_test', 'connections_test', 'assistant_pilot_test', 'supervision_test', 'automation_webhook_test', 'leads_task2_test', 'purchasing_test', 'talk_rehearsal'];
 export const databaseVariables = {
+  CTWA_TEST_DATABASE_URL: 'messaging_test',
   MESSAGING_TEST_DATABASE_URL: 'messaging_test', CAMPAIGN_INTEGRATION_DATABASE_URL: 'campaign_test', CONNECTIONS_TEST_DATABASE_URL: 'connections_test',
   ASSISTANT_TEST_DATABASE_URL: 'assistant_pilot_test', SUPERVISION_TEST_DATABASE_URL: 'supervision_test',
   AUTOMATION_WEBHOOK_TEST_DATABASE_URL: 'automation_webhook_test', LEADS_TEST_DATABASE_URL: 'leads_task2_test', PURCHASING_TEST_DATABASE_URL: 'purchasing_test', REHEARSAL_DATABASE_URL: 'talk_rehearsal'

@@ -1,3 +1,4 @@
+import { captureCtwaInTransaction } from '../attribution/ctwa-service.js';
 import { setTimeout as delay } from 'node:timers/promises';
 import { refreshOwnedConversationPreviewInTransaction, selectConversationPreviewInTransaction } from '../messaging/conversation-preview.js';
 import { wellFormedPresentation } from '../messaging/well-formed-presentation.js';
@@ -325,6 +326,7 @@ export class IngressApplicationService {
             const sourceMessage = await tx.message.findFirst({ where: { workspaceId: receipt.workspaceId, id: result.messageId }, select: { hiddenByReset: true } });
             if (sourceMessage?.hiddenByReset) return;
         }
+        await captureCtwaInTransaction(tx, event, result);
         event = wellFormedPresentation(event);
         if (result.conversationId)
             await lockProspectingConversation(tx, source.workspaceId, result.conversationId);

@@ -202,6 +202,7 @@ enum DepartmentMemberRole {
 }
 
 model WorkspaceMirror {
+
   workspaceId String   @id @map("workspace_id")
   name        String?
   plan        String?
@@ -270,6 +271,8 @@ model ConversationInboxTriage {
 }
 
 model Channel {
+  ctwaAttributions CtwaAttribution[]
+
   id                            String          @id @default(uuid()) @db.Uuid
   workspaceId                   String          @map("workspace_id")
   provider                      ChannelProvider
@@ -461,6 +464,8 @@ model DepartmentChannelRule {
 }
 
 model Conversation {
+  ctwaAttributions CtwaAttribution[]
+
   prospectingOrigin              CampaignProspectingReservation?
   id                             String                          @id @default(uuid()) @db.Uuid
   workspaceId                    String                          @map("workspace_id")
@@ -529,6 +534,8 @@ model Conversation {
 }
 
 model Message {
+  ctwaAttributions CtwaAttribution[]
+
   id                String           @id @default(uuid()) @db.Uuid
   workspaceId       String           @map("workspace_id")
   conversationId    String           @map("conversation_id") @db.Uuid
@@ -2493,4 +2500,56 @@ model PriceHistory {
 
   @@index([workspaceId, itemKey, paidAt])
   @@map("price_history")
+}
+
+/// Passive native click context only; no conversation content, phone or provider payload.
+model CtwaAttribution {
+  id String @id @default(uuid()) @db.Uuid
+  workspaceId String @map("workspace_id")
+  channelId String @map("channel_id") @db.Uuid
+  conversationId String @map("conversation_id") @db.Uuid
+  messageId String @map("message_id") @db.Uuid
+  clickHash String @map("click_hash") @db.VarChar(64)
+  ctwaClid String @map("ctwa_clid") @db.VarChar(2048)
+  adId String? @map("ad_id") @db.VarChar(64)
+  sourceMode String @map("source_mode")
+  capturedAt DateTime @default(now()) @map("captured_at")
+  channel Channel @relation(fields: [workspaceId, channelId], references: [workspaceId, id], onDelete: Cascade)
+  conversation Conversation @relation(fields: [workspaceId, channelId, conversationId], references: [workspaceId, channelId, id], onDelete: Cascade)
+  message Message @relation(fields: [workspaceId, conversationId, messageId], references: [workspaceId, conversationId, id], onDelete: Cascade)
+  events CtwaConversionEvent[]
+  @@unique([workspaceId, channelId, clickHash])
+  @@unique([workspaceId, channelId, messageId], map: "ctwa_attributions_scoped_message_key")
+  @@unique([workspaceId, channelId, conversationId, messageId, id], map: "ctwa_attributions_scoped_id_key")
+  @@index([workspaceId, capturedAt, id])
+  @@map("ctwa_attributions")
+}
+
+model CtwaConversionEvent {
+  id String @id @default(uuid()) @db.Uuid
+  workspaceId String @map("workspace_id")
+  channelId String @map("channel_id") @db.Uuid
+  conversationId String @map("conversation_id") @db.Uuid
+  messageId String @map("message_id") @db.Uuid
+  attributionId String @map("attribution_id") @db.Uuid
+  eventId String @unique @map("event_id") @db.VarChar(80)
+  eventName String @map("event_name")
+  businessKey String @map("business_key") @db.VarChar(64)
+  orderId String? @map("order_id") @db.VarChar(128)
+  orderHash String? @map("order_hash") @db.VarChar(64)
+  value Decimal? @db.Decimal(20, 4)
+  currency String? @db.VarChar(3)
+  eventTime DateTime @default(now()) @map("event_time")
+  state String @default("pending_validation")
+  attemptCount Int @default(0) @map("attempt_count")
+  attemptedAt DateTime? @map("attempted_at")
+  completedAt DateTime? @map("completed_at")
+  responseCode Int? @map("response_code")
+  eventsReceived Int? @map("events_received")
+  outcomeCode String? @map("outcome_code")
+  attribution CtwaAttribution @relation(fields: [workspaceId, channelId, conversationId, messageId, attributionId], references: [workspaceId, channelId, conversationId, messageId, id], onDelete: Cascade)
+  @@unique([workspaceId, attributionId, eventName, businessKey], map: "ctwa_conversion_events_business_key")
+  @@unique([workspaceId, channelId, orderHash], map: "ctwa_conversion_events_order_key")
+  @@index([workspaceId, attributionId, eventTime, id])
+  @@map("ctwa_conversion_events")
 }

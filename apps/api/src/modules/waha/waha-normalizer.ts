@@ -1,3 +1,4 @@
+import { extractWahaCtwa } from './waha-ctwa.js';
 import { wahaNonConversationKind } from './waha-non-conversation.js';
 import { usedWahaAddressMappings, validateWahaIdentityDeclarations } from '../messaging/identity-declarations.js';
 import type { MessageEditPatch, NormalizationResult, SourceOrder, TrustedMessagingContext } from '../messaging/normalized-event.js';
@@ -33,6 +34,7 @@ export function normalizeWahaEvent(context: TrustedMessagingContext, input: unkn
 }): NormalizationResult {
   const nonConversation = wahaNonConversationKind(input);
   if (context.provider === 'waha' && nonConversation) return { kind: 'ignored', reason: nonConversation };
+  const ctwa = extractWahaCtwa(input);
   input = gowsEnvelopeToWpp(input); // GOWS engine events, in the WPP shape these rules are written for.
   const envelope = record(input), payload = record(envelope.payload);
   const eventName = string(envelope.event);
@@ -139,6 +141,7 @@ export function normalizeWahaEvent(context: TrustedMessagingContext, input: unkn
   if (replyId) content.content = { ...content.content, quoted: { id: parseWahaMessageKey(replyId).rawId ?? replyId,
     participant: string(replyTo.participant), body: string(replyTo.body)?.slice(0, 500) ?? null } };
   return { kind: 'accepted', event: { ...base, kind: 'message', key, ...content,
+    ...(ctwa && key.direction === 'inbound' && !key.chatAddress.endsWith('@g.us') ? { ctwa } : {}),
     currentRevision: raw.latestEditMsgKey ? parseWahaMessageKey(raw.latestEditMsgKey) : null,
     pushName: string(raw.notifyName) ?? string(sender.pushname) ?? string(sender.pushName),
     source: string(payload.source), order: messageOrder(payload.timestamp ?? raw.timestamp ?? raw.t) } };

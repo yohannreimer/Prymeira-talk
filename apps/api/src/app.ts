@@ -1,3 +1,5 @@
+import { ctwaRoutes } from './modules/attribution/ctwa.routes.js';
+import { createCtwaService } from './modules/attribution/ctwa-service.js';
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
 import Fastify from "fastify";
@@ -826,6 +828,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
     campaignWorker.start();
     app.addHook("onClose", async () => { await campaignWorker.stop(); });
   }
+  if (options.prismaEnabled !== false) await app.register(ctwaRoutes, { service: createCtwaService(app.prisma, { secret: env.META_WHATSAPP_CONFIG }) });
   await app.register(reportsRoutes);
   await app.register(teamRoutes);
   await app.register(tagsRoutes);
