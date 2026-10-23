@@ -26,6 +26,8 @@ export type MeetingSlot = { startsAt: string; label: string };
 
 export type BookedMeeting = {
   eventId: string;
+  /** Google's immutable creation timestamp; absent older/mock responses cannot certify analytics. */
+  createdAt?: string | null;
   startsAt: string;
   label: string;
   meetLink: string | null;
@@ -44,6 +46,8 @@ export type MeetingBookingResult =
   | { status: "unavailable"; reason: string; availableSlots: MeetingSlot[] };
 
 export interface MeetingScheduler {
+  /** Optional read-only lookup: no availability calculation, invitations, cancellation or free/busy call. */
+  confirmedBookings?(input: { conversationId: string; createdAfter: Date }): Promise<BookedMeeting[]>;
   availability(input: { conversationId: string; now?: Date }): Promise<MeetingAvailability>;
   book(input: {
     conversationId: string;
@@ -157,6 +161,14 @@ export function createGoogleCalendarMeetingScheduler(input: {
   }
 
   return {
+    async confirmedBookings({ conversationId, createdAfter }) {
+      const query = new URLSearchParams({ privateExtendedProperty: `${CONVERSATION_PROPERTY}=${conversationId}`, updatedMin: createdAfter.toISOString(), singleEvents: 'true', maxResults: '25', orderBy: 'updated' });
+      const result = await google<{ items?: GoogleEvent[] }>('GET', `${calendarPath}/events?${query}`);
+      return (result.items ?? []).slice(0, 25).filter(event => event.status === 'confirmed' && !!event.id && !!event.start?.dateTime
+        && event.extendedProperties?.private?.[CONVERSATION_PROPERTY] === conversationId
+        && Number.isFinite(Date.parse(event.created ?? '')) && Date.parse(event.created!) >= createdAfter.getTime())
+        .map(event => toBookedMeeting(event, config));
+    },
     async availability({ conversationId, now = new Date() }) {
       const [availableSlots, events] = await Promise.all([freeSlots(now), conversationEvents(conversationId, now)]);
       const booked = events[0];
@@ -217,6 +229,8 @@ export function createGoogleCalendarMeetingScheduler(input: {
 
 type GoogleEvent = {
   id?: string;
+  created?: string;
+  extendedProperties?: { private?: Record<string, string> };
   status?: string;
   htmlLink?: string;
   hangoutLink?: string;
@@ -237,6 +251,7 @@ function toBookedMeeting(event: GoogleEvent, config: MeetingSchedulerConfig): Bo
   const start = Date.parse(event.start?.dateTime ?? "");
   return {
     eventId: event.id ?? "",
+    createdAt: event.created ?? null,
     startsAt: Number.isFinite(start) ? toSlot(start, config).startsAt : event.start?.dateTime ?? "",
     label: Number.isFinite(start) ? formatSlotLabel(start, config.timeZone) : "",
     meetLink: meetLinkOf(event),

@@ -4407,3 +4407,26 @@ export function apiGetLeadRegions(getToken: TokenProvider): Promise<LeadRegionDt
 export function apiSaveLeadRegions(getToken: TokenProvider, regions: LeadRegionDto[]): Promise<LeadRegionDto[]> {
   return fetchJson(getToken, "/leads/regions", { method: "PUT", body: JSON.stringify({ regions }) }, value => (value as { regions: unknown[] }).regions.map(region => leadRegionSchema.parse(region)), "Não foi possível salvar as regiões.");
 }
+
+export type CtwaLifecycleItem = {
+  id: string; eventId: string; eventName: 'QualifiedLead' | 'Purchase'; state: string;
+  eventTime: string; orderId: string | null; valueCents: number | null; currency: string | null;
+  responseCode: number | null; outcomeCode: string | null;
+};
+export type CtwaLifecycleCapability = { enabled: boolean; native: boolean; items: CtwaLifecycleItem[] };
+function parseCtwaLifecycleItem(value: unknown): CtwaLifecycleItem {
+  const item = value as CtwaLifecycleItem;
+  if (!item || typeof item.id !== 'string' || typeof item.eventId !== 'string' || !['QualifiedLead', 'Purchase'].includes(item.eventName) || typeof item.state !== 'string' || typeof item.eventTime !== 'string'
+    || (item.valueCents !== null && (!Number.isSafeInteger(item.valueCents) || item.valueCents <= 0 || item.valueCents > 100000000000000))) throw new Error('Resposta de conversão inválida.');
+  return item;
+}
+export function apiGetCtwaLifecycle(getToken: () => Promise<string | null>, conversationId: string): Promise<CtwaLifecycleCapability> {
+  return fetchJson(getToken, `/conversations/${encodeURIComponent(conversationId)}/ctwa-lifecycle`, {}, value => {
+    const result = value as CtwaLifecycleCapability;
+    if (!result || typeof result.enabled !== 'boolean' || typeof result.native !== 'boolean' || !Array.isArray(result.items)) throw new Error('Resposta de conversão inválida.');
+    return { enabled: result.enabled, native: result.native, items: result.items.map(parseCtwaLifecycleItem) };
+  }, 'Não foi possível consultar as conversões.');
+}
+export function apiConfirmCtwaSale(getToken: () => Promise<string | null>, conversationId: string, input: { orderId: string; valueCents: number; currency: 'BRL' }): Promise<CtwaLifecycleItem> {
+  return fetchJson(getToken, `/conversations/${encodeURIComponent(conversationId)}/ctwa-lifecycle/sales`, { method: 'POST', body: JSON.stringify(input) }, parseCtwaLifecycleItem, 'Não foi possível confirmar a venda. Repita com a mesma referência e valor.');
+}

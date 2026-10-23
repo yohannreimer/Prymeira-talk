@@ -134,6 +134,7 @@ describe("meeting scheduler", () => {
       status: "booked",
       meeting: {
         eventId: "ev-new",
+        createdAt: null,
         startsAt: "2026-10-13T10:30:00-03:00",
         label: "terça-feira, 13/10 às 10:30",
         meetLink: "https://meet.google.com/abc-defg-hij",
@@ -175,4 +176,13 @@ describe("meeting scheduler", () => {
     expect(() => parseMeetingHours("18:00-09:00")).toThrow();
     expect(formatSlotLabel(Date.parse("2026-10-16T17:00:00Z"), "America/Sao_Paulo")).toBe("sexta-feira, 16/10 às 14:00");
   });
+});
+
+it('read-only recovery requires confirmed scoped private property and real created time without free/busy', async () => {
+ const enabledAt = new Date('2026-10-12T10:00:00Z');
+ const valid = { id: 'confirmed', status: 'confirmed', created: '2026-10-12T11:00:00Z', start: { dateTime: '2026-10-13T10:30:00-03:00' }, extendedProperties: { private: { talkConversationId: 'conv-1' } } };
+ const google=fakeGoogle({existing:[valid,{...valid,id:'cancelled',status:'cancelled'},{...valid,id:'missing-property',extendedProperties:undefined},{...valid,id:'wrong-conversation',extendedProperties:{private:{talkConversationId:'other'}}},{...valid,id:'old',created:'2026-10-11T11:00:00Z'},{...valid,id:'missing-created',created:undefined}]});
+ const rows=await scheduler(google.fetch).confirmedBookings!({conversationId:'conv-1',createdAfter:enabledAt});
+ expect(rows).toHaveLength(1);expect(rows[0]).toMatchObject({eventId:'confirmed',createdAt:valid.created});
+ expect(google.calls.filter(call=>call.url.includes('/calendar/')).every(call=>call.method==='GET'&&!call.url.includes('freeBusy'))).toBe(true);
 });

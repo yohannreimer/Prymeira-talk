@@ -127,7 +127,7 @@ export function createCtwaService(db: PrismaClient, options: {
         where: { workspaceId, id: eventId }, include: { attribution: true }
       });
       if (!event) throw new CtwaOperationError('not_found', 404);
-      if (event.state.startsWith('tracking_')) throw new CtwaOperationError('tracking_owned');
+      if (event.lifecycleSource || event.state.startsWith('tracking_')) throw new CtwaOperationError('tracking_owned');
       if (!['pending_validation', 'failed'].includes(event.state)) throw new CtwaOperationError('not_dispatchable');
       const payload = buildCtwaPayload({
         workspaceId, channelId: event.channelId, attributionId: event.attributionId,

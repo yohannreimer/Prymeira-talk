@@ -2539,6 +2539,12 @@ model CtwaConversionEvent {
   orderHash String? @map("order_hash") @db.VarChar(64)
   value Decimal? @db.Decimal(20, 4)
   currency String? @db.VarChar(3)
+  // Null on legacy preparations: only the dedicated lifecycle service establishes provenance.
+  lifecycleSource String? @map("lifecycle_source") @db.VarChar(32)
+  sourceReference String? @map("source_reference") @db.VarChar(64)
+  leadEventId String? @map("lead_event_id") @db.VarChar(80)
+  confirmedBy String? @map("confirmed_by") @db.VarChar(256)
+  valueCents BigInt? @map("value_cents")
   eventTime DateTime @default(now()) @map("event_time")
   state String @default("pending_validation")
   attemptCount Int @default(0) @map("attempt_count")
