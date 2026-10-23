@@ -1161,6 +1161,7 @@ export function createAgentRuntime(input: {
           const prepared = cachedResult ?? await (input.mediaPreparer ?? prepareInboundMedia)({
             mediaUrl: attachment.mediaUrl,
             kind: attachment.type === "file" ? "document" : "image",
+            ...(isRecord(attachmentMetadata.attachment) && typeof attachmentMetadata.attachment.mimeType === "string" ? { mimeType: attachmentMetadata.attachment.mimeType } : {}),
             settings: providerSettings,
             mediaResolver: mediaResolverFor(attachment)
           });
@@ -1193,6 +1194,7 @@ export function createAgentRuntime(input: {
             : await (input.mediaPreparer ?? prepareInboundMedia)({
                 mediaUrl: message.mediaUrl,
                 kind: message.type === "file" ? "document" : "image",
+                ...(isRecord(metadata.attachment) && typeof metadata.attachment.mimeType === "string" ? { mimeType: metadata.attachment.mimeType } : {}),
                 settings: providerSettings,
                 mediaResolver: mediaResolverFor(message)
               });

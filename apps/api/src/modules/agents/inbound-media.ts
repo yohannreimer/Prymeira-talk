@@ -47,7 +47,8 @@ export type InboundMediaDependencies = {
   audioTranscriberFactory?: (settings: ActiveSettings) => AgentAudioTranscriber;
 };
 
-export function inboundMediaFallback(kind: InboundMediaKind) {
+export function inboundMediaFallback(kind: InboundMediaKind, mimeType?: string | null) {
+  if (mimeType?.toLowerCase().startsWith("video/")) return "Não consegui analisar esse vídeo. Pode enviar uma foto do item ou descrever o produto e as medidas?";
   if (kind === "audio") return "Não consegui entender esse áudio. Pode reenviar ou escrever a mensagem?";
   if (kind === "image") return "Não consegui analisar essa imagem. Pode reenviar com mais nitidez ou mandar a lista em texto?";
   return "Não consegui ler esse PDF inteiro. Pode reenviar um arquivo legível de até 5 páginas e 8 MB, ou mandar a lista em texto? Se preferir, chamo uma pessoa do time.";
@@ -162,8 +163,10 @@ export async function prepareInboundMedia(input: InboundMediaDependencies & {
   attachment?: InboundMediaAttachment;
   mediaUrl?: string | null;
   kind?: InboundMediaKind;
+  /** Original transport MIME, including when an oversized durable object cannot be read. */
+  mimeType?: string | null;
 }): Promise<InboundMediaResult> {
-  const mime = input.attachment?.mimeType.split(";", 1)[0].trim().toLowerCase();
+  const mime = (input.attachment?.mimeType ?? input.mimeType)?.split(";", 1)[0].trim().toLowerCase();
   const kind = input.kind ?? (mime === "application/pdf" ? "document" : mime?.startsWith("image/") ? "image" : "audio");
   const base = { kind, ...(input.attachment ? { fileName: input.attachment.fileName } : {}) };
   try {
@@ -233,7 +236,7 @@ export async function prepareInboundMedia(input: InboundMediaDependencies & {
       : error && typeof error === "object" && "code" in error && typeof error.code === "string" && /^[A-Z_]+$/.test(error.code) ? error.code : "MEDIA_EXTRACTION_FAILED";
     const fallback = code === "PDF_IMAGE_TOO_LARGE" || code === "PDF_PAGE_TOO_LARGE"
       ? "Esse PDF tem páginas ou imagens grandes demais para leitura automática. Pode reenviar com resolução menor, até 5 páginas e 8 MB, ou colar a lista? Se preferir, chamo uma pessoa do time."
-      : inboundMediaFallback(kind);
+      : inboundMediaFallback(kind, mime);
     return { ...base, status: "failed", errorCode: code, fallback };
   }
 }
