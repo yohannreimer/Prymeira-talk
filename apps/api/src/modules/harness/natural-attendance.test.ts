@@ -108,6 +108,13 @@ describe("natural attendance regressions from the Villefer review", () => {
     const updated = aposEnvio({ ficha, jogada: { tipo: "qualificar_com_pendencias", instrucao: "" }, texto: "Qual a espessura do tubo?" });
     expect(updated.perguntas.map(p => p.status)).toEqual(["tratada", "sem_base"]);
   });
+  it("does not review historical commercial terms as claims in a question about quantity", async () => {
+    const i = judgeInput("Entendi. Qual quantidade de cantoneiras vocês precisam?", "Precisamos de uma quantidade menor");
+    i.ficha.prequalificacao = { situacao: "coletando", resumo: "Inox, mínimo informado de 300 kg", faltantes: ["Quantidade"], divergencias: [] };
+    const ask = vi.fn(jev({ condicoes_do_item: "outra_linha" }).ask);
+    expect(await createJuizDeAtendimento({ ask })(i)).toMatchObject({ ok: true });
+    expect(ask.mock.calls[0][1]).not.toHaveProperty("condicoes_do_item");
+  });
   it("keeps factual and made-to-order checks for requested items", async () => {
     const i = judgeInput("Temos inox em estoque.", "Preciso de inox");
     i.ficha.perguntas = [{ id: "q1", texto: "Preciso de inox", natureza: "solicitacao", status: "respondida", buscas: 1, resposta: { trechoId: "t1", citacao: "Inox sob encomenda." } }];
