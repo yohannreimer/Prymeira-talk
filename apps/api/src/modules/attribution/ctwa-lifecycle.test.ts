@@ -20,4 +20,33 @@ describe('trusted lifecycle capture',()=>{
  it('confirmed calendar uses creation time and preserves first milestone before newer attribution',async()=>{const f=fixture();const first=await f.service.confirmMeeting({workspaceId,conversationId,eventId:'calendar-1',createdAt:now.toISOString()});f.setAttr(null);expect(await f.service.confirmMeeting({workspaceId,conversationId,eventId:'calendar-2',createdAt:now.toISOString()})).toEqual(first);expect(f.rows).toHaveLength(1);expect(f.rows[0]).toMatchObject({eventName:'QualifiedLead',lifecycleSource:'calendar_confirmed',sourceReference:hash('calendar-1'),eventTime:now,leadEventId:stableCtwaEventId(workspaceId,uuid(2),uuid(5),'LeadSubmitted')});});
  it('old or missing calendar timestamp, groups and no native attribution cannot capture',async()=>{for(const createdAt of [undefined,'invalid',new Date(now.getTime()-200000).toISOString()]){const f=fixture();await expect(f.service.confirmMeeting({workspaceId,conversationId,eventId:'calendar',createdAt})).rejects.toThrow();expect(f.rows).toHaveLength(0);}const f=fixture();f.db.conversation.findFirst.mockResolvedValue({channelId:uuid(2),contact:{workspaceId,isGroup:true}});await expect(f.service.confirmMeeting({workspaceId,conversationId,eventId:'calendar',createdAt:now.toISOString()})).rejects.toThrow('native_conversation_required');});
  it('owner sale validates cents, same-reference replay precedes attribution lookup, conflicts cannot mutate',async()=>{const f=fixture();const input={workspaceId,conversationId,userId:'owner',role:'owner',orderId:'sale-1',valueCents:12345,currency:'BRL'};await expect(f.service.confirmSale({...input,role:'manager'})).rejects.toThrow('owner_required');for(const valueCents of [0,-1,1.1,1e14+1])await expect(f.service.confirmSale({...input,valueCents})).rejects.toThrow();const first=await f.service.confirmSale(input);f.setAttr(null);expect(await f.service.confirmSale(input)).toEqual(first);for(const change of [{valueCents:999},{conversationId:uuid(8)},{userId:'other-owner'}])await expect(f.service.confirmSale({...input,...change})).rejects.toThrow('sale_conflict');expect(f.rows).toHaveLength(1);});
+ it('returns the original receipt when an identical trusted sale commits between the two reference reads',async()=>{
+  const f=fixture();
+  const input={workspaceId,conversationId,userId:'owner',role:'owner',orderId:'interleaved-sale',valueCents:12345,currency:'BRL'};
+  const original=await f.service.confirmSale(input);
+  const winner=f.rows.pop();
+  f.db.ctwaConversionEvent.create.mockClear();
+  f.db.ctwaAttribution.findFirst.mockClear();
+  f.setAttr(null);
+  // First reference SELECT saw no row; a competing request commits before the broad legacy lookup.
+  f.db.ctwaConversionEvent.findFirst.mockImplementationOnce(async()=>{f.rows.push(winner);return null;});
+  expect(await f.service.confirmSale(input)).toEqual(original);
+  expect(f.db.ctwaConversionEvent.create).not.toHaveBeenCalled();
+  expect(f.db.ctwaAttribution.findFirst).not.toHaveBeenCalled();
+  expect(f.rows).toHaveLength(1);
+ });
+ it.each([{conversationId:uuid(80)},{userId:'other-owner'},{valueCents:999}])('interleaved trusted sale retains immutable origin/actor/money conflict: %j',async change=>{
+  const f=fixture();
+  const input={workspaceId,conversationId,userId:'owner',role:'owner',orderId:'conflicting-interleaved-sale',valueCents:12345,currency:'BRL'};
+  await f.service.confirmSale(input);
+  const winner=f.rows.pop();
+  f.db.ctwaConversionEvent.create.mockClear();
+  f.db.ctwaAttribution.findFirst.mockClear();
+  f.db.ctwaConversionEvent.findFirst.mockImplementationOnce(async()=>{f.rows.push(winner);return null;});
+  await expect(f.service.confirmSale({...input,...change})).rejects.toThrow('sale_conflict');
+  expect(f.db.ctwaConversionEvent.create).not.toHaveBeenCalled();
+  expect(f.db.ctwaAttribution.findFirst).not.toHaveBeenCalled();
+  expect(f.rows[0]).toBe(winner);
+ });
+
 });

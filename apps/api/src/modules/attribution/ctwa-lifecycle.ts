@@ -82,7 +82,12 @@ export function createCtwaLifecycleService(db: PrismaClient, options: { secret?:
       if (existing) return saleMatches(existing, input);
       // Legacy preparations/acceptances cannot be promoted or recreated under another channel.
       const prior = await db.ctwaConversionEvent.findFirst({ where: { workspaceId: input.workspaceId, eventName: 'Purchase', orderHash: hash(details.orderId) }, select: { id: true } });
-      if (prior) throw new CtwaOperationError('sale_conflict');
+      if (prior) {
+        // A matching trusted sale can commit between the two reads; resolve its immutable receipt.
+        const committed = await db.ctwaConversionEvent.findFirst({ where });
+        if (committed) return saleMatches(committed, input);
+        throw new CtwaOperationError('sale_conflict');
+      }
       const eventTime = now();
       if (eventTime.getTime() < enabledAt) throw new CtwaOperationError('lifecycle_not_active', 403);
       const attribution = await attributionAt(input.workspaceId, input.conversationId, eventTime);
