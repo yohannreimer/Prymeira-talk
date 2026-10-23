@@ -197,11 +197,11 @@ export const ferramentasDoAnalista = [classificarContato, abrirPendencia, resolv
 
 /* ---------- Live conversation: questions answered from the knowledge base ---------- */
 
-const perguntaArgs = z.object({ texto: z.string().trim().min(3).max(300) });
+const perguntaArgs = z.object({ texto: z.string().trim().min(3).max(300), natureza: z.enum(["pergunta", "solicitacao"]).optional() });
 const registrarPergunta: Tool<z.infer<typeof perguntaArgs>> = {
   name: "registrar_pergunta",
   description: "Registra cada pergunta ou pedido de informação sobre a empresa, os produtos ou o pedido na ÚLTIMA mensagem do contato (preço, estoque, prazo, frete, pagamento, medida, se vocês têm um produto...). Uma chamada por pergunta. Conversa social (\"tudo bem?\", \"como tá aí?\", o tempo) não se registra.",
-  parameters: { type: "object", properties: { texto: { type: "string", description: "A pergunta, com as palavras do contato." } }, required: ["texto"], additionalProperties: false },
+  parameters: { type: "object", properties: { texto: { type: "string", description: "As palavras do contato: preserve a solicitação original, sem inventar uma pergunta de disponibilidade." }, natureza: { type: "string", enum: ["pergunta", "solicitacao"], description: "pergunta: cliente perguntou um fato; solicitacao: pediu item/cotação ou informou especificação, sem perguntar disponibilidade." } }, required: ["texto"], additionalProperties: false },
   schema: perguntaArgs,
   execute(args, context) {
     // "Como tá aí?" registered as a question goes to the base, finds nothing and is handed to a seller.
@@ -210,7 +210,7 @@ const registrarPergunta: Tool<z.infer<typeof perguntaArgs>> = {
       throw new Error("isso é conversa social, não pergunta sobre a empresa ou o pedido: não registre. Se a mensagem também tiver uma pergunta de negócio, registre só ela.");
     }
     const id = `q${context.ficha.perguntas.length + 1}`;
-    const ficha = { ...context.ficha, perguntas: [...context.ficha.perguntas, { id, texto: args.texto, status: "aberta" as const, resposta: null, buscas: 0 }] };
+    const ficha = { ...context.ficha, perguntas: [...context.ficha.perguntas, { id, texto: args.texto, ...(args.natureza ? { natureza: args.natureza } : {}), status: "aberta" as const, resposta: null, buscas: 0 }] };
     context.setFicha(ficha);
     return `Pergunta ${id} registrada. Agora procure a resposta com buscar_na_base.`;
   }
@@ -419,7 +419,7 @@ export function conferirLeitura(input: { ficha: FichaDoAtendimento; mensagem: st
   // A city or address for delivery is a question even when written as information: does the company deliver there?
   const atuais = ficha.perguntas.filter((item) => item.status !== "tratada");
   if (ENTREGA.test(textoNormal.replace(/pronta entrega/g, " ")) && !atuais.some((item) => /entreg|frete|cidade|regiao|atend/.test(normalize(item.texto)))) {
-    notas.push("a mensagem fala de entrega ou traz um endereço ou cidade. Registre \"vocês entregam em <cidade>?\" com registrar_pergunta e procure na base (região de entrega). Se não há cidade, não chame nada para isso.");
+    notas.push("a mensagem fala de entrega ou traz um endereço ou cidade. Registre a pergunta ou solicitação nas palavras do contato, preservando natureza, com registrar_pergunta e procure na base (região de entrega). Se não há cidade, não chame nada para isso.");
   }
   const perguntas = conferirPerguntas(input);
   if (perguntas) notas.push(perguntas);
@@ -435,7 +435,7 @@ function conferirPerguntas({ ficha, mensagem, pedido }: { ficha: FichaDoAtendime
     // A request with sizes or "orçamento para…" has no question mark but is a question: "do you supply this?".
     const pedido = PEDIDO_DE_ITEM.test(texto) || /\d/.test(texto) && /[a-z]{4,}/.test(texto) && !PAPO_SOCIAL.test(texto);
     return (/\?/.test(mensagem) && ASSUNTO_DO_NEGOCIO.test(texto)) || pedido
-      ? "a última mensagem parece pedir um produto ou perguntar sobre produto, preço, prazo, entrega ou pagamento, e nada foi registrado. Pedido de item sem interrogação também conta: registre com registrar_pergunta \"vocês fornecem <item>?\" e procure na base, inclusive o que a empresa não fornece. Se for só conversa, não chame nada."
+      ? "a última mensagem parece pedir um produto ou perguntar sobre produto, preço, prazo, entrega ou pagamento, e nada foi registrado. Pedido de item sem interrogação também conta: registre com registrar_pergunta nas palavras do contato e natureza=solicitacao para pedido sem pergunta factual, e procure na base, inclusive o que a empresa não fornece. Se for só conversa, não chame nada."
       : null;
   }
   const abertas = atuais.filter((item) => item.status === "aberta");

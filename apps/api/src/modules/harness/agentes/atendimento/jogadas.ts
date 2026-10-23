@@ -180,7 +180,7 @@ export function aposEnvio(input: { ficha: FichaDoAtendimento; jogada: Jogada; te
     return {
       ...ficha,
       pediuPessoa: false,
-      perguntas: ficha.perguntas.map((item) => ({ ...item, status: !soSaudacaoOuOferta(input.texto) && (item.status === "respondida" || item.status === "sem_base" && Boolean(input.jogada.avisarHumano)) ? "tratada" as const : item.status })),
+      perguntas: ficha.perguntas.map((item) => ({ ...item, status: !soSaudacaoOuOferta(input.texto) && (item.status === "respondida" || item.status === "sem_base" && (Boolean(input.jogada.avisarHumano) || item.natureza === "solicitacao")) ? "tratada" as const : item.status })),
       pesosDaVez: [],
       anexosDaVez: [],
       anexosEnviados: [...new Set([...(ficha.anexosEnviados ?? []), ...(ficha.anexosDaVez ?? [])])],

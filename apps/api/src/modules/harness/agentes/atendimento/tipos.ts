@@ -37,6 +37,8 @@ export type BaseDeConhecimento = {
 export type Pergunta = {
   id: string;
   texto: string;
+  /** Preserve whether this was a factual question or only an item requested for a quote. Legacy records omit it. */
+  natureza?: "pergunta" | "solicitacao";
   status: "aberta" | "respondida" | "sem_base" | "tratada";
   resposta: { trechoId: string; citacao: string } | null;
   /** More passages that answer part of it (the minimum after "we supply it", the weight after the minimum). */

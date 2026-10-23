@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { atendimento } from "./agentes/atendimento/index.js";
 import { fichaInicial } from "./agentes/atendimento/ficha.js";
-import { decidirJogada } from "./agentes/atendimento/jogadas.js";
+import { aposEnvio, decidirJogada } from "./agentes/atendimento/jogadas.js";
 import { createJuizDeAtendimento } from "./agentes/atendimento/juiz.js";
 import { regras } from "./agentes/atendimento/regras.js";
 import type { FichaDoAtendimento } from "./agentes/atendimento/tipos.js";
@@ -88,6 +88,33 @@ describe("natural attendance regressions from the Villefer review", () => {
       { id: "q2", texto: "Chapas", status: "respondida", buscas: 1, resposta: { trechoId: "t2", citacao: "Fornecemos chapas lisas." } }
     ] };
     expect(decidirJogada({ ficha, pedido, triagem: null, evento: { tipo: "mensagem", texto: "Preciso de telhas e chapas" } }).tipo).not.toBe("responder_recusa");
+  });
+  it("preserves a quote request as a request through the reader and reviewer", async () => {
+    const { ferramentasDeLeitura } = await import("./agentes/atendimento/ferramentas.js");
+    const registrar = ferramentasDeLeitura.find(t => t.name === "registrar_pergunta")!;
+    let ficha = fichaInicial();
+    registrar.execute({ texto: "utilizamos tubo 7/8", natureza: "solicitacao" } as never, { ficha, pedido, historico: [], mensagemAtual: "utilizamos tubo 7/8", setFicha: f => { ficha = f; } });
+    expect(ficha.perguntas[0]).toMatchObject({ texto: "utilizamos tubo 7/8", natureza: "solicitacao" });
+    ficha.perguntas[0].status = "sem_base";
+    const ask = vi.fn(jev().ask);
+    const result = await createJuizDeAtendimento({ ask })({ ...judgeInput("Qual a espessura do tubo?", "utilizamos tubo 7/8"), ficha });
+    expect(result.ok).toBe(true);
+    expect(ask.mock.calls[0][1]).toHaveProperty("solicitacao_1");
+    expect(ask.mock.calls[0][1]).not.toHaveProperty("resposta_1");
+  });
+  it("does not keep a quote request pending as an unanswered factual question", () => {
+    const ficha = fichaInicial();
+    ficha.perguntas = [{ id: "q1", texto: "preciso de tubo", natureza: "solicitacao", status: "sem_base", buscas: 1, resposta: null }, { id: "q2", texto: "qual o prazo?", natureza: "pergunta", status: "sem_base", buscas: 1, resposta: null }];
+    const updated = aposEnvio({ ficha, jogada: { tipo: "qualificar_com_pendencias", instrucao: "" }, texto: "Qual a espessura do tubo?" });
+    expect(updated.perguntas.map(p => p.status)).toEqual(["tratada", "sem_base"]);
+  });
+  it("keeps factual and made-to-order checks for requested items", async () => {
+    const i = judgeInput("Temos inox em estoque.", "Preciso de inox");
+    i.ficha.perguntas = [{ id: "q1", texto: "Preciso de inox", natureza: "solicitacao", status: "respondida", buscas: 1, resposta: { trechoId: "t1", citacao: "Inox sob encomenda." } }];
+    expect(await createJuizDeAtendimento(jev({ encomenda_1: "omitida" }))(i)).toMatchObject({ ok: false, motivo: expect.stringContaining("encomenda_1") });
+    expect(await createJuizDeAtendimento(jev({ afirmacao_sem_base: "estoque" }))(i)).toMatchObject({ ok: false });
+    i.ficha.perguntas[0].natureza = "pergunta";
+    expect(await createJuizDeAtendimento(jev({ resposta_1: "sem_resposta" }))(i)).toMatchObject({ ok: false });
   });
   it("retries the writer's empty acknowledgment and sends a useful opening", async () => {
     const model = createScriptedModel("escritor", (_req, index) => ({ content: null, toolCalls: [toolCall("responder", { texto: index === 0 ? "Bom dia! Obrigado pelo contato." : "Bom dia! Como posso te ajudar?" })] }));
