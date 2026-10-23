@@ -28,7 +28,7 @@ describe("round 2: context before lexical similarity", () => {
   });
   it("asks the judge to identify unnecessary repetition in the context of the latest request", async()=>{
     let asked:any;
-    await createJuizDeAtendimento({ask:async (_state,questions)=>{asked=questions;return Object.fromEntries(Object.entries(questions).map(([id,q])=>[id,q.type==="choice"?{type:"choice",choice:Object.keys(q.criteria)[0]}:{type:"noul",noul:0}]))}})({texto:"Qual medida?",ficha:fichaInicial(),pedido:{empresa:{nome:"Distribuidora",oQueVende:"Chapas"},maxFollowups:2},jogada:{tipo:"responder",instrucao:"deixar o pedido pronto para orçar"},historico:[],fichaTexto:""});
+    await createJuizDeAtendimento({ask:async (_state,questions)=>{asked={...asked,...questions};return Object.fromEntries(Object.entries(questions).map(([id,q])=>[id,q.type==="choice"?{type:"choice",choice:Object.keys(q.criteria)[0]}:{type:"noul",noul:0}]))}})({texto:"Qual medida?",ficha:fichaInicial(),pedido:{empresa:{nome:"Distribuidora",oQueVende:"Chapas"},maxFollowups:2},jogada:{tipo:"responder",dados:{qualificarPedido:true},instrucao:"deixar o pedido pronto para orçar"},historico:[],fichaTexto:""});
     expect(asked.repeticao.instructions).toMatch(/perguntou novamente/);
     expect(asked.dado_medida.instructions).toMatch(/pergunta anterior.*sem resposta/);
   });

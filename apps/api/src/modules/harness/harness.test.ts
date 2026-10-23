@@ -931,7 +931,8 @@ describe("ajustes da sombra de 16/10, segunda leva", () => {
     const { conferirLeitura } = await import("./agentes/atendimento/ferramentas.js");
     const nota = conferirLeitura({ ficha: fichaInicialAtendimento(), mensagem: "Me manda o catálogo. Entrega em Curitiba - PR", pedido: contextoVillefer({ anexos: [catalogoPdf] }) });
     expect(nota).toMatch(/enviar_anexo/);
-    expect(nota).toMatch(/entregam em <cidade>/);
+    expect(nota).toMatch(/região de entrega/);
+    expect(nota).toMatch(/palavras do contato/);
     expect(conferirLeitura({ ficha: fichaInicialAtendimento(), mensagem: "não precisa de catálogo, obrigado", pedido: contextoVillefer({ anexos: [catalogoPdf] }) })).toBeNull();
     expect(conferirLeitura({ ficha: fichaInicialAtendimento(), mensagem: "teria a pronta entrega?", pedido: contextoVillefer() }) ?? "").not.toMatch(/cidade/);
   });

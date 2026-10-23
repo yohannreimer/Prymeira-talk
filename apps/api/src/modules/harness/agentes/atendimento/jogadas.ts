@@ -1,6 +1,7 @@
 import type { HarnessEvent, Jogada, TriageResult } from "../../core/types.js";
 import { pendenciasAbertas } from "./ficha.js";
 import { soSaudacaoOuOferta } from "./cobertura.js";
+import { isGreetingOnly } from "../../core/triage.js";
 import type { ContextoDoAtendimento, FichaDoAtendimento, Pendencia } from "./tipos.js";
 
 const NAO_CLIENTE = new Set(["colega", "pessoal", "fornecedor", "transportadora"]);
@@ -18,7 +19,7 @@ export function decidirJogada(input: {
 }): Jogada {
   const { ficha, pedido, evento } = input;
   if (evento.tipo === "abertura") return { tipo: "sem_abertura", silencio: true, instrucao: "O atendimento responde; não abre conversa." };
-  if (evento.tipo === "mensagem") return jogadaDaMensagem(ficha, input.triagem, pedido);
+  if (evento.tipo === "mensagem") return jogadaDaMensagem(ficha, input.triagem, pedido, evento.texto);
   if (NAO_CLIENTE.has(ficha.contato.tipo)) {
     return { tipo: "contato_nao_cliente", silencio: true, instrucao: `Contato ${ficha.contato.tipo}: sem follow-up.` };
   }
@@ -80,12 +81,17 @@ export function decidirJogada(input: {
  * A live reply. The order is the point: the reader registered each question and searched the base;
  * code answers with what has a quoted passage and hands over only what the base does not cover.
  */
-function jogadaDaMensagem(ficha: FichaDoAtendimento, triagem: TriageResult | null, pedido: ContextoDoAtendimento): Jogada {
+function jogadaDaMensagem(ficha: FichaDoAtendimento, triagem: TriageResult | null, pedido: ContextoDoAtendimento, mensagem: string): Jogada {
   if (triagem?.kind === "robo") return { tipo: "aguardar_pessoa", silencio: true, instrucao: "Atendimento automático do outro lado." };
+  if (triagem?.kind !== "injecao" && isGreetingOnly(mensagem)) return {
+    tipo: "acolher",
+    instrucao: "O contato está abrindo o atendimento. Devolva a saudação que ele usou e faça uma pergunta curta e natural sobre o que precisa ou como podemos ajudar. Se perguntou tudo bem, responda brevemente. Não agradeça pelo contato, não se despeça e não recite catálogo, condições ou dados do pedido antigo. Exemplo de intenção, sem obrigação de copiar: Bom dia! Como posso te ajudar?"
+  };
   if (triagem?.kind === "recusa" || triagem?.kind === "despedida") {
     return { tipo: "encerrar", instrucao: "O contato encerrou ou recusou. Agradeça em uma frase, sem insistir e sem perguntar nada." };
   }
   const jogada = jogadaDasPerguntas(ficha);
+  if (jogada.tipo === "responder_recusa") return jogada;
   // Weights computed by code go to the writer even when the reader did not cite them, apart from the minimum.
   const pesos = (ficha.pesosDaVez ?? []).map((id) => ficha.trechosVistos[id]).filter(Boolean);
   const anexos = (ficha.anexosDaVez ?? []).map((id) => pedido.anexos?.find((anexo) => anexo.id === id)).filter((anexo) => anexo !== undefined);
@@ -128,6 +134,13 @@ function jogadaDasPerguntas(ficha: FichaDoAtendimento): Jogada {
       dados: { podePrometerRetorno: true }
     };
   }
+  // A fully refused request is an answer, not a quote missing city or registration.
+  if (atuais.length > 0 && atuais.every(item => item.status === "respondida" && citacoes(item).length > 0 && citacoes(item).every(recusa))) {
+    return {
+      tipo: "responder_recusa",
+      instrucao: `Responda de forma curta e cordial somente o que a base recusa neste pedido: ${respostas.join("; ")}. Se ainda não cumprimentou, devolva a saudação do contato. Não pergunte medida, quantidade, cidade, cadastro ou aceite, nem encaminhe apenas para repetir a recusa. Não ofereça produtos parecidos por conta própria.`
+    };
+  }
   if (ficha.prequalificacao?.situacao === "pronta" || ficha.prequalificacao?.situacao === "impedida") {
     const pronta = ficha.prequalificacao.situacao === "pronta";
     return {tipo: pronta ? "prequalificacao_pronta" : "prequalificacao_impedida",
@@ -139,7 +152,7 @@ function jogadaDasPerguntas(ficha: FichaDoAtendimento): Jogada {
       tipo: "qualificar_com_pendencias",
       instrucao: [
         ...(respostas.length ? [`Responda com estas informações da base: ${respostas.join("; ")}. Use só o que responde a última mensagem; não repita informações antigas sem motivo. Se o cliente perguntou novamente ou pediu confirmação, responda esse ponto de novo.`] : []),
-        `Divergências internas ainda sem base: ${semBase.map(item => `"${item.texto}"`).join("; ")}. Não invente resposta nem prometa checar/retornar. Se o cliente perguntou um fato desconhecido, diga brevemente que o dado ainda não está definido (ex.: o valor será definido no orçamento), sem citar vendedor. Continue qualificando o pedido: aproveite os dados já fornecidos e pergunte o próximo detalhe necessário, respeitando a etapa da base. Uma especificação solicitada pode ficar registrada sem garantia da combinação exata.`
+        `Divergências internas ainda sem base: ${semBase.map(item => `"${item.texto}"`).join("; ")}. Mantenha essas pendências na ficha. Uma lista para cotação, medida ou material solicitado não é pergunta direta sobre nossa disponibilidade: reconheça o pedido e pergunte apenas o próximo dado que falta, sem narrar que não sabe informar, que o fornecimento não está definido ou que falta confirmação. Só explique uma limitação quando o contato realmente perguntou aquele fato nas próprias palavras, quando ela impede atender ou quando a resposta sem ela seria enganosa. Não invente resposta nem prometa checar/retornar. Uma especificação solicitada pode ficar registrada sem garantia da combinação exata.`
       ].join(" "),
       dados: { perguntasSemBase: semBase.map(item=>item.id) }
 
@@ -148,7 +161,8 @@ function jogadaDasPerguntas(ficha: FichaDoAtendimento): Jogada {
   if (respostas.length) {
     return {
       tipo: "responder",
-      instrucao: `Responda com estas informações da base, com as palavras do cliente: ${respostas.join("; ")}. Use só o que responde a última mensagem; não repita informações antigas sem motivo. Se o cliente perguntou novamente ou pediu confirmação, responda esse ponto de novo.${naoBuscadas.length ? ` Sobre ${naoBuscadas.map((item) => `"${item.texto}"`).join(", ")}, não afirme nada; pergunte o detalhe que falta.` : ""} O objetivo é deixar o pedido pronto para orçar: termine com o próximo detalhe necessário para o vendedor orçar (produto, medida, quantidade ou cidade), respeitando a etapa de viabilidade da base. Reutilize o que o cliente já informou; uma pergunta anterior ainda sem resposta pode ser retomada se necessária para avançar. Não acumule dados técnicos, logística e cadastro numa só pergunta. Se não falta nada, não pergunte.`
+      dados: { qualificarPedido: ficha.prequalificacao ? ficha.prequalificacao.faltantes.length > 0 : true },
+      instrucao: `Use estas informações da base somente para responder fatos perguntados. Para uma solicitação ou novo dado de especificação, reconheça o pedido e avance; não recite o catálogo nem anuncie fornecimento de novo. Preserve produto, material e acabamento anteriores mesmo que a última mensagem seja só um dado como Aço 1020. Evidências: ${respostas.join("; ")}. Use só o que responde a última mensagem; não repita informações antigas sem motivo. Se o cliente perguntou novamente ou pediu confirmação, responda esse ponto de novo.${naoBuscadas.length ? ` Sobre ${naoBuscadas.map((item) => `"${item.texto}"`).join(", ")}, não afirme nada; pergunte o detalhe que falta.` : ""} O objetivo é deixar o pedido pronto para orçar: termine com o próximo detalhe necessário para o vendedor orçar (produto, medida, quantidade ou cidade), respeitando a etapa de viabilidade da base. Reutilize o que o cliente já informou; uma pergunta anterior ainda sem resposta pode ser retomada se necessária para avançar. Não acumule dados técnicos, logística e cadastro numa só pergunta. Se não falta nada, não pergunte.`
     };
   }
   return {
@@ -166,7 +180,7 @@ export function aposEnvio(input: { ficha: FichaDoAtendimento; jogada: Jogada; te
     return {
       ...ficha,
       pediuPessoa: false,
-      perguntas: ficha.perguntas.map((item) => ({ ...item, status: !soSaudacaoOuOferta(input.texto) && (item.status === "respondida" || item.status === "sem_base" && Boolean(input.jogada.avisarHumano)) ? "tratada" as const : item.status })),
+      perguntas: ficha.perguntas.map((item) => ({ ...item, status: !soSaudacaoOuOferta(input.texto) && (item.status === "respondida" || item.status === "sem_base" && (Boolean(input.jogada.avisarHumano) || item.natureza === "solicitacao")) ? "tratada" as const : item.status })),
       pesosDaVez: [],
       anexosDaVez: [],
       anexosEnviados: [...new Set([...(ficha.anexosEnviados ?? []), ...(ficha.anexosDaVez ?? [])])],

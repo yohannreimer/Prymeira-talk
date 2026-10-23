@@ -132,4 +132,18 @@ const respondePerguntas: Rule = {
   }
 };
 
-export const regras: Rule[] = [respondePerguntas, semTerceirizar, naoRepete, naoRepeteFrase, semValorNovo, semPressao, naoInverteRecusa, naoPrometeAnexo, semTermoInterno];
+const semAgradecimentoDeContato: Rule = {
+  id: "sem_agradecimento_de_contato",
+  check: ({ texto, jogada }) => jogada.tipo !== "cobrar_pendencia" && /\bobrigad[oa]\b.{0,25}\b(?:(?:pelo|por (?:seu|teu|esse|este|o)) contato|por (?:(?:entrar em|seu|teu) contato|(?:nos |me )?contatar))\b/.test(sem(texto))
+    ? { ok: false, regra: "sem_agradecimento_de_contato", motivo: "Retire o agradecimento genérico pelo contato. Cumprimente e ajude: numa abertura pergunte como pode ajudar; se já existe pedido, responda a ele e pergunte só o dado necessário." }
+    : { ok: true }
+};
+
+const aberturaUtil: Rule = {
+  id: "abertura_util",
+  check: ({ texto, jogada }) => jogada.tipo === "acolher" && (!texto.includes("?") || !/\b(ajud\w*|precis\w*|procur\w*|busc\w*|orc\w*|cot\w*|material|produto|atend\w*)\b/.test(sem(texto)))
+    ? { ok: false, regra: "abertura_util", motivo: "O contato abriu o atendimento. Devolva a saudação e pergunte em uma frase curta como pode ajudar ou o que ele precisa. Só agradecer, desejar um bom dia ou perguntar tudo bem não inicia o atendimento." }
+    : { ok: true }
+};
+
+export const regras: Rule[] = [semAgradecimentoDeContato, aberturaUtil, respondePerguntas, semTerceirizar, naoRepete, naoRepeteFrase, semValorNovo, semPressao, naoInverteRecusa, naoPrometeAnexo, semTermoInterno];

@@ -8,14 +8,15 @@ import type { JevClient } from './core/jev.js';
 const evidencia='Chapa de piso de alumínio: sob encomenda, prazo de 5 a 10 dias úteis, tamanho padrão 1250x3000.';
 const boa='Boa tarde! Tudo bem. Trabalhamos com chapa de piso de alumínio sob encomenda, no tamanho padrão de 1250 x 3000 mm, com prazo de 5 a 10 dias úteis. O pedido mínimo de alumínio é de aproximadamente 300 kg. Para preparar o orçamento, qual medida e quantidade você precisa e para qual cidade seria a entrega?';
 function input(texto=boa): JudgeInput {
-  return {texto,ficha:{...fichaInicial(),perguntas:[{id:'q1',texto:'Vcs vendem chapa de alumínio xadrez?',status:'respondida',buscas:1,resposta:{trechoId:'t1',citacao:evidencia}}]},pedido:{},fichaTexto:evidencia,historico:[{autor:'contato',texto:'Vcs vendem chapa de alumínio xadrez?',em:'2026-10-17T23:31:00Z'}],jogada:{tipo:'responder',instrucao:'O objetivo é deixar o pedido pronto para orçar: termine perguntando o que ainda falta para o vendedor orçar (produto, medida, quantidade, cidade de entrega). Pode oferecer catálogo ou vendedor depois de responder.'}};
+  return {texto,ficha:{...fichaInicial(),perguntas:[{id:'q1',texto:'Vcs vendem chapa de alumínio xadrez?',status:'respondida',buscas:1,resposta:{trechoId:'t1',citacao:evidencia}}]},pedido:{},fichaTexto:evidencia,historico:[{autor:'contato',texto:'Vcs vendem chapa de alumínio xadrez?',em:'2026-10-17T23:31:00Z'}],jogada:{tipo:'responder',dados:{qualificarPedido:true},instrucao:'O objetivo é deixar o pedido pronto para orçar: termine perguntando o que ainda falta para o vendedor orçar (produto, medida, quantidade, cidade de entrega). Pode oferecer catálogo ou vendedor depois de responder.'}};
 }
 function jev(choices: Record<string,string>={}): JevClient {
   return {ask:async (_state,questions)=>Object.fromEntries(Object.entries(questions).map(([key,q])=>[key,q.type==='choice'?{type:'choice',choice:choices[key]??Object.keys(q.criteria)[0]}:{type:'noul',noul:key==='inventa'?.14:key==='segue'?.45:.96}]))};
 }
 describe('attendance reviewer requirements',()=>{
   it('still vetoes unnecessary factual repetition identified in context',async()=>{
-    expect(await createJuizDeAtendimento(jev({repeticao:'desnecessaria'}))(input())).toMatchObject({ok:false,regra:'juiz_requisito',motivo:expect.stringContaining('[repeticao]')});
+    const i = input(); i.historico.unshift({autor:'agente',texto:boa,em:'2026-10-17T23:30:00Z'});
+    expect(await createJuizDeAtendimento(jev({repeticao:'desnecessaria'}))(i)).toMatchObject({ok:false,regra:'juiz_requisito',motivo:expect.stringContaining('[repeticao]')});
   });
   it('accepts the useful real reply despite the old low adherence score and no optional catalogue offer',async()=>{
     const result=await createJuizDeAtendimento(jev())(input());

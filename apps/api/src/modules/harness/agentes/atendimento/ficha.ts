@@ -29,7 +29,7 @@ export function renderFicha(ficha: FichaDoAtendimento): string {
   if (ficha.indicado) lines.push(`Contato indicado: ${ficha.indicado.nome}${ficha.indicado.telefone ? ` ${ficha.indicado.telefone}` : ""}${prova(ficha.indicado.prova)}`);
   for (const pergunta of ficha.perguntas.filter((item) => item.status !== "tratada")) {
     const resposta = [pergunta.resposta, ...(pergunta.maisRespostas ?? [])].filter((item) => item !== null).map((item) => ` · base ${item.trechoId}: "${item.citacao}"`).join("");
-    lines.push(`Pergunta ${pergunta.id} [${pergunta.status}]: ${pergunta.texto}${resposta}`);
+    lines.push(`${pergunta.natureza === "solicitacao" ? "Solicitação" : "Pergunta"} ${pergunta.id} [${pergunta.status}]: ${pergunta.texto}${resposta}`);
   }
   if (ficha.prequalificacao) {
     lines.push(`Pré-qualificação interna: ${ficha.prequalificacao.situacao}. ${ficha.prequalificacao.resumo}`);
