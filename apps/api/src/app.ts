@@ -1,3 +1,7 @@
+import { resolveLifecycleConfig } from './modules/attribution/ctwa-tracking-config.js';
+import { createCtwaLifecycleService } from './modules/attribution/ctwa-lifecycle.js';
+import { ctwaLifecycleRoutes } from './modules/attribution/ctwa-lifecycle.routes.js';
+import { createCtwaLifecycleRecovery } from './modules/attribution/ctwa-lifecycle-recovery.js';
 import { createCtwaTrackingWorker } from './modules/attribution/ctwa-tracking-bridge.js';
 import { ctwaRoutes } from './modules/attribution/ctwa.routes.js';
 import { createCtwaService } from './modules/attribution/ctwa-service.js';
@@ -500,6 +504,13 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
       await meetingReminderPoller.stop();
     });
   }
+  const ctwaLifecycle = options.prismaEnabled === false ? undefined : createCtwaLifecycleService(app.prisma, { secret: env.CTWA_TRACKING_CONFIG });
+  if (ctwaLifecycle && meetingScheduler?.confirmedBookings && env.CTWA_TRACKING_CONFIG) {
+    const recovery = createCtwaLifecycleRecovery(app.prisma, { secret: env.CTWA_TRACKING_CONFIG, scheduler: meetingScheduler, service: ctwaLifecycle,
+      onDeferred: () => app.log.warn({ code: 'ctwa_calendar_recovery_deferred' }, 'Optional meeting conversion recovery deferred') });
+    recovery.start();
+    app.addHook('onClose', async () => { await recovery.stop(); });
+  }
   const agentRuntime =
     options.prismaEnabled === false
       ? undefined
@@ -518,6 +529,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
           handoffBriefService,
           meetingScheduler,
           meetingReminders,
+          onMeetingConfirmed: async event => { if (resolveLifecycleConfig(env.CTWA_TRACKING_CONFIG, event.workspaceId)) return ctwaLifecycle?.confirmMeeting(event); },
           durableMedia: durableMedia?.media,
           transcriptions: durableMedia?.transcriptions,
           harness: { jev: harnessJev }
@@ -829,6 +841,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
     campaignWorker.start();
     app.addHook("onClose", async () => { await campaignWorker.stop(); });
   }
+  if (ctwaLifecycle) await app.register(ctwaLifecycleRoutes, { service: ctwaLifecycle });
   if (options.prismaEnabled !== false) await app.register(ctwaRoutes, { service: createCtwaService(app.prisma, { secret: env.META_WHATSAPP_CONFIG, trackingSecret: env.CTWA_TRACKING_CONFIG }) });
   if (options.prismaEnabled !== false && env.CTWA_TRACKING_CONFIG) {
     const ctwaTrackingWorker = createCtwaTrackingWorker(app.prisma, { secret: env.CTWA_TRACKING_CONFIG });

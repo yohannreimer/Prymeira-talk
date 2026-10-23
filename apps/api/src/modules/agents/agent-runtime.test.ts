@@ -2786,6 +2786,23 @@ it("continues after a material answer without requiring a document for its own p
       expect(prisma.message.create).not.toHaveBeenCalledWith({ data: expect.objectContaining({ body: "Fechado!" }) });
     });
 
+    it.each(['booked', 'unavailable', 'failed'] as const)('calls optional lifecycle hook only for actual booking (%s), before reminders', async status => {
+      const prisma = schedulingPrisma(), meetingScheduler = buildScheduler();
+      const confirmedMeeting = { ...meeting, createdAt: '2026-10-23T12:00:00Z' };
+      if (status === 'booked') meetingScheduler.book.mockResolvedValue({ status, meeting: confirmedMeeting, replacedEventIds: [] });
+      if (status === 'unavailable') meetingScheduler.book.mockResolvedValue({ status, reason: 'taken', availableSlots: [slot] });
+      if (status === 'failed') meetingScheduler.book.mockRejectedValue(new Error('Calendar unavailable'));
+      const onMeetingConfirmed = vi.fn().mockRejectedValue(new Error('synthetic optional capture failure'));
+      const meetingReminders = { scheduleForBooking: vi.fn().mockResolvedValue({ scheduled: [] }) };
+      const provider = buildProvider({ confidence: 0.9, reply: 'Fechado!', actions: [{ type: 'schedule_meeting', startsAt: slot.startsAt }], handoff: { required: false, reason: null } });
+      const result = await run(createAgentRuntime({ prisma, provider, meetingScheduler, meetingReminders, onMeetingConfirmed }));
+      if (status === 'booked') {
+        expect(result.status).toBe('completed');
+        expect(onMeetingConfirmed).toHaveBeenCalledWith({ workspaceId: ids.workspace, conversationId: ids.conversation, eventId: meeting.eventId, createdAt: confirmedMeeting.createdAt });
+        expect(onMeetingConfirmed.mock.invocationCallOrder[0]).toBeLessThan(meetingReminders.scheduleForBooking.mock.invocationCallOrder[0]!);
+      } else expect(onMeetingConfirmed).not.toHaveBeenCalled();
+    });
+
     it("plans the reminders of the booked call and notes them for the team", async () => {
       const prisma = schedulingPrisma();
       const meetingScheduler = buildScheduler();

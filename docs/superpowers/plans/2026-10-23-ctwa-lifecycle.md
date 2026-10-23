@@ -4,7 +4,7 @@
 
 **Goal:** Record confirmed meetings and owner-confirmed BRL sales from only the enabled workspace through existing Tracking, preserving exactly-once downstream claims and the original lead row.
 
-**Architecture:** Follow design.md. Preserve version 1 and its D1 lead table. Add version 2 lifecycle receipts and a separate D1 lifecycle fence. Talk captures trusted Calendar results, recovers missed captures through scoped read-only reconciliation and accepts authenticated owner manual sales. The existing bridge exports durable facts; Tracking alone sends Meta Schedule/Purchase.
+**Architecture:** Follow design.md. Preserve version 1 and its D1 lead table. Add version 2 lifecycle receipts and a separate D1 lifecycle fence. Talk captures trusted Calendar results, recovers missed captures through scoped read-only reconciliation and accepts authenticated owner manual sales. The existing bridge exports durable facts; Tracking alone sends Meta QualifiedLead/Purchase.
 
 **Tech Stack:** TypeScript/Fastify/Prisma/PostgreSQL; React/Vitest; Cloudflare Pages JavaScript/D1; Meta CAPI v25.
 
@@ -16,7 +16,7 @@ Tracking: functions/lib/ctwa-contract (v2 validation and immutable identity), ct
 
 ## Integration task
 
-- [ ] Establish red tests for legacy v1 compatibility and lifecycle gating before implementation. Required assertion examples: disabled workspace => no DB event or network; unauthorized role => 403; reused sale reference with changed cents => conflict and no send; confirmed Calendar booking => exactly one Schedule at confirmation time, reschedule => same event; unavailable booking => no event.
+- [ ] Establish red tests for legacy v1 compatibility and lifecycle gating before implementation. Required assertion examples: disabled workspace => no DB event or network; unauthorized role => 403; reused sale reference with changed cents => conflict and no send; confirmed Calendar booking => exactly one QualifiedLead at confirmation time, reschedule => same event; unavailable booking => no event.
 - [ ] Implement the exact version 2 contract in design.md. Money is purchase {orderId, valueCents, currency}; sourceReference is a 64-hex hash. LeadEventId binds all native scope to the existing lead. Parent mismatch fails before Meta; absent parent is retryable. Keep v1 object shape/identity stable.
 - [ ] Add independent D1 lifecycle table and tests against real workerd/D1 CAS. Cover simultaneous duplicates, one meeting per conversation, one sale reference per workspace across channels, immutable fields, positive cents, conditional money fields, terminal uncertainty and old accepted lead preservation.
 - [ ] Implement Talk provenance/unique constraints and scoped manual-sale/Calendar lifecycle service. Do not make legacy manually prepared rows automatically eligible. New owner endpoint derives workspace/user from authentication. Freeze original attribution and occurrence time; never accept either from form fields.
@@ -29,7 +29,7 @@ Tracking: functions/lib/ctwa-contract (v2 validation and immutable identity), ct
 
 ## Controller release task
 
-- [ ] Inspect current production configuration/image revisions and preserve concurrent changes. Validate official Schedule support with primary documentation and, if necessary, explicitly marked test-mode events; never create a real false meeting/sale.
+- [ ] Inspect current production configuration/image revisions and preserve concurrent changes. Validate official QualifiedLead support with primary documentation and, if necessary, explicitly marked test-mode events; never create a real false meeting/sale.
 - [ ] Publish Tracking migration/code before Talk, run baseline counts and auth/no-send checks. Build Talk through existing exact-revision CI and verify release manifest/migration hashes. API and web update only as required; no ingress/worker/WAHA or phone changes.
 - [ ] Apply normal Talk migration, deploy exact API/web revisions and preserve environment. Then set lifecycleEnabled and lifecycleEnabledAt only inside the previously approved workspace map entry. Verify health and capability isolation. Do not grant new access or replace credentials.
 - [ ] Validate original accepted lead still once, owner form available only in own native conversation, no form submission or stage mutation, and no synthetic live Meta event. First real meeting/sale Meta receipt is pending until real actions occur; report this explicitly.

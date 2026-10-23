@@ -1,8 +1,8 @@
 import { createHmac } from 'node:crypto';
 import type { PrismaClient, CtwaConversionEvent, CtwaAttribution } from '@prisma/client';
 import { CtwaOperationError } from './ctwa-service.js';
-import { stableCtwaEventId } from './ctwa-payload.js';
-import { automaticTrackingWorkspaces, resolveTrackingConfig } from './ctwa-tracking-config.js';
+import { hash, stableCtwaEventId } from './ctwa-payload.js';
+import { automaticTrackingWorkspaces, resolveTrackingConfig, resolveLifecycleConfig } from './ctwa-tracking-config.js';
 type Event = CtwaConversionEvent & {
     attribution: CtwaAttribution;
 };
@@ -21,7 +21,14 @@ function envelope(event: Event, contact: {
     phone: string;
 } | null) {
     const attr = event.attribution;
-    if (event.eventName !== 'LeadSubmitted' || event.businessKey !== 'once' || event.eventId !== stableCtwaEventId(event.workspaceId, event.channelId, event.attributionId, 'LeadSubmitted')
+    const lead = event.eventName === 'LeadSubmitted' && event.businessKey === 'once';
+    const meeting = event.eventName === 'QualifiedLead' && event.lifecycleSource === 'calendar_confirmed' && event.businessKey === 'once' && event.confirmedBy === null && event.orderId === null && event.valueCents === null && event.currency === null;
+    const cents = event.valueCents == null ? 0 : Number(event.valueCents);
+    const purchase = event.eventName === 'Purchase' && event.lifecycleSource === 'owner_manual' && !!event.confirmedBy && !!event.orderId && /^[A-Za-z0-9._:-]{1,128}$/.test(event.orderId)
+        && event.sourceReference === hash(event.orderId) && event.businessKey === event.sourceReference && event.orderHash === event.sourceReference
+        && Number.isSafeInteger(cents) && cents > 0 && cents <= 100000000000000 && event.currency === 'BRL' && Number(event.value) === cents / 100;
+    if ((!lead && !meeting && !purchase) || event.eventId !== stableCtwaEventId(event.workspaceId, event.channelId, event.attributionId, event.eventName as 'LeadSubmitted' | 'QualifiedLead' | 'Purchase', event.businessKey)
+        || (!lead && (attr.sourceMode !== 'live' || !/^[a-f0-9]{64}$/.test(event.sourceReference ?? '') || event.leadEventId !== stableCtwaEventId(event.workspaceId, event.channelId, event.attributionId, 'LeadSubmitted')))
         || ![event.workspaceId, event.channelId, event.conversationId, event.messageId, event.attributionId].every(value => uuid.test(value))
         || attr.workspaceId !== event.workspaceId || attr.channelId !== event.channelId || attr.conversationId !== event.conversationId || attr.messageId !== event.messageId || attr.id !== event.attributionId
         || !/^[\x21-\x7e]{1,2048}$/.test(attr.ctwaClid) || (attr.adId !== null && !/^\d{1,64}$/.test(attr.adId))
@@ -29,9 +36,11 @@ function envelope(event: Event, contact: {
         throw new CtwaOperationError('invalid_tracking_identity');
     const name = contact?.name?.replace(/[\x00-\x1f\x7f]/g, '').trim().slice(0, 200);
     const phone = contact?.phone?.trim();
-    return { version: 1, workspaceId: event.workspaceId, channelId: event.channelId, conversationId: event.conversationId, messageId: event.messageId,
+    const base = { version: 1, workspaceId: event.workspaceId, channelId: event.channelId, conversationId: event.conversationId, messageId: event.messageId,
         attributionId: event.attributionId, eventId: event.eventId, eventName: 'LeadSubmitted', eventTime: Math.floor(event.eventTime.getTime() / 1000), ctwaClid: attr.ctwaClid,
         ...(attr.adId ? { adId: attr.adId } : {}), contact: { ...(name ? { name } : {}), ...(phone && /^\+?[1-9]\d{7,14}$/.test(phone) ? { phone } : {}) } };
+    return lead ? base : { ...base, version: 2, eventName: event.eventName, leadEventId: event.leadEventId, sourceReference: event.sourceReference,
+        ...(purchase ? { purchase: { orderId: event.orderId, valueCents: cents, currency: 'BRL' } } : {}) };
 }
 async function boundedJson(response: Response) {
     const reader = response.body?.getReader();
@@ -73,7 +82,13 @@ export function createCtwaTrackingBridge(db: PrismaClient, options: {
             if (!event)
                 throw new CtwaOperationError('not_found', 404);
             let identityValid = true;
-            try { envelope(event, null); } catch { identityValid = false; }
+            try {
+                envelope(event, null);
+                if (event.eventName !== 'LeadSubmitted') {
+                    const lifecycle = resolveLifecycleConfig(options.secret, workspaceId);
+                    if (!lifecycle || event.eventTime.getTime() < lifecycle.lifecycleEnabledAt * 1000 || event.eventTime.getTime() > now().getTime()) throw new Error('disabled');
+                }
+            } catch { identityValid = false; }
             const ready = Boolean(config?.enabled && identityValid && eligible(event, now()));
             if (!apply)
                 return { id: event.id, eventId: event.eventId, state: event.state, attemptCount: event.attemptCount, configured: !!config?.enabled, autoForward: !!config?.autoForward, ready };
@@ -153,7 +168,16 @@ export function createCtwaTrackingWorker(db: PrismaClient, options: {
             for (const workspaceId of automaticTrackingWorkspaces(options.secret)) {
                 if (stopped)
                     break;
-                const events = await db.ctwaConversionEvent.findMany({ where: { workspaceId, eventName: 'LeadSubmitted', OR: [{ state: 'pending_validation', attemptCount: 0 }, { state: { in: [...retryStates, 'tracking_forwarding'] }, attemptedAt: { lte: cutoff } }] }, select: { id: true }, orderBy: [{ eventTime: 'asc' }, { id: 'asc' }], take: 25 });
+                const lifecycle = resolveLifecycleConfig(options.secret, workspaceId);
+                const scope = lifecycle ? { AND: [{ OR: [
+                    { eventName: 'LeadSubmitted' },
+                    // Confirmed booking is this opted-in workspace's approved QualifiedLead criterion.
+                    { eventName: 'QualifiedLead', lifecycleSource: 'calendar_confirmed', eventTime: { gte: new Date(lifecycle.lifecycleEnabledAt * 1000) } },
+                    { eventName: 'Purchase', lifecycleSource: 'owner_manual', eventTime: { gte: new Date(lifecycle.lifecycleEnabledAt * 1000) } }
+                ] }] } : { eventName: 'LeadSubmitted' };
+                const events = await db.ctwaConversionEvent.findMany({ where: { workspaceId, ...scope,
+                    OR: [{ state: 'pending_validation', attemptCount: 0 }, { state: { in: [...retryStates, 'tracking_forwarding'] }, attemptedAt: { lte: cutoff } }]
+                }, select: { id: true }, orderBy: [{ eventTime: 'asc' }, { id: 'asc' }], take: 25 });
                 for (const event of events) {
                     if (stopped)
                         break;
