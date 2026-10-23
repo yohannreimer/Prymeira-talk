@@ -85,7 +85,7 @@ describe("natural attendance regressions from the Villefer review", () => {
   it("retains the supported items of a mixed request", () => {
     const ficha: FichaDoAtendimento = { ...fichaInicial(), perguntas: [
       { id: "q1", texto: "Telhas", status: "respondida", buscas: 1, resposta: { trechoId: "t1", citacao: "Não fornecemos telhas." } },
-      { id: "q2", texto: "Chapas", status: "respondida", buscas: 1, resposta: { trechoId: "t2", citacao: "Fornecemos chapas lisas." } }
+      { id: "q2", texto: "Chapas", status: "respondida", buscas: 1, resposta: { trechoId: "t2", citacao: "Fornecemos chapas lisas." }, maisRespostas: [{ trechoId: "t1", citacao: "Não fornecemos telhas." }] }
     ] };
     expect(decidirJogada({ ficha, pedido, triagem: null, evento: { tipo: "mensagem", texto: "Preciso de telhas e chapas" } }).tipo).not.toBe("responder_recusa");
   });
@@ -113,6 +113,7 @@ describe("natural attendance regressions from the Villefer review", () => {
     i.ficha.perguntas = [{ id: "q1", texto: "Preciso de inox", natureza: "solicitacao", status: "respondida", buscas: 1, resposta: { trechoId: "t1", citacao: "Inox sob encomenda." } }];
     expect(await createJuizDeAtendimento(jev({ encomenda_1: "omitida" }))(i)).toMatchObject({ ok: false, motivo: expect.stringContaining("encomenda_1") });
     expect(await createJuizDeAtendimento(jev({ afirmacao_sem_base: "estoque" }))(i)).toMatchObject({ ok: false });
+    expect(await createJuizDeAtendimento(jev({ solicitacao_1: "pergunta_ignorada" }))(i)).toMatchObject({ ok: false });
     i.ficha.perguntas[0].natureza = "pergunta";
     expect(await createJuizDeAtendimento(jev({ resposta_1: "sem_resposta" }))(i)).toMatchObject({ ok: false });
   });

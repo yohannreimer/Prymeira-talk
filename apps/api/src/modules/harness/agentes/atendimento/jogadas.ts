@@ -135,7 +135,7 @@ function jogadaDasPerguntas(ficha: FichaDoAtendimento): Jogada {
     };
   }
   // A fully refused request is an answer, not a quote missing city or registration.
-  if (atuais.length > 0 && atuais.every(item => item.status === "respondida" && citacoes(item).some(recusa))) {
+  if (atuais.length > 0 && atuais.every(item => item.status === "respondida" && item.resposta !== null && recusa(item.resposta.citacao))) {
     return {
       tipo: "responder_recusa",
       instrucao: `Responda de forma curta e cordial somente o que a base recusa neste pedido: ${respostas.join("; ")}. Se ainda não cumprimentou, devolva a saudação do contato. Não pergunte medida, quantidade, cidade, cadastro ou aceite, nem encaminhe apenas para repetir a recusa. Não ofereça produtos parecidos por conta própria.`
