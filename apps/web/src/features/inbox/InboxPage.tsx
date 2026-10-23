@@ -1,3 +1,4 @@
+import { ConversationLifecycle } from './ConversationLifecycle';
 import { optimizePhoto } from './photo-optimization';
 import { abortable, withReadDeadline } from '../../app/read-request';
 import { useTalkPerformance, TalkPerformancePanel } from './talk-performance';
@@ -2148,6 +2149,8 @@ selectedConversation ? (
           phone={selectedConversation.contactPhone ?? null} channelName={selectedConversation.channelName}
           followupAudience={contactAudience.audience} onMarkCustomer={contactAudience.markCustomer}
           onSave={(...args) => actionsRef.current.saveContactName(...args)} /> : <div className="context-card">Nenhuma conversa</div>}
+
+        {selectedConversation && currentRole === 'owner' ? <ConversationLifecycle key={selectedConversation.id} conversationId={selectedConversation.id} getToken={getToken} /> : null}
 
         {/* Card detalhes */}
         <div className="context-card">

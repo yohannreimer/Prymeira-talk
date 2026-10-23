@@ -304,6 +304,8 @@ export function createAgentRuntime(input: {
   handoffBriefService?: { schedule(input: { workspaceId: string; conversationId: string }): void };
   /** Google Calendar access for agents allowed to use schedule_meeting; without it the action is never offered. */
   meetingScheduler?: MeetingScheduler;
+  /** Optional analytics: only actual successful Calendar booking after current-conversation validation. */
+  onMeetingConfirmed?: (input: { workspaceId: string; conversationId: string; eventId: string; createdAt?: string | null }) => Promise<unknown>;
   /** Plans the messages sent before a booked call; without it no reminder is scheduled. */
   meetingReminders?: Pick<MeetingReminderService, "scheduleForBooking">;
   logger?: { warn(fields: Record<string, unknown>, message: string): void };
@@ -2024,6 +2026,14 @@ export function createAgentRuntime(input: {
       const reply = meeting.meetLink && !confirmation.includes(meeting.meetLink)
         ? `${confirmation}\n\nLink da call: ${meeting.meetLink}`
         : confirmation;
+      if (input.onMeetingConfirmed) {
+        try {
+          await input.onMeetingConfirmed({ workspaceId: args.workspaceId, conversationId: args.conversation.id, eventId: meeting.eventId, createdAt: meeting.createdAt });
+        } catch {
+          // Safe diagnostic only. The customer's Calendar booking remains successful.
+          input.logger?.warn({ code: 'ctwa_calendar_capture_deferred' }, 'Optional meeting conversion capture deferred');
+        }
+      }
       const reminders = await scheduleMeetingReminders(args, meeting);
       const note = [
         `Call marcada pela IA: ${meeting.label}.`,

@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { PrismaClient } from '@prisma/client';
 import { createCtwaTrackingBridge, createCtwaTrackingWorker, TRACKING_RETRY_MS } from './ctwa-tracking-bridge.js';
 import { TRACKING_ENDPOINT, resolveTrackingConfig } from './ctwa-tracking-config.js';
-import { stableCtwaEventId } from './ctwa-payload.js';
+import { hash, stableCtwaEventId } from './ctwa-payload.js';
 import { createCtwaService } from './ctwa-service.js';
 const uuid = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const workspaceId = uuid(1), channelId = uuid(2), conversationId = uuid(3), messageId = uuid(4), attributionId = uuid(5), id = uuid(6);
@@ -29,7 +29,7 @@ function fixture(response: () => Promise<Response> = async () => Response.json({
 describe('Tracking bridge scope and single ownership', () => {
     it('dry-run has no claims, contact reads, transport or secrets', async () => { const f = fixture(); const result = await f.bridge.forward(workspaceId, id); expect(result).toMatchObject({ ready: true, configured: true, autoForward: false, attemptCount: 0 }); expect(f.db.ctwaConversionEvent.updateMany).not.toHaveBeenCalled(); expect(f.db.conversation.findFirst).not.toHaveBeenCalled(); expect(f.fetch).not.toHaveBeenCalled(); expect(JSON.stringify(result)).not.toMatch(/synthetic-click|Owned Contact|signingKey/); });
     it('exact valid config only; no arbitrary URL, secret fallback, or typo fields', () => {
-        expect(resolveTrackingConfig(secret, workspaceId)).toEqual(config);
+        expect(resolveTrackingConfig(secret, workspaceId)).toEqual({ ...config, lifecycleEnabled: false });
         for (const bad of [{ ...config, endpoint: 'http://localhost/test' }, { ...config, endpoint: TRACKING_ENDPOINT + '?secret=x' }, { ...config, signingKey: 'short' }, { ...config, enabled: 'true' }, { ...config, extra: true }])
             expect(resolveTrackingConfig(JSON.stringify({ [workspaceId]: bad }), workspaceId)).toBeNull();
         expect(resolveTrackingConfig(secret, uuid(99))).toBeNull();
@@ -98,4 +98,37 @@ describe('central state, uncertainty and stale claim recovery', () => {
     it('definite bridge HTTP4xx blocks automatic forwarding without raw body', async () => { const f = fixture(async () => new Response('secret remote error', { status: 401 })); const result = await f.bridge.forward(workspaceId, id, true); expect(result.state).toBe('tracking_blocked'); expect(JSON.stringify(result)).not.toContain('secret'); });
     it('direct dispatcher refuses configured ownership and persisted tracking state', async () => { const f = fixture(); const directConfig = JSON.stringify({ [workspaceId]: { datasetId: '123', whatsappBusinessAccountId: '456', accessToken: 'synthetic', enabled: true } }); await expect(createCtwaService(f.db as unknown as PrismaClient, { secret: directConfig, trackingSecret: secret, fetch: f.fetch }).dispatch(workspaceId, id)).rejects.toThrow('tracking_owned'); f.row = { ...f.row, state: 'tracking_retry' }; await expect(createCtwaService(f.db as unknown as PrismaClient, { secret: directConfig, fetch: f.fetch }).dispatch(workspaceId, id)).rejects.toThrow('tracking_owned'); expect(f.fetch).not.toHaveBeenCalled(); });
     it('worker default manual mode neither scans nor forwards; enabled auto mode scans exact workspace only', async () => { const f = fixture(); const manual = createCtwaTrackingWorker(f.db as unknown as PrismaClient, { secret, fetch: f.fetch }); manual.start(); await manual.stop(); expect(f.db.ctwaConversionEvent.findMany).not.toHaveBeenCalled(); const auto = createCtwaTrackingWorker(f.db as unknown as PrismaClient, { secret: JSON.stringify({ [workspaceId]: { ...config, autoForward: true } }), fetch: f.fetch }); auto.start(); await new Promise(resolve => setTimeout(resolve, 5)); await auto.stop(); expect(f.db.ctwaConversionEvent.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ workspaceId, eventName: 'LeadSubmitted' }) })); expect(f.fetch).toHaveBeenCalledTimes(1); });
+});
+
+describe('trusted lifecycle bridge', () => {
+    function lifecycleFixture(name: 'QualifiedLead' | 'Purchase') {
+        const f = fixture();
+        const key = name === 'Purchase' ? hash('sale-bridge') : 'once';
+        f.row = { ...f.row, eventName: name, businessKey: key, eventId: stableCtwaEventId(workspaceId, channelId, attributionId, name, key),
+            lifecycleSource: name === 'QualifiedLead' ? 'calendar_confirmed' : 'owner_manual', sourceReference: hash(name === 'QualifiedLead' ? 'google-event' : 'sale-bridge'), leadEventId: eventId,
+            confirmedBy: name === 'Purchase' ? 'owner' : null, orderId: name === 'Purchase' ? 'sale-bridge' : null, orderHash: name === 'Purchase' ? key : null,
+            valueCents: name === 'Purchase' ? 12345n : null, value: name === 'Purchase' ? 123.45 : null, currency: name === 'Purchase' ? 'BRL' : null,
+            eventTime: new Date(now.getTime() - 1000), attribution: { ...f.row.attribution, sourceMode: 'live' } };
+        const transport = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => Response.json({ eventId: f.row.eventId, state: 'accepted', metaStatusCode: 200 }));
+        const lifecycleSecret = JSON.stringify({ [workspaceId]: { ...config, lifecycleEnabled: true, lifecycleEnabledAt: Math.floor(now.getTime() / 1000) - 100 } });
+        return { f, transport, lifecycleSecret, bridge: createCtwaTrackingBridge(f.db as unknown as PrismaClient, { secret: lifecycleSecret, now: () => now, fetch: transport }) };
+    }
+    it.each(['QualifiedLead', 'Purchase'] as const)('sends signed v2 %s with immutable original lead and source', async name => {
+        const { f, transport, bridge } = lifecycleFixture(name);
+        await bridge.forward(workspaceId, id, true);
+        const raw = transport.mock.calls[0]![1] as RequestInit;
+        const body = JSON.parse(raw.body as string);
+        expect(body).toMatchObject({ version: 2, eventName: name, leadEventId: eventId, sourceReference: f.row.sourceReference });
+        if (name === 'Purchase') expect(body.purchase).toEqual({ orderId: 'sale-bridge', valueCents: 12345, currency: 'BRL' });
+        else expect(body.purchase).toBeUndefined();
+        expect(f.row.state).toBe('tracking_accepted');
+    });
+    it.each(['QualifiedLead', 'Purchase'] as const)('disabled scope, old preparation and before-activation %s cannot send', async name => {
+        const { f, transport, bridge } = lifecycleFixture(name);
+        await expect(f.bridge.forward(workspaceId, id, true)).rejects.toThrow('invalid_tracking_identity');
+        f.row = { ...f.row, lifecycleSource: null };
+        await expect(bridge.forward(workspaceId, id, true)).rejects.toThrow('invalid_tracking_identity');
+        expect(transport).not.toHaveBeenCalled();
+        expect(f.db.conversation.findFirst).not.toHaveBeenCalled();
+    });
 });
