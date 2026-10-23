@@ -46,4 +46,24 @@ describe.skipIf(!url)('trusted lifecycle disposable PostgreSQL migration and con
   worker.start();await vi.waitFor(()=>expect(calls).toHaveLength(2));await worker.stop();expect(calls.every(body=>body.version===2)).toBe(true);expect(calls.map(body=>body.eventName).sort()).toEqual(['Purchase','QualifiedLead']);expect(await db.ctwaConversionEvent.count({where:{workspaceId,lifecycleSource:null,eventName:{in:['Purchase','QualifiedLead']},attemptCount:0}})).toBe(3);
   expect((await db.ctwaConversionEvent.findFirstOrThrow({where:{workspaceId,attributionId:original.id,eventName:'LeadSubmitted'}})).state).toBe('tracking_accepted');
  });
+ it('resolves a trusted sale committed between the initial reference read and the legacy guard',async()=>{
+  const input={workspaceId,conversationId,userId:'synthetic-owner',role:'owner',orderId:'deterministic-reference-race',valueCents:12345,currency:'BRL'};
+  let committed=false,originalReceipt:Awaited<ReturnType<typeof service.confirmSale>>|undefined;
+  const racedDb=db.$extends({query:{ctwaConversionEvent:{async findFirst({args,query}){
+   const snapshot=await query(args);
+   if(!committed&&args.where?.sourceReference===hash(input.orderId)&&args.where?.lifecycleSource==='owner_manual'){
+    expect(snapshot).toBeNull();
+    committed=true;
+    // Real independent PostgreSQL operations commit after the first SELECT but before the legacy guard.
+    originalReceipt=await service.confirmSale(input);
+   }
+   return snapshot;
+  }}}});
+  const racingService=createCtwaLifecycleService(racedDb as unknown as PrismaClient,{secret,now:()=>confirmedAt});
+  const replay=await racingService.confirmSale(input);
+  expect(committed).toBe(true);
+  expect(replay).toEqual(originalReceipt);
+  expect(await db.ctwaConversionEvent.count({where:{workspaceId,sourceReference:hash(input.orderId),lifecycleSource:'owner_manual'}})).toBe(1);
+ });
+
 });
