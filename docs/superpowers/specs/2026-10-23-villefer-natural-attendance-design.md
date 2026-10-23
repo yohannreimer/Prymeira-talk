@@ -17,3 +17,7 @@ Corrigir classificação de saudação no núcleo e impedir que a segunda classi
 ## Validação
 
 Regressões determinísticas antes/depois para saudações, despedidas, bots, injeção, recusas integrais/mistas, agradecimentos e perguntas factuais diretas. Rodar conjunto de harness e typecheck/build. Reproduzir todos os 68 pontos exportados, cortando cada histórico antes da resposta avaliada; modelo e JEV reais sem transporte, ações ou persistência. Preservar resultados completos e comparar respostas com o histórico observado. Dados de clientes ficam fora do Git. Publicação somente após revisão das gerações e verificações aprovadas; confirmar novamente a imagem ativa antes de implantar para preservar mudanças concorrentes.
+
+## Refinamentos de implementação observados nos testes
+
+A intenção de solicitação é preservada como dado estruturado opcional, compatível com fichas antigas. Repetição e ressalvas são julgadas semanticamente contra a conversa real, sem confundir citações e perguntas internas com falas do cliente. As verificações factuais recebem as fontes completas. A recusa integral é conservadora: citações de atendimento ou consulta impedem tratar um pedido agrupado como todo recusado. O fallback de vídeo informa o tipo real da mídia.

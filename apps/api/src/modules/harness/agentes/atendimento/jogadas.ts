@@ -135,7 +135,7 @@ function jogadaDasPerguntas(ficha: FichaDoAtendimento): Jogada {
     };
   }
   // A fully refused request is an answer, not a quote missing city or registration.
-  if (atuais.length > 0 && atuais.every(item => item.status === "respondida" && item.resposta !== null && recusa(item.resposta.citacao))) {
+  if (atuais.length > 0 && atuais.every(item => item.status === "respondida" && citacoes(item).length > 0 && citacoes(item).every(recusa))) {
     return {
       tipo: "responder_recusa",
       instrucao: `Responda de forma curta e cordial somente o que a base recusa neste pedido: ${respostas.join("; ")}. Se ainda não cumprimentou, devolva a saudação do contato. Não pergunte medida, quantidade, cidade, cadastro ou aceite, nem encaminhe apenas para repetir a recusa. Não ofereça produtos parecidos por conta própria.`
@@ -161,8 +161,8 @@ function jogadaDasPerguntas(ficha: FichaDoAtendimento): Jogada {
   if (respostas.length) {
     return {
       tipo: "responder",
-      dados: { qualificarPedido: true },
-      instrucao: `Responda com estas informações da base, com as palavras do cliente: ${respostas.join("; ")}. Use só o que responde a última mensagem; não repita informações antigas sem motivo. Se o cliente perguntou novamente ou pediu confirmação, responda esse ponto de novo.${naoBuscadas.length ? ` Sobre ${naoBuscadas.map((item) => `"${item.texto}"`).join(", ")}, não afirme nada; pergunte o detalhe que falta.` : ""} O objetivo é deixar o pedido pronto para orçar: termine com o próximo detalhe necessário para o vendedor orçar (produto, medida, quantidade ou cidade), respeitando a etapa de viabilidade da base. Reutilize o que o cliente já informou; uma pergunta anterior ainda sem resposta pode ser retomada se necessária para avançar. Não acumule dados técnicos, logística e cadastro numa só pergunta. Se não falta nada, não pergunte.`
+      dados: { qualificarPedido: ficha.prequalificacao ? ficha.prequalificacao.faltantes.length > 0 : true },
+      instrucao: `Use estas informações da base somente para responder fatos perguntados. Para uma solicitação ou novo dado de especificação, reconheça o pedido e avance; não recite o catálogo nem anuncie fornecimento de novo. Preserve produto, material e acabamento anteriores mesmo que a última mensagem seja só um dado como Aço 1020. Evidências: ${respostas.join("; ")}. Use só o que responde a última mensagem; não repita informações antigas sem motivo. Se o cliente perguntou novamente ou pediu confirmação, responda esse ponto de novo.${naoBuscadas.length ? ` Sobre ${naoBuscadas.map((item) => `"${item.texto}"`).join(", ")}, não afirme nada; pergunte o detalhe que falta.` : ""} O objetivo é deixar o pedido pronto para orçar: termine com o próximo detalhe necessário para o vendedor orçar (produto, medida, quantidade ou cidade), respeitando a etapa de viabilidade da base. Reutilize o que o cliente já informou; uma pergunta anterior ainda sem resposta pode ser retomada se necessária para avançar. Não acumule dados técnicos, logística e cadastro numa só pergunta. Se não falta nada, não pergunte.`
     };
   }
   return {

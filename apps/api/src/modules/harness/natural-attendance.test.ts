@@ -124,6 +124,34 @@ describe("natural attendance regressions from the Villefer review", () => {
     i.ficha.perguntas[0].natureza = "pergunta";
     expect(await createJuizDeAtendimento(jev({ resposta_1: "sem_resposta" }))(i)).toMatchObject({ ok: false });
   });
+  it("does not treat a grouped quote as wholly refused because its first citation refuses one item", () => {
+    const ficha = fichaInicial();
+    ficha.perguntas = [{ id: "q1", texto: "Cotação de perfis e telhas", natureza: "solicitacao", status: "respondida", buscas: 1, resposta: { trechoId: "t1", citacao: "Não fornecemos telhas." }, maisRespostas: [{ trechoId: "t2", citacao: "Perfil U estrutural sob consulta." }] }];
+    ficha.prequalificacao = { situacao: "coletando", resumo: "Perfis e telhas", faltantes: ["Cidade"], divergencias: ["Telhas não fornecidas"] };
+    expect(decidirJogada({ ficha, pedido, triagem: null, evento: { tipo: "mensagem", texto: "Cotação de perfis e telhas" } }).tipo).not.toBe("responder_recusa");
+  });
+  it("does not require quote data after an answer with no qualification left", () => {
+    const ficha = fichaInicial();
+    ficha.perguntas = [{ id: "q1", texto: "Dobra de chapa", status: "respondida", buscas: 1, resposta: { trechoId: "t1", citacao: "Não fornecemos corte e dobra." }, maisRespostas: [{ trechoId: "t2", citacao: "A autorização de material não permite qualquer peça fabricada." }] }];
+    ficha.prequalificacao = { situacao: "coletando", resumo: "Serviço não fornecido", faltantes: [], divergencias: [] };
+    const jogada = decidirJogada({ ficha, pedido, triagem: null, evento: { tipo: "mensagem", texto: "Dobra de chapa" } });
+    expect(jogada.dados?.qualificarPedido).toBe(false);
+  });
+  it("does not label a supported refusal or quote handover as an internal uncertainty", async () => {
+    const ask = vi.fn(jev({ ressalva_interna: "nao_solicitada" }).ask);
+    expect(await createJuizDeAtendimento({ ask })(judgeInput("Não fornecemos telhas. Vou encaminhar os perfis para preparação do orçamento."))).toMatchObject({ ok: true });
+    expect(ask.mock.calls[0][1]).not.toHaveProperty("ressalva_interna");
+  });
+  it("reviews repetition and uncertainty against actual messages without internal source contamination", async () => {
+    const ask = vi.fn(jev().ask);
+    const i = judgeInput("Recebi as especificações dos perfis. Em qual cidade será a entrega?");
+    i.fichaTexto = "O leitor criou uma pergunta de disponibilidade sem ser uma pergunta real.";
+    i.fontesExtras = "Orientação interna que não foi dita ao cliente.";
+    expect(await createJuizDeAtendimento({ ask })(i)).toMatchObject({ ok: true });
+    const style = ask.mock.calls.find(([, q]) => "repeticao" in q)!;
+    expect(style[0]).toEqual({ ultimasMensagens: i.historico, mensagemCandidata: i.texto });
+    expect(ask.mock.calls.some(([, q]) => "afirmacao_sem_base" in q)).toBe(true);
+  });
   it("retries the writer's empty acknowledgment and sends a useful opening", async () => {
     const model = createScriptedModel("escritor", (_req, index) => ({ content: null, toolCalls: [toolCall("responder", { texto: index === 0 ? "Bom dia! Obrigado pelo contato." : "Bom dia! Como posso te ajudar?" })] }));
     const leitor = createScriptedModel("leitor", () => ({ content: null, toolCalls: [] }));

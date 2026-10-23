@@ -15,7 +15,8 @@ function jev(choices: Record<string,string>={}): JevClient {
 }
 describe('attendance reviewer requirements',()=>{
   it('still vetoes unnecessary factual repetition identified in context',async()=>{
-    expect(await createJuizDeAtendimento(jev({repeticao:'desnecessaria'}))(input())).toMatchObject({ok:false,regra:'juiz_requisito',motivo:expect.stringContaining('[repeticao]')});
+    const i = input(); i.historico.unshift({autor:'agente',texto:boa,em:'2026-10-17T23:30:00Z'});
+    expect(await createJuizDeAtendimento(jev({repeticao:'desnecessaria'}))(i)).toMatchObject({ok:false,regra:'juiz_requisito',motivo:expect.stringContaining('[repeticao]')});
   });
   it('accepts the useful real reply despite the old low adherence score and no optional catalogue offer',async()=>{
     const result=await createJuizDeAtendimento(jev())(input());
