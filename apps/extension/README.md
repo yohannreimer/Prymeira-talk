@@ -1,6 +1,6 @@
 # Prymeira Talk para WhatsApp Web
 
-Piloto 0.1: painel lateral com sugestões e follow-ups da conversa correspondente no Talk. Usa um número que já esteja conectado ao Talk.
+Piloto 0.2: painel lateral com sugestões da conversa atual, fila de follow-ups e fila Humano necessário. Usa um número que já esteja conectado ao Talk.
 
 ## Preparar
 
@@ -27,6 +27,12 @@ O build usa `https://talk.prymeiradigital.com.br`. Para um ambiente local, compi
 5. Mantenha essa aba do Talk aberta e volte ao WhatsApp Web com o mesmo número conectado no Talk.
 6. Abra uma conversa individual. Se houver mais de um canal correspondente, escolha o canal.
 
+As abas **Conversa**, **Follow-ups** (contador vermelho de itens para revisar) e **Humano necessário** acompanham o canal verificado do WhatsApp aberto. As filas têm paginação e atualização; atendentes veem somente conversas atribuídas.
+
+Em **Follow-ups → Para revisar**, clicar em um item abre o contato no WhatsApp Web, comprova a conversa e revalida a revisão do acompanhamento. O texto é colocado no campo vazio; você lê, edita e aperta **Enviar** no próprio WhatsApp. Um rascunho já existente é preservado. Navegação ou digitação durante a preparação interrompe a operação. O preparo expira em um minuto. A extensão não cria um segundo disparo nem marca o item como enviado antecipadamente; a atualização no Talk depende da sincronização do envio nativo.
+
+**Lembretes** e **Agendados** abrem a conversa sem preparar mensagem nem antecipar o agendamento. **Humano necessário** mostra o motivo e abre a conversa; abrir não conclui a pendência humana.
+
 O painel mostra a sugestão existente e permite pedir outra, editar e inserir no campo vazio do WhatsApp. O vendedor revisa e envia. Follow-ups já existentes podem ser consultados, adiados ou cancelados; lembretes internos podem ser marcados como feitos. Não há botão de disparo automático na extensão.
 
 ## Identificação e acesso
@@ -47,7 +53,7 @@ O teste de navegador carrega a extensão real, a página de conexão real e os d
 
 ## Limites do piloto
 
-- O adaptador do DOM/localStorage ainda precisa ser conferido contra a versão real do WhatsApp Web. Falta de identificação bloqueia o painel.
+- O DOM observado expõe a stanza sem telefone. O resolver exige uma identidade canônica única e sincronizada no canal; identidades indisponíveis bloqueiam o contexto e a preparação.
 - Grupos e número ainda não conectado ao Talk ficam fora do recorte.
 - Validar no número piloto a coexistência com o provedor, o espelhamento dos envios nativos e o cancelamento dos acompanhamentos após resposta.
 - A aba de conexão precisa continuar aberta. Publicação na Chrome Web Store e login independente da aba são etapas futuras.

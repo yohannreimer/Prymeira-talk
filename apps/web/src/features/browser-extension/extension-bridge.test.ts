@@ -37,3 +37,12 @@ describe('authenticated Talk bridge allowlist', () => {
     expect(request).toHaveBeenLastCalledWith(`/followups/${followupId}/cancel`, { method: 'POST', body: JSON.stringify({ expectedUpdatedAt: updatedAt, reason: 'manual_cancelled' }) });
   });
 });
+
+it('queries queues and revalidates navigation through fixed read-only endpoints', async()=>{
+  const request=requestWith();
+  await executeExtensionCommand({action:'queue',account:{channelId,selfAddress:'self'},kind:'human'},request as never,'user');
+  expect(request).toHaveBeenLastCalledWith('/browser-extension/queue',{method:'POST',body:JSON.stringify({account:{channelId,selfAddress:'self'},kind:'human'})});
+  await executeExtensionCommand({action:'navigate',account:{channelId,selfAddress:'self'},kind:'human',id:conversationId},request as never,'user');
+  expect(request).toHaveBeenLastCalledWith('/browser-extension/navigate',{method:'POST',body:JSON.stringify({account:{channelId,selfAddress:'self'},kind:'human',id:conversationId})});
+  expect(request.mock.calls.some(([path])=>path.endsWith('/send'))).toBe(false);
+});
