@@ -35,7 +35,7 @@ await buildExtension({ origin, outdir: extensionDist });
 await rm(profile, { recursive: true, force: true });
 const context = await chromium.launchPersistentContext(profile, { headless: true, channel: 'chromium', viewport: { width: 380, height: 900 },
   args: [`--disable-extensions-except=${extensionDist}`, `--load-extension=${extensionDist}`] });
-const failures = [], checks = [], mutations = [], networkFailures = []; let holdRead = false, pendingRelease = null, accessDenied = false, followupActive = true, staleSuggestion = false;
+const failures = [], checks = [], mutations = [], networkFailures = []; let holdRead = false, pendingRelease = null, accessDenied = false, followupActive = true, staleSuggestion = false, followupRevisionChanged = false, holdNavigation = false, pendingNavigationRelease = null;
 context.on('page', page => page.on('pageerror', error => failures.push(error.message)));
 context.on('requestfailed', request => networkFailures.push({ url: request.url(), failure: request.failure() }));
 await context.route('**/*', async route => {
@@ -49,6 +49,18 @@ await context.route('**/*', async route => {
     if (accessDenied) return route.fulfill({ status: 403, contentType: 'application/json', body: JSON.stringify({ error: 'Acesso removido no teste.' }) });
     const path = url.pathname.slice(4), body = route.request().postDataJSON();
     if (path === '/browser-extension/channels') return json({ workspaceId: 'test-workspace', role: 'owner', channels: [{ id: channelId, phoneNumber: '5547991234567', displayName: 'Canal de teste', status: 'connected' }] });
+    if(path==='/browser-extension/queue') {
+      const human=body.kind==='human';
+      return json({kind:body.kind,counts:{review:followupActive?1:0,reminders:0,scheduled:0,human:1},nextCursor:null,
+        items:human?[{id:ids.B,conversation:{id:ids.B,channelId,contactName:'João · teste',phone:peers.B.split('@')[0]},reason:'Precisa de revisão humana de teste.',followup:null}]
+          :body.kind==='review'&&followupActive?[{id:'00000000-0000-4000-8000-000000000004',conversation:{id:ids.A,channelId,contactName:'Ana · teste',phone:peers.A.split('@')[0]},reason:null,followup:{id:'00000000-0000-4000-8000-000000000004',kind:'human_commercial',status:'review',scheduledAt:'2026-10-27T13:00:00.000Z',updatedAt:'2026-10-26T10:00:00.000Z'}}]:[]});
+    }
+    if(path==='/browser-extension/navigate') {
+      if(holdNavigation){holdNavigation=false;await new Promise(resolve=>{pendingNavigationRelease=resolve;});}
+      const human=body.kind==='human',which=human?'B':'A';
+      return json({conversation:{id:ids[which],channelId,contactName:which==='A'?'Ana · teste':'João · teste',phone:peers[which].split('@')[0]},
+        prepare:human?null:{id:'00000000-0000-4000-8000-000000000004',expectedUpdatedAt:'2026-10-26T10:00:00.000Z'}});
+    }
     if (path === '/browser-extension/resolve') {
       const which = body.peerAddress === peers.A || body.lastMessageId === '3EB0123456789ABCDEF0' ? 'A' : 'B';
       return json({ id: ids[which], channelId, contactName: which === 'A' ? 'Ana · teste' : 'João · teste', phone: peers[which].split('@')[0] });
@@ -57,7 +69,7 @@ await context.route('**/*', async route => {
     if (path.endsWith('/followup')) return json({ followup: followupActive ? { id: '00000000-0000-4000-8000-000000000004', workspaceId: 'test-workspace', conversationId: ids[which], agentId: channelId,
       kind: 'human_commercial', status: 'review', stepIndex: 1, scheduledAt: '2026-10-27T13:00:00.000Z', draftBody: 'Retorno preparado no ambiente de teste.', contact: { name: 'Contato de teste', phone: null }, channel: { displayName: 'Canal de teste' },
       anchorMessage: { id: null, body: null, type: null, createdAt: null }, purpose: null, reasonCode: null,
-      analysis: { situation: 'waiting_customer', pendingItem: 'Cliente está avaliando o orçamento de teste.', nextStep: 'Retomar a conversa após a avaliação.', timingNote: null, rationale: 'Dados sintéticos.', confidence: 1 }, createdAt: '2026-10-26T10:00:00.000Z', updatedAt: '2026-10-26T10:00:00.000Z' } : null });
+      analysis: { situation: 'waiting_customer', pendingItem: 'Cliente está avaliando o orçamento de teste.', nextStep: 'Retomar a conversa após a avaliação.', timingNote: null, rationale: 'Dados sintéticos.', confidence: 1 }, createdAt: '2026-10-26T10:00:00.000Z', updatedAt: followupRevisionChanged?'2026-10-26T11:00:00.000Z':'2026-10-26T10:00:00.000Z' } : null });
     if (path.startsWith('/followups/')) { mutations.push({ path, body }); followupActive = false; return json({}); }
     if (path.endsWith('/suggestions')) { mutations.push({ path, body }); return json({ status: 'pending' }); }
     if (path.startsWith('/assistant/conversations/')) {
@@ -68,10 +80,10 @@ await context.route('**/*', async route => {
     }
     throw new Error(`Unexpected fixture API path ${path}`);
   }
-  if (url.origin === waOrigin) return route.fulfill({ contentType: 'text/html', body: `<!doctype html><html><body><div id="side"><div id="pane-side"><div role="row" aria-selected="true">Ana</div><div role="row">João</div></div></div><div id="main"></div><script>
+  if (url.origin === waOrigin) return route.fulfill({ contentType: 'text/html', body: `<!doctype html><html><head><meta charset="utf-8"></head><body><div id="side"><div id="pane-side"><div role="row" aria-selected="true" onclick="selectPeer('${peers.A}','Ana')">Ana</div><div role="row" onclick="selectPeer('${peers.B}','João')">João</div></div></div><div id="main"></div><script>
     localStorage.setItem('last-wid-md',JSON.stringify('5547991234567:3@c.us'));
     window.selectPeer=(peer,name)=>{document.getElementById('main').innerHTML='<header><span title="'+name+'">'+name+'</span></header><div data-id="false_'+peer+'_stanza">Mensagem sintética</div><footer><div contenteditable="true" role="textbox" aria-label="Mensagem"></div></footer>'};
-    selectPeer('${peers.A}','Ana');
+    selectPeer('${url.searchParams.get('phone')===peers.B.split('@')[0]?peers.B:peers.A}','${url.searchParams.get('phone')===peers.B.split('@')[0]?'João':'Ana'}');
     </script></body></html>` });
   if (url.protocol === 'chrome-extension:') return route.continue();
   return route.abort();
@@ -137,6 +149,72 @@ try {
   checks.push('DOM atual com stanza sem telefone resolve a conversa pela mensagem, sem associação pelo nome.');
   await wa.evaluate(({peer}) => window.selectPeer(peer, 'João'), { peer: peers.B });
   await panel.getByRole('heading', { name: 'João · teste' }).waitFor({ timeout: 20_000 });
+  followupActive=true;
+  await wa.locator('[contenteditable]').fill('Rascunho do vendedor preservado.');
+  await panel.getByRole('button',{name:/^Follow-ups/}).click();
+  await panel.getByRole('button',{name:'Abrir e preparar follow-up: Ana · teste',exact:true}).click();
+  await panel.getByRole('status').filter({hasText:'rascunho no WhatsApp'}).waitFor();
+  assert.equal(await wa.locator('[contenteditable]').innerText(),'Rascunho do vendedor preservado.');
+  checks.push('Abrir fila não sobrescreve rascunho nativo já existente.');
+  await wa.locator('[contenteditable]').fill('');
+  await panel.getByRole('button',{name:/^Follow-ups/}).click();
+  await panel.getByRole('button',{name:'Abrir e preparar follow-up: Ana · teste',exact:true}).click();
+  await panel.getByRole('status').filter({hasText:'Mensagem preparada no WhatsApp'}).waitFor({timeout:25_000});
+  assert.equal(await wa.locator('[contenteditable]').innerText(),'Retorno preparado no ambiente de teste.');
+  assert(wa.url().includes('/send?phone=5547987654321'));
+  checks.push('Clique no follow-up abre o contato correto e prepara texto; vendedor envia pelo botão nativo.');
+  await wa.locator('[contenteditable]').fill('');
+  await wa.evaluate(({peer})=>window.selectPeer(peer,'João'),{peer:peers.B});
+  await panel.getByRole('heading',{name:'João · teste'}).waitFor({timeout:20_000});
+  holdRead=true;
+  await panel.getByRole('button',{name:/^Follow-ups/}).click();
+  await panel.getByRole('button',{name:'Abrir e preparar follow-up: Ana · teste',exact:true}).click();
+  await waitFor(async()=>!!pendingRelease);
+  await wa.locator('#pane-side').getByText('João',{exact:true}).click();
+  pendingRelease();pendingRelease=null;
+  await panel.getByRole('heading',{name:'João · teste'}).waitFor({timeout:20_000});
+  await panel.getByRole('status').filter({hasText:'Preparação interrompida'}).waitFor();
+  assert.equal((await wa.locator('[contenteditable]').innerText()).trim(),'');
+  checks.push('Navegação manual cancela a preparação pendente e não insere no outro contato.');
+  await wa.evaluate(({peer})=>window.selectPeer(peer,'João'),{peer:peers.B});
+  await panel.getByRole('heading',{name:'João · teste'}).waitFor({timeout:20_000});
+  holdRead=true;
+  await panel.getByRole('button',{name:/^Follow-ups/}).click();
+  await panel.getByRole('button',{name:'Abrir e preparar follow-up: Ana · teste',exact:true}).click();
+  await waitFor(async()=>!!pendingRelease);followupRevisionChanged=true;pendingRelease();pendingRelease=null;
+  await panel.getByRole('status').filter({hasText:'acompanhamento ou a conversa mudou'}).waitFor({timeout:20_000});
+  assert.equal((await wa.locator('[contenteditable]').innerText()).trim(),'');followupRevisionChanged=false;
+  checks.push('Revisão alterada entre abertura e preparo bloqueia o texto antigo.');
+  await wa.evaluate(({peer})=>window.selectPeer(peer,'João'),{peer:peers.B});
+  await panel.getByRole('heading',{name:'João · teste'}).waitFor({timeout:20_000});
+  holdRead=true;
+  await panel.getByRole('button',{name:/^Follow-ups/}).click();
+  await panel.getByRole('button',{name:'Abrir e preparar follow-up: Ana · teste',exact:true}).click();
+  await waitFor(async()=>!!pendingRelease);
+  await wa.locator('[contenteditable]').fill('Edição durante a preparação.');
+  pendingRelease();pendingRelease=null;
+  await panel.getByRole('status').filter({hasText:'Preparação interrompida'}).waitFor();
+  assert.equal(await wa.locator('[contenteditable]').innerText(),'Edição durante a preparação.');
+  checks.push('Digitação durante a preparação cancela a intenção e preserva o texto do vendedor.');
+  await wa.locator('[contenteditable]').fill('');
+  holdNavigation=true;
+  const urlBeforeInterruptedOpen=wa.url();
+  await panel.getByRole('button',{name:/^Follow-ups/}).click();
+  await panel.getByRole('button',{name:'Abrir e preparar follow-up: Ana · teste',exact:true}).click();
+  await waitFor(async()=>!!pendingNavigationRelease);
+  await wa.locator('#pane-side').getByText('João',{exact:true}).click();
+  pendingNavigationRelease();pendingNavigationRelease=null;
+  await panel.getByRole('status').filter({hasText:'Preparação interrompida'}).waitFor();
+  assert.equal(wa.url(),urlBeforeInterruptedOpen);
+  assert.equal((await wa.locator('[contenteditable]').innerText()).trim(),'');
+  checks.push('Navegação enquanto o destino ainda está sendo consultado também interrompe a abertura.');
+  await panel.getByRole('button',{name:/^Humano necessário/}).click();
+  await panel.getByText('Precisa de revisão humana de teste.',{exact:true}).waitFor();
+  await panel.getByRole('button',{name:'Abrir conversa: João · teste',exact:true}).click();
+  await panel.getByRole('heading',{name:'João · teste'}).waitFor({timeout:20_000});
+  assert.equal((await wa.locator('[contenteditable]').innerText()).trim(),'');
+  assert(!mutations.some(m=>m.path.endsWith('/send')));
+  checks.push('Fila humana mostra motivo, abre a conversa e não prepara ou envia mensagem.');
   await talk.evaluate(() => { window.fixtureUser = 'other-user'; window.dispatchEvent(new Event('fixture-auth')); });
   await talk.getByRole('button', { name: 'Conectar minha conta' }).waitFor();
   await panel.getByRole('button', { name: 'Conectar minha conta' }).waitFor({ timeout: 15_000 });
@@ -157,5 +235,6 @@ try {
     console.error('Talk fixture:', open.url(), await open.locator('body').innerText());
     console.error('Talk fixture HTML:', await open.content());
   }
+  for(const fixturePage of context.pages())if(fixturePage.url().startsWith(waOrigin))console.error('Synthetic WA fixture:',fixturePage.url(),await fixturePage.content());
   console.error('Network failures:', networkFailures); throw error;
-} finally { if (pendingRelease) pendingRelease(); await context.close(); await new Promise(resolve => server.close(resolve)); }
+} finally { if (pendingNavigationRelease) pendingNavigationRelease();if (pendingRelease) pendingRelease(); await context.close(); await new Promise(resolve => server.close(resolve)); }

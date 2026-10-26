@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { ExtensionSession, ExtensionRead, ExtensionCommand, ExtensionChat } from '@prymeira-talk/shared';
+import type { ExtensionSession, ExtensionRead, ExtensionCommand, ExtensionChat, ExtensionAccount, ExtensionQueueKind, ExtensionNavigationTarget } from '@prymeira-talk/shared';
 export const selectionSchema = z.object({
   key: z.string().uuid(), selfAddress: z.string().max(100).nullable(), peerAddress: z.string().max(100).nullable(),
   label: z.string().max(160).nullable(), phase: z.enum(['ready', 'unidentified', 'switching', 'signed_out', 'unsupported']),
@@ -8,7 +8,12 @@ export const selectionSchema = z.object({
 export type WaSelection = z.infer<typeof selectionSchema>;
 export type PanelState = { windowId: number; tabId: number | null; selection: WaSelection | null; connected: boolean; session: ExtensionSession | null };
 export type SelectedContext = { windowId: number; tabId: number; key: string; scope: string };
+export type AccountContext = { windowId: number; tabId: number; scope: string; selfAddress: string };
+export type OpenChatResult = { token: string | null; target: ExtensionNavigationTarget };
 export type PanelRequest = { type: 'STATUS'; windowId?: number } | { type: 'CONNECT'; windowId?: number } | { type: 'DISCONNECT' }
+  | { type: 'QUEUE'; context: AccountContext; account: ExtensionAccount; kind: ExtensionQueueKind; cursor?: string }
+  | { type: 'OPEN_CHAT'; context: AccountContext; account: ExtensionAccount; kind: ExtensionQueueKind; id: string; expectedUpdatedAt?: string }
+  | { type: 'PREPARE_FOLLOWUP'; context: SelectedContext; chat: ExtensionChat; token: string }
   | { type: 'COMMAND'; context: SelectedContext; command: ExtensionCommand }
   | { type: 'INSERT'; context: SelectedContext; chat: ExtensionChat; suggestionId: string; contextKey: string; body: string };
 export type RuntimeReply<T> = { ok: true; data: T } | { ok: false; error: string };

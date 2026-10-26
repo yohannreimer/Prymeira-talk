@@ -1,5 +1,5 @@
 import { extensionCommandSchema, type ExtensionCommand, type ExtensionSession, type ExtensionConversation,
-  type ExtensionReply, type AssistantConversationDto, type ConversationFollowupDto } from '@prymeira-talk/shared';
+  type ExtensionReply, type ExtensionQueue, type ExtensionNavigationTarget, type AssistantConversationDto, type ConversationFollowupDto } from '@prymeira-talk/shared';
 
 type Request = <T>(path: string, init?: RequestInit) => Promise<T>;
 type Connection = Omit<ExtensionSession, 'scope'>;
@@ -8,6 +8,12 @@ export async function executeExtensionCommand(raw: unknown, request: Request, id
   const connection = await request<Connection>('/browser-extension/channels');
   const scope = `${identity}:${connection.workspaceId}:${connection.role}`;
   if (command.action === 'session') return { ok: true, data: { ...connection, scope } };
+  if (command.action === 'queue' || command.action === 'navigate') {
+    if (!connection.channels.some(c => c.id === command.account.channelId)) throw new Error('Canal indisponível nesta sessão.');
+    const { action, ...body } = command;
+    if (action === 'queue') return { ok: true, data: { ...await request<ExtensionQueue>('/browser-extension/queue', { method: 'POST', body: JSON.stringify(body) }), scope } };
+    return { ok: true, data: { ...await request<ExtensionNavigationTarget>('/browser-extension/navigate', { method: 'POST', body: JSON.stringify(body) }), scope } };
+  }
   if (!connection.channels.some(c => c.id === command.chat.channelId)) throw new Error('Canal indisponível nesta sessão.');
   const conversation = await request<ExtensionConversation>('/browser-extension/resolve', { method: 'POST', body: JSON.stringify(command.chat) });
   if (command.action === 'generate') {

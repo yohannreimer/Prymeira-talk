@@ -1,7 +1,12 @@
-import { extensionCommandSchema, type ExtensionCommand, type ExtensionReply, type ExtensionSession } from '@prymeira-talk/shared';
+import { extensionCommandSchema, type ExtensionCommand, type ExtensionReply, type ExtensionSession, type ExtensionAccount } from '@prymeira-talk/shared';
 import { BRIDGE_URL, TALK_ORIGIN, WHATSAPP_ORIGIN } from './config';
-import { selectionSchema, type PanelRequest, type PanelState, type SelectedContext } from './protocol';
+import { selectionSchema, type PanelRequest, type PanelState, type SelectedContext, type AccountContext } from './protocol';
 import { withSelectionFence } from './selection-fence';
+import { canonicalPhone } from './whatsapp/identity';
+import { NavigationIntents, assertAccountContext, followupForPreparation, whatsappConversationUrl } from './navigation';
+const navigationIntents = new NavigationIntents();
+const navigationVersions = new Map<number,number>();
+const invalidateNavigation = (windowId:number) => { const version=(navigationVersions.get(windowId)??0)+1;navigationVersions.set(windowId,version);return version; };
 
 const notify = () => { void chrome.runtime.sendMessage({ type: 'PANEL_CHANGED' }).catch(() => {}); };
 function talkBridge(tab: chrome.tabs.Tab) {
@@ -48,10 +53,10 @@ async function connect(windowId: number) {
 }
 async function command(context: SelectedContext, raw: unknown) {
   const parsed = extensionCommandSchema.parse(raw);
-  if (parsed.action === 'session') throw new Error('Comando inválido para esta conversa.');
+  if (parsed.action === 'session' || parsed.action === 'queue' || parsed.action === 'navigate') throw new Error('Comando inválido para esta conversa.');
   return withSelectionFence(context, () => readSelection(context.windowId), async () => {
     const live = await readSelection(context.windowId);
-    if (live.selection?.selfAddress !== parsed.chat.selfAddress || live.selection?.peerAddress !== parsed.chat.peerAddress)
+    if (live.selection?.selfAddress !== parsed.chat.selfAddress || live.selection?.peerAddress !== parsed.chat.peerAddress || (live.selection?.lastMessageId ?? null) !== (parsed.chat.lastMessageId ?? null))
       throw new Error('A identidade da conversa mudou.');
     const session = await bridge({ action: 'session' }) as ExtensionSession;
     if (session.scope !== context.scope) throw new Error('Sua conta mudou. Conecte o Talk novamente.');
@@ -60,14 +65,55 @@ async function command(context: SelectedContext, raw: unknown) {
     return result;
   });
 }
+async function accountCommand(context: AccountContext, account: ExtensionAccount, raw: unknown) {
+  assertAccountContext(context, await readSelection(context.windowId));
+  if (canonicalPhone(account.selfAddress) !== canonicalPhone(context.selfAddress)) throw new Error('A conta mudou.');
+  const session = await bridge({ action: 'session' }) as ExtensionSession;
+  if (session.scope !== context.scope || !session.channels.some(c => c.id === account.channelId && canonicalPhone(c.phoneNumber) === canonicalPhone(context.selfAddress)))
+    throw new Error('Canal indisponível para este WhatsApp.');
+  assertAccountContext(context, await readSelection(context.windowId));
+  const result=await bridge(extensionCommandSchema.parse(raw));
+  assertAccountContext(context, await readSelection(context.windowId));
+  if(result.scope!==context.scope)throw new Error('Sua conta mudou. Atualize a fila.');
+  return result;
+}
 async function handlePanel(message: PanelRequest) {
   if (message.type === 'STATUS') return status(message.windowId ?? -1);
   if (message.type === 'CONNECT') { await connect(message.windowId ?? -1); return null; }
   if (message.type === 'DISCONNECT') {
+    navigationIntents.clear();
     const { bridgeTabId } = await chrome.storage.session.get('bridgeTabId');
     await chrome.storage.session.set({ bridgeConnected: false });
     if (typeof bridgeTabId === 'number') await chrome.tabs.sendMessage(bridgeTabId, { type: 'BRIDGE_DISCONNECT' }).catch(() => {});
     notify(); return null;
+  }
+  if (message.type === 'QUEUE') return accountCommand(message.context, message.account, { action: 'queue', account: message.account, kind: message.kind, cursor: message.cursor });
+  if (message.type === 'OPEN_CHAT') {
+    const navigationVersion=invalidateNavigation(message.context.windowId);
+    navigationIntents.cancelWindow(message.context.windowId);
+    const target=await accountCommand(message.context,message.account,{action:'navigate',account:message.account,kind:message.kind,id:message.id,expectedUpdatedAt:message.expectedUpdatedAt});
+    if(!('conversation' in target) || !('prepare' in target))throw new Error('Destino inválido.');
+    const url=whatsappConversationUrl(target);
+    const canOpen=await chrome.tabs.sendMessage(message.context.tabId,{type:'WA_CAN_OPEN',selfAddress:message.context.selfAddress});
+    if(!canOpen?.ok)throw new Error(canOpen?.error ?? 'Não foi possível abrir a conversa.');
+    assertAccountContext(message.context,await readSelection(message.context.windowId));
+    if(navigationVersions.get(message.context.windowId)!==navigationVersion)throw new Error('Preparação interrompida pela navegação ou edição no WhatsApp.');
+    const token=target.prepare?navigationIntents.create(message.context,target):null;
+    try { await chrome.tabs.update(message.context.tabId,{url}); } catch(cause) { navigationIntents.cancelTab(message.context.tabId);throw cause; }
+    return {token,target};
+  }
+  if (message.type === 'PREPARE_FOLLOWUP') {
+    const accountContext={...message.context,selfAddress:message.chat.selfAddress};
+    const job=navigationIntents.require(message.token,accountContext);
+    const latest=await command(message.context,{action:'read',chat:message.chat});
+    if(!('assistant' in latest))throw new Error('Conversa inválida.');
+    const body=followupForPreparation(latest,job.target);
+    navigationIntents.consume(message.token,accountContext);
+    return withSelectionFence(message.context,()=>readSelection(message.context.windowId),async()=>{
+      const result=await chrome.tabs.sendMessage(message.context.tabId,{type:'WA_INSERT',key:message.context.key,body});
+      if(!result?.ok)throw new Error(result?.error ?? 'Não foi possível preparar a mensagem.');
+      return null;
+    });
   }
   if (message.type === 'COMMAND') return command(message.context, message.command);
   if (message.type === 'INSERT') return withSelectionFence(message.context, () => readSelection(message.context.windowId), async () => {
@@ -86,6 +132,10 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
   if (sender.id !== chrome.runtime.id) return;
   const fromPanel = sender.url === chrome.runtime.getURL('panel.html');
   if (!fromPanel && sender.tab?.id && sender.frameId === 0) {
+    if (message?.type === 'WA_NAVIGATION_INTENT' && whatsapp(sender.tab)) {
+      invalidateNavigation(sender.tab.windowId);
+      for(const token of navigationIntents.cancelTab(sender.tab.id)) void chrome.runtime.sendMessage({type:'NAVIGATION_CANCELLED',token}).catch(()=>{});
+    }
     if (message?.type === 'WA_CHANGED' && whatsapp(sender.tab) && selectionSchema.safeParse(message.selection).success) notify();
     if (message?.type === 'BRIDGE_STATUS' && talkBridge(sender.tab)) {
       const tabId = sender.tab.id;
@@ -102,8 +152,9 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
   return true;
 });
 chrome.runtime.onInstalled.addListener(() => { void chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }); });
-chrome.tabs.onActivated.addListener(notify);
+chrome.tabs.onActivated.addListener(({windowId}) => { invalidateNavigation(windowId);const token=navigationIntents.cancelWindow(windowId);if(token)void chrome.runtime.sendMessage({type:'NAVIGATION_CANCELLED',token}).catch(()=>{});notify(); });
 chrome.tabs.onRemoved.addListener(tabId => {
+  navigationIntents.cancelTab(tabId);
   void chrome.storage.session.get('bridgeTabId').then(async saved => {
     if (saved.bridgeTabId === tabId) await chrome.storage.session.remove(['bridgeTabId', 'bridgeConnected']); notify();
   });
