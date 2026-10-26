@@ -42,7 +42,7 @@ async function status(windowId: number): Promise<PanelState> {
       const connected=await persistentConnection.connect();
       if(connected?.ok&&'channels' in connected.data){session=connected.data;await chrome.storage.session.remove('nativeConnectPendingUntil');}
     }
-    return {...await readSelection(windowId),connected:!!session,session};
+    return {...await readSelection(windowId),connected:!!session,session,connectionError:persistentConnection.lastError()};
   }
   const { bridgeConnected } = await chrome.storage.session.get('bridgeConnected');
   if (!bridgeConnected) return { ...live, connected: false, session: null };

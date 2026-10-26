@@ -115,6 +115,7 @@ function App() {
   return <div className="panel-shell">
     <header className="brand-header"><div className="brand-lockup"><img src="assets/prymeira.png" alt="Prymeira" width="125" height="36"/><span>talk</span></div>{state?.connected&&<button className="text-button header-signout" onClick={() => { void runtimeRequest({ type: 'DISCONNECT' }).then(() => refreshStatus()); }}>Sair <Icon name="logout" size={16}/></button>}</header>
     <main>
+      {state?.connectionError&&!fatal&&<div className="alert" role="alert">{state.connectionError}</div>}
       {fatal && <div className="alert" role="alert">{fatal}<button className="text-button" onClick={() => void refreshStatus()}>Tentar novamente</button></div>}
       {!state?.connected ? <section className="welcome">
         <Prym large/>
