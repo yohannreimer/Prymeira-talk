@@ -1,3 +1,5 @@
+import { openVisibleWhatsAppConversation } from './open-conversation';
+import { insertWhatsAppDraft } from './insert-draft';
 import { canonicalPhone, ownAddress } from './identity';
 import { observeWhatsApp, SelectionTracker } from './observation';
 
@@ -15,7 +17,7 @@ observer.observe(document.documentElement, { childList: true, subtree: true, att
 document.addEventListener('pointerdown', event => {
   const target = event.target instanceof Element ? event.target : null;
   const row = target?.closest('#pane-side [role="row"], #pane-side [role="listitem"], [data-testid="chat-list"] [role="row"]');
-  if (row || target?.closest('#main footer')) void chrome.runtime.sendMessage({type:'WA_NAVIGATION_INTENT'}).catch(()=>{});
+  if (event.isTrusted && (row || target?.closest('#main footer'))) void chrome.runtime.sendMessage({type:'WA_NAVIGATION_INTENT'}).catch(()=>{});
   if (row && row.getAttribute('aria-selected') !== 'true') tracker.switching();
 }, true);
 document.addEventListener('keydown', event => {
@@ -31,7 +33,10 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
   if (sender.id !== chrome.runtime.id) return;
   if (message?.type === 'WA_CAN_OPEN') {
     const self=ownAddress(localStorage),composer=document.querySelector<HTMLElement>('#main footer [contenteditable="true"][role="textbox"]');
-    respond(!self || canonicalPhone(self)!==canonicalPhone(message.selfAddress ?? '') ? {ok:false,error:'A conta do WhatsApp mudou.'} : composer?.innerText.trim() ? {ok:false,error:'Há um rascunho no WhatsApp. Termine ou limpe o campo antes de abrir outra conversa.'} : {ok:true}); return;
+    if(!self||canonicalPhone(self)!==canonicalPhone(message.selfAddress??'')){respond({ok:false,error:'A conta do WhatsApp mudou.'});return;}
+    if(composer?.innerText.trim()){respond({ok:false,error:'Há um rascunho no WhatsApp. Termine ou limpe o campo antes de abrir outra conversa.'});return;}
+    const opened=typeof message.phone==='string'&&openVisibleWhatsAppConversation(document,message.phone,()=>tracker.switching());
+    respond({ok:true,opened});return;
   }
   if (message?.type === 'WA_READ') { tracker.refresh(); respond(tracker.selection); }
   if (message?.type === 'WA_INSERT') {
@@ -39,11 +44,9 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
     const selection = tracker.selection;
     if (selection.key !== message.key || selection.phase !== 'ready') { respond({ ok: false, error: 'A conversa mudou. Atualize o painel.' }); return; }
     if (typeof message.body !== 'string' || !message.body.trim() || message.body.length > 4000) { respond({ ok: false, error: 'Mensagem inválida.' }); return; }
-    const composer = document.querySelector<HTMLElement>('#main footer [contenteditable="true"][role="textbox"]');
-    if (!composer || composer.innerText.trim()) { respond({ ok: false, error: 'Deixe o campo de mensagem vazio antes de inserir a sugestão.' }); return; }
-    composer.focus();
-    const inserted = document.execCommand('insertText', false, message.body);
-    respond(inserted && composer.innerText.trim() === message.body.trim() ? { ok: true } : { ok: false, error: 'Não foi possível inserir a mensagem no WhatsApp.' });
+    void insertWhatsAppDraft(document,message.body,()=>{tracker.refresh();return tracker.selection.key===message.key&&tracker.selection.phase==='ready';})
+      .then(respond).catch(()=>respond({ok:false,error:'Não foi possível confirmar o preenchimento. Confira o campo do WhatsApp antes de tentar novamente.'}));
+    return true;
   }
 });
 tracker.start();

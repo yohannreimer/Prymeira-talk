@@ -83,6 +83,14 @@ await context.route('**/*', async route => {
   if (url.origin === waOrigin) return route.fulfill({ contentType: 'text/html', body: `<!doctype html><html><head><meta charset="utf-8"></head><body><div id="side"><div id="pane-side"><div role="row" aria-selected="true" onclick="selectPeer('${peers.A}','Ana')">Ana</div><div role="row" onclick="selectPeer('${peers.B}','João')">João</div></div></div><div id="main"></div><script>
     localStorage.setItem('last-wid-md',JSON.stringify('5547991234567:3@c.us'));
     window.selectPeer=(peer,name)=>{document.getElementById('main').innerHTML='<header><span title="'+name+'">'+name+'</span></header><div data-id="false_'+peer+'_stanza">Mensagem sintética</div><footer><div contenteditable="true" role="textbox" aria-label="Mensagem"></div></footer>'};
+    const originalExec=document.execCommand.bind(document);
+    document.execCommand=(command,ui,value)=>{
+      const result=originalExec(command,ui,value);
+      if(command==='insertText'&&localStorage.getItem('fixture-async-editor')==='true'){
+        const old=document.querySelector('[contenteditable]'),replacement=old.cloneNode(false);old.innerText='';
+        setTimeout(()=>{replacement.innerText=value;old.replaceWith(replacement);},30);return false;
+      }return result;
+    };
     selectPeer('${url.searchParams.get('phone')===peers.B.split('@')[0]?peers.B:peers.A}','${url.searchParams.get('phone')===peers.B.split('@')[0]?'João':'Ana'}');
     </script></body></html>` });
   if (url.protocol === 'chrome-extension:') return route.continue();
@@ -157,12 +165,15 @@ try {
   assert.equal(await wa.locator('[contenteditable]').innerText(),'Rascunho do vendedor preservado.');
   checks.push('Abrir fila não sobrescreve rascunho nativo já existente.');
   await wa.locator('[contenteditable]').fill('');
+  await wa.evaluate(()=>localStorage.setItem('fixture-async-editor','true'));
   await panel.getByRole('button',{name:/^Follow-ups/}).click();
   await panel.getByRole('button',{name:'Abrir e preparar follow-up: Ana · teste',exact:true}).click();
   await panel.getByRole('status').filter({hasText:'Mensagem preparada no WhatsApp'}).waitFor({timeout:25_000});
   assert.equal(await wa.locator('[contenteditable]').innerText(),'Retorno preparado no ambiente de teste.');
   assert(wa.url().includes('/send?phone=5547987654321'));
   checks.push('Clique no follow-up abre o contato correto e prepara texto; vendedor envia pelo botão nativo.');
+  checks.push('Confirmação aguarda o editor assíncrono mesmo com execCommand falso e elemento substituído.');
+  await wa.evaluate(()=>localStorage.removeItem('fixture-async-editor'));
   await wa.locator('[contenteditable]').fill('');
   await wa.evaluate(({peer})=>window.selectPeer(peer,'João'),{peer:peers.B});
   await panel.getByRole('heading',{name:'João · teste'}).waitFor({timeout:20_000});
@@ -208,6 +219,18 @@ try {
   assert.equal(wa.url(),urlBeforeInterruptedOpen);
   assert.equal((await wa.locator('[contenteditable]').innerText()).trim(),'');
   checks.push('Navegação enquanto o destino ainda está sendo consultado também interrompe a abertura.');
+  await wa.evaluate(({peer})=>{
+    window.selectPeer(peer,'João');window.fixtureKeptDocument=true;
+    document.querySelector('#pane-side [role="row"]').innerHTML='<span title="+55 47 98765-4321">Ana</span>';
+  },{peer:peers.B});
+  await panel.getByRole('heading',{name:'João · teste'}).waitFor({timeout:20_000});
+  await panel.getByRole('button',{name:/^Follow-ups/}).click();
+  await panel.getByRole('button',{name:'Abrir e preparar follow-up: Ana · teste',exact:true}).click();
+  await panel.getByRole('status').filter({hasText:'Mensagem preparada no WhatsApp'}).waitFor({timeout:20_000});
+  assert.equal(await wa.evaluate(()=>window.fixtureKeptDocument),true);
+  assert.equal(await wa.locator('[contenteditable]').innerText(),'Retorno preparado no ambiente de teste.');
+  await wa.locator('[contenteditable]').fill('');
+  checks.push('Contato com telefone exato visível abre e prepara sem recarregar o WhatsApp.');
   await panel.getByRole('button',{name:/^Humano necessário/}).click();
   await panel.getByText('Precisa de revisão humana de teste.',{exact:true}).waitFor();
   await panel.getByRole('button',{name:'Abrir conversa: João · teste',exact:true}).click();

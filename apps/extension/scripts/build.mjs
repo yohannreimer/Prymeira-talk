@@ -9,7 +9,7 @@ const common = { bundle: true, target: 'chrome116', define: { __TALK_ORIGIN__: J
 await build({ ...common, entryPoints: { 'panel': 'src/panel.tsx', 'background': 'src/background.ts' }, outdir, format: 'esm' });
 await build({ ...common, entryPoints: { 'whatsapp-content': 'src/whatsapp/content.ts', 'talk-content': 'src/talk-content.ts' }, outdir, format: 'iife' });
 await cp('panel.html', `${outdir}/panel.html`);
-await writeFile(`${outdir}/manifest.json`, JSON.stringify({ manifest_version: 3, name: 'Prymeira Talk para WhatsApp', version: '0.2.0',
+await writeFile(`${outdir}/manifest.json`, JSON.stringify({ manifest_version: 3, name: 'Prymeira Talk para WhatsApp', version: '0.2.3',
   description: 'Sugestões de resposta e follow-ups do seu Talk ao lado da conversa no WhatsApp Web.', minimum_chrome_version: '116',
   permissions: ['sidePanel', 'storage'], host_permissions: ['https://web.whatsapp.com/*', `${talkOrigin}/*`],
   action: { default_title: 'Abrir Prymeira Talk' }, side_panel: { default_path: 'panel.html' },
