@@ -20,7 +20,7 @@ Usar, no WhatsApp Web, as sugestões e os follow-ups da conversa correspondente 
 3. O adaptador do WhatsApp observa somente a identificação da sessão, cabeçalho e atributos de identificação das mensagens renderizadas. Não lê corpos de mensagens, arquivos, QR codes ou credenciais do WhatsApp.
 4. O painel seleciona o canal com o mesmo número verificado. Se houver vários canais, o usuário escolhe explicitamente.
 5. O backend valida workspace, canal, número próprio e permissão sobre a conversa. Usa aliases e autoridade canônica existentes; em canais legados aceita apenas correspondência exata por telefone e recusa duplicidades. LIDs não são interpretados como telefones.
-6. A última mensagem renderizada deve existir no histórico do Talk antes de disponibilizar sugestões. Ausência de sincronização vira espera explícita.
+6. A última mensagem renderizada deve existir no histórico do Talk antes de disponibilizar sugestões. No histórico unificado, verificar a identidade canônica completa e seu hash indexado, com conteúdo pronto e não oculto; no legado, verificar o ID do provedor dentro da conversa/canal. Ausência de sincronização vira espera explícita.
 7. O painel consulta sugestões e follow-up ativo. Gerar sugestão, adiar e cancelar usam as APIs existentes. Inserção no WhatsApp exige nova validação de contexto e campo de mensagem vazio. A extensão não clica em enviar.
 
 ## Troca de contexto

@@ -3,6 +3,7 @@ import type { ExtensionChat, ExtensionConversation } from '@prymeira-talk/shared
 import { AssistantError, resolveAssistantActor, requireAssistantConversation } from '../assistant/assistant-access.js';
 import { buildPhoneLookupCandidates, normalizePhoneForStorage } from '../contacts/phone-normalization.js';
 import { normalizeChatAddress, parseWahaMessageKey } from '../messaging/whatsapp-identity.js';
+import { equal, sha, stable } from '../messaging/canonical-values.js';
 
 type Db = PrismaClient | Prisma.TransactionClient;
 type Auth = Parameters<typeof resolveAssistantActor>[1];
@@ -32,6 +33,7 @@ export async function resolveExtensionConversation(db: Db, auth: Auth, input: Ex
   const scope = { workspaceId: actor.workspaceId, channelId: channel.id };
   const alias = await db.canonicalAddressAlias.findUnique({ where: { workspaceId_channelId_address: { ...scope, address: peer } } });
   let conversationId: string | null = null;
+  let canonicalChatId: string | null = null;
   if (alias) {
     let addressId: string | null = alias.addressId;
     const seen = new Set<string>();
@@ -46,6 +48,7 @@ export async function resolveExtensionConversation(db: Db, auth: Auth, input: Ex
       if (!chat || chat.state !== 'active' || !chat.operationConversationId)
         return failure('EXTENSION_IDENTITY_REVIEW', 'Resolva o vínculo desta conversa no Talk antes de continuar.');
       conversationId = chat.operationConversationId;
+      canonicalChatId = chat.id;
       break;
     }
   } else if (peer.endsWith('@s.whatsapp.net')) {
@@ -65,9 +68,20 @@ export async function resolveExtensionConversation(db: Db, auth: Auth, input: Ex
     const key = parseWahaMessageKey(input.lastMessageId);
     if (!key.rawId || key.chatAddress !== peer || !key.direction)
       return failure('EXTENSION_INVALID_ANCHOR', 'A identificação da mensagem mudou. Atualize a conversa.');
-    const observed = await db.message.findFirst({ where: { workspaceId: actor.workspaceId,
-      direction: key.direction, conversation: { ...scope, OR: [{ id: conversation.id }, { retiredIntoConversationId: conversation.id }] },
-      providerMessageId: { in: [key.rawId, input.lastMessageId] } }, select: { id: true } });
+    let observed: boolean;
+    if (canonicalChatId) {
+      // Canonical ingress deliberately leaves Message.providerMessageId empty. Match its indexed,
+      // complete chat-scoped identity instead of treating an already-synced message as missing.
+      const tuple = [actor.workspaceId, channel.id, canonicalChatId, 'whatsapp_stanza', '', key.rawId, key.direction, ''];
+      const bucket = await db.canonicalMessageIdentity.findMany({ where: { ...scope, tupleHash: sha(stable(tuple)) },
+        select: { fullTuple: true, state: true, contentState: true, message: { select: { hiddenByReset: true } } } });
+      observed = bucket.filter(identity => equal(identity.fullTuple, tuple) && identity.state === 'active'
+        && identity.contentState === 'ready' && !identity.message.hiddenByReset).length === 1;
+    } else {
+      observed = !!await db.message.findFirst({ where: { workspaceId: actor.workspaceId,
+        direction: key.direction, conversation: { ...scope, OR: [{ id: conversation.id }, { retiredIntoConversationId: conversation.id }] },
+        providerMessageId: { in: [key.rawId, input.lastMessageId] } }, select: { id: true } });
+    }
     if (!observed) return failure('EXTENSION_SYNC_PENDING', 'Aguardando esta mensagem chegar ao Talk. O painel atualizará automaticamente.');
   }
   return { id: conversation.id, contactName: contact.name, phone: contact.phone, channelId: channel.id };

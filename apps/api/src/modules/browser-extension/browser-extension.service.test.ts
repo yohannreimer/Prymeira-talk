@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { listExtensionChannels, resolveExtensionConversation } from './browser-extension.service.js';
+import { sha, stable } from '../messaging/canonical-values.js';
 
 const channelId = '00000000-0000-4000-8000-000000000001', conversationId = '00000000-0000-4000-8000-000000000002';
 const auth = { workspaceId: 'workspace-A', clerkUserId: 'user-A', role: 'owner' as const };
@@ -12,6 +13,7 @@ function database() {
     canonicalAddressAlias: { findUnique: vi.fn(async (): Promise<null | { addressId: string }> => null) },
     canonicalAddress: { findFirst: vi.fn(async (): Promise<{ id: string; state: string; redirectId: string | null }> => ({ id: 'address-A', state: 'active', redirectId: null })) },
     canonicalChat: { findFirst: vi.fn(async () => ({ state: 'active', operationConversationId: conversationId })) },
+    canonicalMessageIdentity: { findMany: vi.fn(async (): Promise<Array<Record<string, unknown>>> => []) },
     contact: { findFirst: vi.fn(async () => ({ name: 'Ana', phone: '554787654321', isGroup: false })) },
     message: { findFirst: vi.fn(async (): Promise<{ id: string } | null> => ({ id: 'message-A' })) } };
 }
@@ -66,6 +68,26 @@ describe('browser extension read-only conversation resolver', () => {
   });
   it('refuses a message anchor belonging to another peer', async () => {
     await expect(resolveExtensionConversation(db as never, auth, { ...input, lastMessageId: 'false_5511987654321@c.us_stanza' })).rejects.toMatchObject({ code: 'EXTENSION_INVALID_ANCHOR' });
+    expect(db.message.findFirst).not.toHaveBeenCalled();
+  });
+  it('recognizes a canonical message whose legacy providerMessageId is null', async () => {
+    db.canonicalAddressAlias.findUnique.mockResolvedValue({ addressId: 'address-A' });
+    db.canonicalChat.findFirst.mockResolvedValue({ id: 'canonical-chat', state: 'active', operationConversationId: conversationId } as never);
+    db.message.findFirst.mockResolvedValue(null);
+    const fullTuple = ['workspace-A', channelId, 'canonical-chat', 'whatsapp_stanza', '', 'stanza', 'inbound', ''];
+    db.canonicalMessageIdentity.findMany.mockResolvedValue([{ fullTuple, state: 'active', contentState: 'ready', message: { hiddenByReset: false } }]);
+    expect((await resolveExtensionConversation(db as never, auth, { ...input, lastMessageId: 'false_5547987654321@c.us_stanza' })).id).toBe(conversationId);
+    expect(db.canonicalMessageIdentity.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { workspaceId: 'workspace-A', channelId, tupleHash: sha(stable(fullTuple)) } }));
+    expect(db.message.findFirst).not.toHaveBeenCalled();
+  });
+  it('rejects unready, hidden or differently scoped canonical anchors without legacy fallback', async () => {
+    db.canonicalAddressAlias.findUnique.mockResolvedValue({ addressId: 'address-A' });
+    db.canonicalChat.findFirst.mockResolvedValue({ id: 'canonical-chat', state: 'active', operationConversationId: conversationId } as never);
+    const fullTuple = ['workspace-A', channelId, 'canonical-chat', 'whatsapp_stanza', '', 'stanza', 'inbound', ''];
+    for (const change of [{ state: 'review' }, { contentState: 'pending_reconciliation' }, { message: { hiddenByReset: true } }, { fullTuple: ['other-workspace', ...fullTuple.slice(1)] }]) {
+      db.canonicalMessageIdentity.findMany.mockResolvedValue([{ fullTuple, state: 'active', contentState: 'ready', message: { hiddenByReset: false }, ...change }]);
+      await expect(resolveExtensionConversation(db as never, auth, { ...input, lastMessageId: 'false_5547987654321@c.us_stanza' })).rejects.toMatchObject({ code: 'EXTENSION_SYNC_PENDING' });
+    }
     expect(db.message.findFirst).not.toHaveBeenCalled();
   });
   it('lists only connected channels with provider-verified phone identities', async () => {

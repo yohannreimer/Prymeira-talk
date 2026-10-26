@@ -38,7 +38,7 @@
 ## 5. Verificação e entrega
 
 - [x] Executar `pnpm --filter @prymeira-talk/extension test:browser`; 13 cenários sintéticos passaram com content scripts, worker e página de conexão reais, incluindo isolamento entre janelas; zero erros de página.
-- [x] Executar testes do Talk: API 3249 aprovados/871 condicionais ignorados, web 687, shared 133, extensão 14 e harness de validação 6; typecheck dos workspaces e builds API/web/extensão aprovados. FFmpeg/ffprobe isolados utilizados para testes de áudio, sem alteração do sistema.
+- [x] Executar testes do Talk: API 3251 aprovados/871 condicionais ignorados, web 687, shared 133, extensão 14 e harness de validação 6; typecheck dos workspaces e builds API/web/extensão aprovados. FFmpeg/ffprobe isolados utilizados para testes de áudio, sem alteração do sistema.
 - [x] Inspecionar capturas e empacotar extensão e guia em `outputs` da tarefa.
 - [x] Registrar relatório factual em `work/relatorio-execucao.json` da tarefa; preservado localmente, sem enfileiramento/publicação no cérebro.
 
