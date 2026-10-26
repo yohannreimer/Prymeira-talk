@@ -85,7 +85,9 @@ describe('raw message navigation fence', () => {
     expect(tracker.selection.phase).toBe('switching');
     current = { ...current, label: 'João', lastMessageId: '3EB0123456789ABCDEF0' }; tracker.refresh();
     expect(tracker.selection.phase).toBe('switching');
-    current = { ...current, lastMessageId: '3EB0123456789ABCDEF2' }; tracker.refresh();
+    current = { ...current, lastMessageId: '3EB0123456789ABCDEF2', visibleMessageIds: ['3EB0123456789ABCDEF0', '3EB0123456789ABCDEF2'] } as Observation; tracker.refresh();
+    expect(tracker.selection.phase).toBe('switching');
+    current = { ...current, visibleMessageIds: ['3EB0123456789ABCDEF2'] } as Observation; tracker.refresh();
     expect(tracker.selection.phase).toBe('ready');
   });
 });
