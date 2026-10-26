@@ -12,3 +12,9 @@ it('keeps an already open exact phone in place',()=>{
  const doc=new JSDOM('<div id="main"><header><span title="+55 47 98765-4321"></span></header></div>').window.document;const fence=vi.fn();
  expect(openVisibleWhatsAppConversation(doc,'5547987654321',fence)).toBe(true);expect(fence).not.toHaveBeenCalled();
 });
+
+it('dispatches the mouse-down selection used by native chat rows',()=>{
+ const doc=new JSDOM('<div id="pane-side"><div role="row"><span title="15550001111">Contact</span></div></div>').window.document;
+ const selected=vi.fn();doc.querySelector('[role=row]')!.addEventListener('mousedown',selected);
+ expect(openVisibleWhatsAppConversation(doc,'15550001111',()=>{})).toBe(true);expect(selected).toHaveBeenCalledOnce();
+});

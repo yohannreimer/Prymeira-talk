@@ -1,6 +1,6 @@
 # Prymeira Talk para WhatsApp Web
 
-Piloto 0.2.2: painel lateral com sugestões da conversa atual, fila de follow-ups e fila Humano necessário. Usa um número que já esteja conectado ao Talk.
+Piloto 0.2.3: painel lateral com sugestões da conversa atual, fila de follow-ups e fila Humano necessário. Usa um número que já esteja conectado ao Talk.
 
 ## Preparar
 

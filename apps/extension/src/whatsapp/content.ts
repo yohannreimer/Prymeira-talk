@@ -17,7 +17,7 @@ observer.observe(document.documentElement, { childList: true, subtree: true, att
 document.addEventListener('pointerdown', event => {
   const target = event.target instanceof Element ? event.target : null;
   const row = target?.closest('#pane-side [role="row"], #pane-side [role="listitem"], [data-testid="chat-list"] [role="row"]');
-  if (row || target?.closest('#main footer')) void chrome.runtime.sendMessage({type:'WA_NAVIGATION_INTENT'}).catch(()=>{});
+  if (event.isTrusted && (row || target?.closest('#main footer'))) void chrome.runtime.sendMessage({type:'WA_NAVIGATION_INTENT'}).catch(()=>{});
   if (row && row.getAttribute('aria-selected') !== 'true') tracker.switching();
 }, true);
 document.addEventListener('keydown', event => {

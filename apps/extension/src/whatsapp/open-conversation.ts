@@ -11,5 +11,12 @@ export function openVisibleWhatsAppConversation(document:Document,phone:string,b
       const title=span.getAttribute('title');return numeric(title)&&canonicalPhone(title!)===expected;
     })).filter((span):span is HTMLSpanElement=>!!span);
   if(matches.length!==1)return false;
-  beforeOpen();matches[0]!.click();return true;
+  beforeOpen();
+  const target=matches[0]!,view=document.defaultView!;
+  // WhatsApp selects chat rows on pointer/mouse down rather than a bare synthetic click.
+  if(view.PointerEvent)target.dispatchEvent(new view.PointerEvent('pointerdown',{bubbles:true,cancelable:true,button:0,buttons:1,pointerId:1,pointerType:'mouse',isPrimary:true}));
+  target.dispatchEvent(new view.MouseEvent('mousedown',{bubbles:true,cancelable:true,button:0,buttons:1}));
+  if(view.PointerEvent)target.dispatchEvent(new view.PointerEvent('pointerup',{bubbles:true,cancelable:true,button:0,buttons:0,pointerId:1,pointerType:'mouse',isPrimary:true}));
+  target.dispatchEvent(new view.MouseEvent('mouseup',{bubbles:true,cancelable:true,button:0,buttons:0}));
+  target.click();return true;
 }
