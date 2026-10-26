@@ -6,6 +6,8 @@ Piloto 0.1: painel lateral com sugestões e follow-ups da conversa correspondent
 
 Na raiz do monorepo:
 
+Use Node.js 22 e pnpm **10.0.0**, conforme `packageManager` do projeto, para preservar a configuração do lockfile.
+
 ```sh
 pnpm install --frozen-lockfile
 pnpm prisma:generate
