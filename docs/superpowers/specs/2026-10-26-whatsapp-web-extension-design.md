@@ -47,3 +47,10 @@ Cada observação tem uma chave aleatória. Mudanças de conversa, conta, aba ou
 ## Validação
 
 Testes unitários do adaptador, resolução e concorrência; testes HTTP com middleware real de autenticação; testes da ponte de comandos; fluxo da extensão carregada no Chromium com autenticação e HTTP simulados e dados exclusivamente sintéticos. O teste sintético não comprova compatibilidade com o DOM atual nem com o provedor de produção.
+
+
+## Validação no WhatsApp atual — 0.1.1
+
+O DOM real observado em 26/10 expõe `data-id` como stanza hexadecimal sem telefone. Quando o peer não está disponível, a extensão envia somente esse identificador e a identidade da própria conta, com o canal verificado selecionado. O backend exige exatamente uma identidade canônica nesse workspace/canal, tupla íntegra, mensagem visível/pronta, endereço ativo e autoridade operacional ativa. Ausência, conflito, grupo ou revisão bloqueiam a leitura. Não há associação por nome ou escrita de aliases.
+
+A transição sem peer exige mudança tanto do cabeçalho quanto da stanza antes de liberar a nova seleção. Contatos homônimos permanecem bloqueados durante a transição; recarregar o WhatsApp inicia uma nova observação verificável. O nome serve apenas para detectar a troca visual, nunca para resolver uma conversa no servidor.

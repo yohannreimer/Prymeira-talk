@@ -20,7 +20,7 @@ function App() {
     ? `${session.scope}:${state.windowId}:${state.tabId}:${selection.key}:${selectedChannel}` : '';
   liveRef.current = key;
   const context: SelectedContext | null = key && state?.tabId && session && selection ? { windowId: state.windowId, tabId: state.tabId, key: selection.key, scope: session.scope } : null;
-  const chat: ExtensionChat | null = context && selection?.selfAddress && selection.peerAddress ? {
+  const chat: ExtensionChat | null = context && selection?.selfAddress && (selection.peerAddress || selection.lastMessageId) ? {
     channelId: selectedChannel, selfAddress: selection.selfAddress, peerAddress: selection.peerAddress, lastMessageId: selection.lastMessageId } : null;
   const data = read?.key === key && key ? read.value : null;
   const refreshStatus = useCallback(async () => {
@@ -118,7 +118,7 @@ function App() {
         </>}
       </>}
     </main>
-    <footer className="panel-footer"><span className="footer-mark">p.</span><span>O contexto acompanha a conversa.</span><span>0.1</span></footer>
+    <footer className="panel-footer"><span className="footer-mark">p.</span><span>O contexto acompanha a conversa.</span><span>0.1.1</span></footer>
   </div>;
 }
 function message(cause: unknown) { return cause instanceof Error ? cause.message : 'Não foi possível carregar o Talk.'; }

@@ -50,8 +50,8 @@ await context.route('**/*', async route => {
     const path = url.pathname.slice(4), body = route.request().postDataJSON();
     if (path === '/browser-extension/channels') return json({ workspaceId: 'test-workspace', role: 'owner', channels: [{ id: channelId, phoneNumber: '5547991234567', displayName: 'Canal de teste', status: 'connected' }] });
     if (path === '/browser-extension/resolve') {
-      const which = body.peerAddress === peers.A ? 'A' : 'B';
-      return json({ id: ids[which], channelId, contactName: which === 'A' ? 'Ana · teste' : 'João · teste', phone: body.peerAddress.split('@')[0] });
+      const which = body.peerAddress === peers.A || body.lastMessageId === '3EB0123456789ABCDEF0' ? 'A' : 'B';
+      return json({ id: ids[which], channelId, contactName: which === 'A' ? 'Ana · teste' : 'João · teste', phone: peers[which].split('@')[0] });
     }
     const which = path.includes(ids.A) ? 'A' : 'B';
     if (path.endsWith('/followup')) return json({ followup: followupActive ? { id: '00000000-0000-4000-8000-000000000004', workspaceId: 'test-workspace', conversationId: ids[which], agentId: channelId,
@@ -128,6 +128,15 @@ try {
   assert.equal(ownWindowStatus.data.selection.peerAddress, peers.B);
   await worker.evaluate(id => chrome.windows.remove(id), otherWindow.id); await wa.bringToFront();
   checks.push('Outra janela focada não troca a conversa do painel desta janela.');
+  await wa.evaluate(() => {
+    document.querySelector('#main header span').setAttribute('title', 'Ana');
+    document.querySelector('#main [data-id]').setAttribute('data-id', '3EB0123456789ABCDEF0');
+  });
+  await panel.getByRole('heading', { name: 'Ana · teste' }).waitFor({ timeout: 20_000 });
+  assert.equal(await panel.locator('#reply').inputValue(), bodies.A);
+  checks.push('DOM atual com stanza sem telefone resolve a conversa pela mensagem, sem associação pelo nome.');
+  await wa.evaluate(({peer}) => window.selectPeer(peer, 'João'), { peer: peers.B });
+  await panel.getByRole('heading', { name: 'João · teste' }).waitFor({ timeout: 20_000 });
   await talk.evaluate(() => { window.fixtureUser = 'other-user'; window.dispatchEvent(new Event('fixture-auth')); });
   await talk.getByRole('button', { name: 'Conectar minha conta' }).waitFor();
   await panel.getByRole('button', { name: 'Conectar minha conta' }).waitFor({ timeout: 15_000 });

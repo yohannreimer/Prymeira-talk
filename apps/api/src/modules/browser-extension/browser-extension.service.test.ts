@@ -90,6 +90,26 @@ describe('browser extension read-only conversation resolver', () => {
     }
     expect(db.message.findFirst).not.toHaveBeenCalled();
   });
+  it('resolves a raw DOM stanza only through a unique active canonical authority', async () => {
+    const rawId = '3EB0123456789ABCDEF0';
+    const identity = { chatId: 'canonical-chat', direction: 'inbound', state: 'active', contentState: 'ready',
+      fullTuple: ['workspace-A', channelId, 'canonical-chat', 'whatsapp_stanza', '', rawId, 'inbound', ''],
+      message: { hiddenByReset: false }, chat: { state: 'active', operationConversationId: conversationId,
+        address: { state: 'active', redirectId: null } } };
+    db.canonicalMessageIdentity.findMany.mockResolvedValue([identity]);
+    expect((await resolveExtensionConversation(db as never, auth, { ...input, peerAddress: null, lastMessageId: rawId } as never)).id).toBe(conversationId);
+    expect(db.canonicalMessageIdentity.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: {
+      workspaceId: 'workspace-A', channelId, identityFormat: 'whatsapp_stanza', providerScope: '', rawId }, take: 2 }));
+    expect(db.conversation.findMany).not.toHaveBeenCalled();
+    for (const invalid of [[], [identity, identity], [{ ...identity, state: 'review' }],
+      [{ ...identity, message: { hiddenByReset: true } }], [{ ...identity, contentState: 'pending_reconciliation' }],
+      [{ ...identity, chat: { ...identity.chat, address: { state: 'review', redirectId: null } } }],
+      [{ ...identity, fullTuple: ['other-workspace', ...identity.fullTuple.slice(1)] }]]) {
+      db.canonicalMessageIdentity.findMany.mockResolvedValue(invalid);
+      await expect(resolveExtensionConversation(db as never, auth, { ...input, peerAddress: null, lastMessageId: rawId } as never)).rejects.toBeDefined();
+    }
+    expect(db.message.findFirst).not.toHaveBeenCalled();
+  });
   it('lists only connected channels with provider-verified phone identities', async () => {
     await listExtensionChannels(db as never, auth);
     expect(db.channel.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { workspaceId: auth.workspaceId, archivedAt: null, status: 'connected', verifiedMessagingPhoneNumber: { not: null } } }));

@@ -1,6 +1,7 @@
 import { messagePeer, ownAddress, parseAddress } from './identity';
 import type { WaSelection } from '../protocol';
-export type Observation = Omit<WaSelection, 'key'>;
+export type Observation = Omit<WaSelection, 'key'> & { visibleMessageIds?: string[] };
+function publicObservation({ visibleMessageIds: _ids, ...selection }: Observation): Omit<WaSelection, 'key'> { return selection; }
 export function observeWhatsApp(document: Document, storage: Pick<Storage, 'getItem'>): Observation {
   const main = document.querySelector('#main, [data-testid="conversation-panel-wrapper"]');
   const selfAddress = ownAddress(storage);
@@ -12,10 +13,11 @@ export function observeWhatsApp(document: Document, storage: Pick<Storage, 'getI
   const label = (title?.getAttribute('title') || title?.textContent)?.trim().slice(0, 160) || null;
   // Read identity attributes only: never scrape chat bodies, files, contact lists or QR/session credentials.
   const messageIds = Array.from(main.querySelectorAll('[data-id]')).slice(-200)
-    .map(el => el.getAttribute('data-id')).filter((v): v is string => !!v && !!messagePeer(v));
+    .map(el => el.getAttribute('data-id')).filter((v): v is string => !!v && (!!messagePeer(v) || /^[A-Fa-f0-9]{16,64}$/.test(v)));
   const peers = new Set(messageIds.map(messagePeer).filter((v): v is string => !!v));
   if (peers.size > 1) return { ...empty, label };
   let peerAddress = peers.size === 1 ? [...peers][0]! : null;
+  if (!peerAddress && messageIds.length) return { selfAddress, peerAddress: null, label, lastMessageId: messageIds.at(-1)!, phase: 'ready', visibleMessageIds: messageIds };
   if (!peerAddress && label && /^\+?[\d\s().-]{8,25}$/.test(label)) peerAddress = parseAddress(`${label.replace(/\D/g, '')}@s.whatsapp.net`);
   if (!peerAddress) return { ...empty, label };
   if (peerAddress.endsWith('@g.us')) return { ...empty, label, phase: 'unsupported' };
@@ -26,15 +28,19 @@ export function observeWhatsApp(document: Document, storage: Pick<Storage, 'getI
 export class SelectionTracker {
   private current: WaSelection;
   private pending: Observation | null = null;
+  private currentObservation: Observation;
   constructor(private read: () => Observation, private publish: (selection: WaSelection) => void,
     private newKey: () => string = () => crypto.randomUUID()) {
-    this.current = { ...read(), key: newKey() };
+    this.currentObservation = read();
+    this.current = { ...publicObservation(this.currentObservation), key: newKey() };
   }
   get selection() { return this.current; }
   private emit(observation: Observation, force = false) {
     const { key: _key, ...old } = this.current;
-    if (!force && JSON.stringify(old) === JSON.stringify(observation)) return;
-    this.current = { ...observation, key: this.newKey() }; this.publish(this.current);
+    const selection = publicObservation(observation);
+    this.currentObservation = observation;
+    if (!force && JSON.stringify(old) === JSON.stringify(selection)) return;
+    this.current = { ...selection, key: this.newKey() }; this.publish(this.current);
   }
   switching() {
     if (!this.pending) this.pending = this.read();
@@ -44,7 +50,7 @@ export class SelectionTracker {
     const next = this.read();
     if (!this.pending && this.current.phase === 'ready' && next.phase === 'ready'
       && next.label !== this.current.label && next.peerAddress === this.current.peerAddress) {
-      this.pending = { ...this.current };
+      this.pending = this.currentObservation;
       this.emit({ selfAddress: null, peerAddress: null, label: null, lastMessageId: null, phase: 'switching' }, true);
       return;
     }
@@ -52,7 +58,9 @@ export class SelectionTracker {
       if (next.phase === 'signed_out') this.pending = null;
       else if (next.phase !== 'ready') return;
       // Same peer after a navigation could still be the old message list. Never release it by time alone.
-      else if (next.peerAddress === this.pending.peerAddress && next.selfAddress === this.pending.selfAddress) return;
+      else if (next.peerAddress === this.pending.peerAddress && next.selfAddress === this.pending.selfAddress
+        && (next.peerAddress !== null || next.label === this.pending.label || next.lastMessageId === this.pending.lastMessageId
+          || (next.visibleMessageIds ?? []).some(id => (this.pending!.visibleMessageIds ?? [this.pending!.lastMessageId]).includes(id)))) return;
       else this.pending = null;
     }
     this.emit(next);

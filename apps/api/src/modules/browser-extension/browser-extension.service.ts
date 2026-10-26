@@ -21,8 +21,8 @@ export async function listExtensionChannels(db: Db, auth: Auth) {
 /** Read-only resolver. Never creates contacts, merges aliases or chooses a new authority. */
 export async function resolveExtensionConversation(db: Db, auth: Auth, input: ExtensionChat): Promise<ExtensionConversation> {
   const actor = await resolveAssistantActor(db, auth);
-  const self = normalizeChatAddress(input.selfAddress), peer = normalizeChatAddress(input.peerAddress);
-  if (!self?.endsWith('@s.whatsapp.net') || !peer || peer.endsWith('@g.us'))
+  const self = normalizeChatAddress(input.selfAddress), peer = input.peerAddress ? normalizeChatAddress(input.peerAddress) : null;
+  if (!self?.endsWith('@s.whatsapp.net') || (input.peerAddress !== null && !peer) || peer?.endsWith('@g.us'))
     return failure('EXTENSION_IDENTITY_UNAVAILABLE', 'Abra uma conversa individual com identificação disponível.');
   const channel = await db.channel.findFirst({ where: { workspaceId: actor.workspaceId, id: input.channelId, archivedAt: null } });
   if (!channel) return failure('EXTENSION_CHANNEL_NOT_FOUND', 'Canal não disponível para esta conta.', 404);
@@ -31,10 +31,30 @@ export async function resolveExtensionConversation(db: Db, auth: Auth, input: Ex
   if (normalizePhoneForStorage(channel.verifiedMessagingPhoneNumber) !== self.split('@')[0])
     return failure('EXTENSION_NUMBER_MISMATCH', 'O número do WhatsApp Web é diferente do canal selecionado.');
   const scope = { workspaceId: actor.workspaceId, channelId: channel.id };
-  const alias = await db.canonicalAddressAlias.findUnique({ where: { workspaceId_channelId_address: { ...scope, address: peer } } });
+  const alias = peer ? await db.canonicalAddressAlias.findUnique({ where: { workspaceId_channelId_address: { ...scope, address: peer } } }) : null;
   let conversationId: string | null = null;
   let canonicalChatId: string | null = null;
-  if (alias) {
+  if (!peer) {
+    const rawId = input.lastMessageId;
+    if (!rawId || !/^[A-Fa-f0-9]{16,64}$/.test(rawId))
+      return failure('EXTENSION_INVALID_ANCHOR', 'Abra uma conversa com uma mensagem identificável.');
+    // Current WhatsApp DOM exposes only a stanza ID. It must resolve uniquely in the verified
+    // channel; never search by display name or fall back around canonical review/ambiguity.
+    const bucket = await db.canonicalMessageIdentity.findMany({ where: { ...scope, identityFormat: 'whatsapp_stanza', providerScope: '', rawId }, take: 2,
+      select: { chatId: true, direction: true, fullTuple: true, state: true, contentState: true,
+        message: { select: { hiddenByReset: true } }, chat: { select: { state: true, operationConversationId: true,
+          address: { select: { state: true, redirectId: true } } } } } });
+    if (bucket.length > 1) return failure('EXTENSION_AMBIGUOUS', 'Esta mensagem tem mais de um vínculo. Resolva a identidade no Talk.');
+    const identity = bucket[0];
+    if (!identity) return failure('EXTENSION_SYNC_PENDING', 'Aguardando esta mensagem chegar ao Talk. O painel atualizará automaticamente.');
+    const tuple = [actor.workspaceId, channel.id, identity.chatId, 'whatsapp_stanza', '', rawId, identity.direction, ''];
+    if (!equal(identity.fullTuple, tuple) || identity.state !== 'active' || identity.contentState !== 'ready'
+      || identity.message.hiddenByReset || identity.chat.state !== 'active' || identity.chat.address.state !== 'active'
+      || identity.chat.address.redirectId || !identity.chat.operationConversationId)
+      return failure('EXTENSION_IDENTITY_REVIEW', 'O vínculo desta mensagem precisa de revisão no Talk.');
+    conversationId = identity.chat.operationConversationId;
+    canonicalChatId = identity.chatId;
+  } else if (alias) {
     let addressId: string | null = alias.addressId;
     const seen = new Set<string>();
     while (addressId) {
@@ -64,7 +84,7 @@ export async function resolveExtensionConversation(db: Db, auth: Auth, input: Ex
     return failure('EXTENSION_IDENTITY_REVIEW', 'O vínculo da conversa mudou. Atualize o painel.');
   const contact = await db.contact.findFirst({ where: { workspaceId: actor.workspaceId, id: conversation.contactId }, select: { name: true, phone: true, isGroup: true } });
   if (!contact || contact.isGroup) return failure('EXTENSION_CONVERSATION_NOT_FOUND', 'Conversa individual indisponível.', 404);
-  if (input.lastMessageId) {
+  if (input.lastMessageId && peer) {
     const key = parseWahaMessageKey(input.lastMessageId);
     if (!key.rawId || key.chatAddress !== peer || !key.direction)
       return failure('EXTENSION_INVALID_ANCHOR', 'A identificação da mensagem mudou. Atualize a conversa.');
