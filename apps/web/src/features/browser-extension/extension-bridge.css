@@ -1,0 +1,12 @@
+.extension-connect{min-height:100dvh;display:grid;place-items:center;background:#101916;padding:32px;color:#edf4ee;font-family:inherit}
+.extension-connect-card{width:min(100%,490px);padding:44px;border:1px solid #30483c;border-radius:24px;background:#16221c}
+.extension-brand{font-size:28px;letter-spacing:-1px;font-weight:700;display:flex;flex-direction:column;gap:8px}
+.extension-brand span{font-size:11px;font-weight:500;letter-spacing:2px;text-transform:uppercase;color:#a9b9af}
+.extension-connect h1{font-size:32px;line-height:1.15;letter-spacing:-1px;margin:24px 0 16px}
+.extension-connect p{font-size:15px;line-height:1.65;color:#b7c8bd}
+.extension-connect button{width:100%;padding:15px;border:0;border-radius:10px;margin-top:20px;background:#b8ee83;color:#172516;font-weight:650;cursor:pointer;font-size:14px}
+.extension-connect button:disabled{opacity:.6;cursor:wait}.extension-connect button:focus-visible{outline:3px solid white;outline-offset:4px}
+.extension-connect small{display:block;margin-top:22px;text-align:center;color:#9db2a4;font-size:11px}
+.extension-connection-dot{width:10px;height:10px;border-radius:100%;background:#8d9b92;margin-top:42px}
+.extension-connection-dot.connected{background:#b8ee83;box-shadow:0 0 0 7px #b8ee8314}
+.extension-connect .extension-connect-error{color:#ffb7a8}

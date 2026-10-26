@@ -1,0 +1,29 @@
+{
+  "name": "@prymeira-talk/extension",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit && node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:browser": "node tests/browser.mjs"
+  },
+  "dependencies": {
+    "@prymeira-talk/shared": "workspace:*",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.1.0",
+    "@types/jsdom": "^30.0.0",
+    "@types/react": "^19.1.8",
+    "@types/react-dom": "^19.1.6",
+    "esbuild": "0.28.0",
+    "jsdom": "^30.0.1",
+    "playwright": "^1.58.2",
+    "typescript": "^5.8.3",
+    "vitest": "^4.0.18"
+  }
+}

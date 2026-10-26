@@ -33,6 +33,7 @@ if (phase === 'all' || phase === 'unit') {
 if (phase === 'all' || phase === 'build') {
   await run('pnpm', ['--filter', '@prymeira-talk/api', 'build:prod'], unitEnv);
   await run('pnpm', ['--filter', '@prymeira-talk/web', 'build'], unitEnv); phases.push('api-build', 'web-build');
+  await run('pnpm', ['--filter', '@prymeira-talk/extension', 'build'], unitEnv); phases.push('extension-build');
 }
 if (['all', 'prepare', 'integration'].includes(phase)) {
   const postgresPort = process.env.TALK_TEST_POSTGRES_PORT ?? '55439', amqpPort = process.env.TALK_TEST_AMQP_PORT ?? '56739';

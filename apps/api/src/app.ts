@@ -121,6 +121,7 @@ import { createPurchasingService } from "./modules/purchasing/purchasing.service
 import { modeloDoHarness } from "./modules/harness/agentes/atendimento/producao.js";
 import { createCityGeocoder } from "./modules/leads/city-geocoder.js";
 import { createNearbyCitiesLookup } from "./modules/leads/nearby-cities.js";
+import { browserExtensionRoutes } from './modules/browser-extension/browser-extension.routes.js';
 import { createGoogleMapsScraperClient } from "./modules/leads/google-maps-scraper.client.js";
 
 export interface CreateAppOptions {
@@ -858,6 +859,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
     agentImprovements
   });
   await app.register(assistantRoutes);
+  await app.register(browserExtensionRoutes);
   await app.register(assistantInboxRoutes, { scheduler: assistantScheduler, handoffBriefService, evolution: evolutionRuntime });
   await app.register(crmRoutes, {
     vinculaApiUrl: env.VINCULA_CRM_API_URL

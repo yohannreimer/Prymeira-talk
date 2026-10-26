@@ -1,4 +1,5 @@
 export * from "./domain.js";
+export * from './browser-extension.js';
 export * from "./supervision.js";
 export * from "./agent-package.js";
 export * from "./realtime.js";
