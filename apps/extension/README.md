@@ -1,6 +1,6 @@
 # Prymeira Talk para WhatsApp Web
 
-Piloto 0.2.3: painel lateral com sugestões da conversa atual, fila de follow-ups e fila Humano necessário. Usa um número que já esteja conectado ao Talk.
+Piloto 0.2.4: painel lateral com sugestões da conversa atual, fila de follow-ups e fila Humano necessário. Usa um número que já esteja conectado ao Talk.
 
 ## Preparar
 
@@ -31,7 +31,7 @@ As abas **Conversa**, **Follow-ups** (contador vermelho de itens para revisar) e
 
 Em **Follow-ups → Para revisar**, clicar em um item abre o contato no WhatsApp Web, comprova a conversa e revalida a revisão do acompanhamento. O texto é colocado no campo vazio; você lê, edita e aperta **Enviar** no próprio WhatsApp. Um rascunho já existente é preservado. Navegação ou digitação durante a preparação interrompe a operação. O preparo expira em um minuto. A extensão não cria um segundo disparo nem marca o item como enviado antecipadamente; a atualização no Talk depende da sincronização do envio nativo.
 
-**Lembretes** e **Agendados** abrem a conversa sem preparar mensagem nem antecipar o agendamento. **Humano necessário** mostra o motivo e abre a conversa; abrir não conclui a pendência humana.
+A fila de follow-ups mostra somente **Para revisar**. **Humano necessário** mostra o motivo e abre a conversa; abrir não conclui a pendência humana.
 
 O painel mostra a sugestão existente e permite pedir outra, editar e inserir no campo vazio do WhatsApp. O vendedor revisa e envia. Follow-ups já existentes podem ser consultados, adiados ou cancelados; lembretes internos podem ser marcados como feitos. Não há botão de disparo automático na extensão.
 
@@ -62,3 +62,5 @@ O teste de navegador carrega a extensão real, a página de conexão real e os d
 A confirmação de inserção aguarda os eventos do editor do WhatsApp e confere o campo atual. O retorno de `execCommand` não é usado como confirmação de sucesso; a mensagem nunca é inserida novamente para tentar confirmar.
 
 A abertura prioriza o telefone exato do cabeçalho ou da lista visível do WhatsApp, sem recarregar a página. Contatos por nome não são escolhidos automaticamente. Se não houver telefone exato visível, usa o link do WhatsApp; esse carregamento pode demorar. Se o preparo expirar, aguarde a conversa abrir e selecione o acompanhamento novamente.
+
+Os avisos de operação concluída somem após cinco segundos; Sair fica no cabeçalho. Rascunho na conversa de origem não impede a navegação. Se o destino já tiver texto, a conversa abre e a extensão preserva esse texto sem inserir por cima. Os motivos de atenção humana são apresentados em português.

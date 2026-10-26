@@ -99,8 +99,19 @@ async function handlePanel(message: PanelRequest) {
     try {
       const canOpen=await chrome.tabs.sendMessage(message.context.tabId,{type:'WA_CAN_OPEN',selfAddress:message.context.selfAddress,phone:target.conversation.phone});
       if(!canOpen?.ok)throw new Error(canOpen?.error??'Não foi possível abrir a conversa.');
+      let opened=canOpen.opened===true;
+      if(!opened){
+        // A name-only header can still be the target. Resolve its canonical identity before reloading.
+        const live=await readSelection(message.context.windowId),selection=live.selection;
+        if(selection?.phase==='ready'&&selection.selfAddress&&(selection.peerAddress||selection.lastMessageId)){
+          try {
+            const current=await command({...message.context,key:selection.key},{action:'read',chat:{channelId:message.account.channelId,selfAddress:selection.selfAddress,peerAddress:selection.peerAddress,lastMessageId:selection.lastMessageId}});
+            opened='conversation' in current&&current.conversation.id===target.conversation.id;
+          } catch { /* An unresolved source must not prevent opening a verified target. */ }
+        }
+      }
       if(navigationVersions.get(message.context.windowId)!==navigationVersion)throw new Error('Preparação interrompida pela navegação ou edição no WhatsApp.');
-      if(!canOpen.opened){assertAccountContext(message.context,await readSelection(message.context.windowId));await chrome.tabs.update(message.context.tabId,{url});}
+      if(!opened){assertAccountContext(message.context,await readSelection(message.context.windowId));await chrome.tabs.update(message.context.tabId,{url});}
     } catch(cause) { navigationIntents.cancelTab(message.context.tabId);throw cause; }
     return {token,target};
   }
