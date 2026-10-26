@@ -36,9 +36,11 @@ const modules = {
 };
 const SupervisionPage = lazy(() => import('../features/supervision/SupervisionPage').then(module => ({ default: module.SupervisionPage })));
 const PlatformHealthPage = lazy(() => import('../features/platform-health/PlatformHealthPage').then(module => ({ default: module.PlatformHealthPage })));
+const ExtensionBridgePage = lazy(() => import('../features/browser-extension/ExtensionBridgePage').then(module => ({ default: module.ExtensionBridgePage })));
 const AgentEvaluationPage = lazy(() => import('../features/platform-health/AgentEvaluationPage').then(module => ({ default: module.AgentEvaluationPage })));
 /** Standalone pages outside the workspace shell: a manager's supervision and the product owner's health board and agent evaluation. */
 function standaloneRoute() {
+  if (window.location.pathname === '/extension') return 'extension';
   const module = new URLSearchParams(window.location.search).get("module");
   return module === "supervisao" || module === "saude" || module === "avaliacao" ? module : null;
 }
@@ -58,7 +60,8 @@ export function App() {
   }, []);
   return (
     <AuthGate>
-      {standalone === "avaliacao" ? <Suspense fallback={<div className="center-state">Carregando avaliação dos agentes…</div>}><AgentEvaluationPage /></Suspense>
+      {standalone === 'extension' ? <Suspense fallback={<div className="center-state">Conectando extensão…</div>}><ExtensionBridgePage /></Suspense>
+        : standalone === "avaliacao" ? <Suspense fallback={<div className="center-state">Carregando avaliação dos agentes…</div>}><AgentEvaluationPage /></Suspense>
         : standalone === "saude" ? <Suspense fallback={<div className="center-state">Carregando saúde dos números…</div>}><PlatformHealthPage /></Suspense>
         : standalone === "supervisao" ? <Suspense fallback={<div className="center-state">Carregando supervisão…</div>}><SupervisionPage /></Suspense> : <TalkSessionProvider><TalkSuiteShell renderModule={renderModule} prefetchModule={prefetchModule} /></TalkSessionProvider>}
     </AuthGate>
