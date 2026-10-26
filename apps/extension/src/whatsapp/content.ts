@@ -1,3 +1,4 @@
+import { insertWhatsAppDraft } from './insert-draft';
 import { canonicalPhone, ownAddress } from './identity';
 import { observeWhatsApp, SelectionTracker } from './observation';
 
@@ -39,11 +40,9 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
     const selection = tracker.selection;
     if (selection.key !== message.key || selection.phase !== 'ready') { respond({ ok: false, error: 'A conversa mudou. Atualize o painel.' }); return; }
     if (typeof message.body !== 'string' || !message.body.trim() || message.body.length > 4000) { respond({ ok: false, error: 'Mensagem inválida.' }); return; }
-    const composer = document.querySelector<HTMLElement>('#main footer [contenteditable="true"][role="textbox"]');
-    if (!composer || composer.innerText.trim()) { respond({ ok: false, error: 'Deixe o campo de mensagem vazio antes de inserir a sugestão.' }); return; }
-    composer.focus();
-    const inserted = document.execCommand('insertText', false, message.body);
-    respond(inserted && composer.innerText.trim() === message.body.trim() ? { ok: true } : { ok: false, error: 'Não foi possível inserir a mensagem no WhatsApp.' });
+    void insertWhatsAppDraft(document,message.body,()=>{tracker.refresh();return tracker.selection.key===message.key&&tracker.selection.phase==='ready';})
+      .then(respond).catch(()=>respond({ok:false,error:'Não foi possível confirmar o preenchimento. Confira o campo do WhatsApp antes de tentar novamente.'}));
+    return true;
   }
 });
 tracker.start();
