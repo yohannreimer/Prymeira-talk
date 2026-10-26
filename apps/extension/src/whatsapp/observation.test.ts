@@ -26,6 +26,10 @@ describe('WhatsApp identity adapter', () => {
     expect(observed).toMatchObject({ phase: 'ready', peerAddress, label: 'Ana', lastMessageId: `false_${peerAddress}_stanza` });
     expect(JSON.stringify(observed)).not.toContain('Private body');
   });
+  it('accepts the current raw stanza DOM without guessing a peer from the name', () => {
+    expect(observeWhatsApp(dom('<div data-id="3EB0123456789ABCDEF0">Never read</div>'), storage))
+      .toMatchObject({ phase: 'ready', peerAddress: null, lastMessageId: '3EB0123456789ABCDEF0' });
+  });
   it('refuses mixed chats, group chats and names without identity', () => {
     expect(observeWhatsApp(dom(`<div data-id="false_${peerAddress}_1"></div><div data-id="true_5511998765432@c.us_2"></div>`), storage).phase).toBe('unidentified');
     expect(observeWhatsApp(dom('<div data-id="false_123456-789@g.us_1"></div>'), storage).phase).toBe('unsupported');
@@ -69,5 +73,19 @@ describe('selection navigation fence', () => {
     expect(tracker.selection.peerAddress).toBe('5511998765432@s.whatsapp.net');
     tracker.switching(); current = { ...current, phase: 'signed_out', selfAddress: null, peerAddress: null }; tracker.refresh();
     expect(tracker.selection.phase).toBe('signed_out');
+  });
+});
+
+describe('raw message navigation fence', () => {
+  it('requires both a changed header and a changed stanza after navigation', () => {
+    let current: Observation = { ...ready(), peerAddress: null, lastMessageId: '3EB0123456789ABCDEF0' };
+    const tracker = new SelectionTracker(() => current, () => {}, () => 'key');
+    tracker.switching();
+    current = { ...current, lastMessageId: '3EB0123456789ABCDEF1' }; tracker.refresh();
+    expect(tracker.selection.phase).toBe('switching');
+    current = { ...current, label: 'João', lastMessageId: '3EB0123456789ABCDEF0' }; tracker.refresh();
+    expect(tracker.selection.phase).toBe('switching');
+    current = { ...current, lastMessageId: '3EB0123456789ABCDEF2' }; tracker.refresh();
+    expect(tracker.selection.phase).toBe('ready');
   });
 });

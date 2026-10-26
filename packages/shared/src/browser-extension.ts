@@ -6,7 +6,7 @@ import type { ConversationFollowupDto } from './domain.js';
 export const extensionChatSchema = z.object({
   channelId: z.string().uuid(),
   selfAddress: z.string().min(1).max(100),
-  peerAddress: z.string().min(1).max(100),
+  peerAddress: z.string().min(1).max(100).nullable(),
   lastMessageId: z.string().min(1).max(250).nullable().optional(),
 }).strict();
 export type ExtensionChat = z.infer<typeof extensionChatSchema>;
