@@ -32,9 +32,9 @@ document.addEventListener('visibilitychange', refresh);
 chrome.runtime.onMessage.addListener((message, sender, respond) => {
   if (sender.id !== chrome.runtime.id) return;
   if (message?.type === 'WA_CAN_OPEN') {
-    const self=ownAddress(localStorage),composer=document.querySelector<HTMLElement>('#main footer [contenteditable="true"][role="textbox"]');
+    const self=ownAddress(localStorage);
     if(!self||canonicalPhone(self)!==canonicalPhone(message.selfAddress??'')){respond({ok:false,error:'A conta do WhatsApp mudou.'});return;}
-    if(composer?.innerText.trim()){respond({ok:false,error:'Há um rascunho no WhatsApp. Termine ou limpe o campo antes de abrir outra conversa.'});return;}
+    // Opening a chat must not edit or depend on the source draft. WhatsApp owns its drafts.
     const opened=typeof message.phone==='string'&&openVisibleWhatsAppConversation(document,message.phone,()=>tracker.switching());
     respond({ok:true,opened});return;
   }

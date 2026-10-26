@@ -29,7 +29,7 @@ await build({ stdin: { contents: `import React from 'react'; import {createRoot}
     builder.onLoad({ filter: /.*/, namespace: 'fixture' }, () => ({ contents: `import {useSyncExternalStore} from 'react'; const subscribe=f=>{window.addEventListener('fixture-auth',f);return()=>window.removeEventListener('fixture-auth',f)};const snapshot=()=>window.fixtureUser||'test-user';const getToken=async()=> 'fixture-token';export function useTalkAuth(){const user=useSyncExternalStore(subscribe,snapshot);return {userId:user,sessionId:user+'-session',orgId:'',getToken}}`, loader: 'js', resolveDir: resolve('../web') }));
   } }], define: { 'process.env.NODE_ENV': '"production"' } });
 
-const profile = resolve('../../.validation/extension-browser-profile');
+const profile = resolve(`../../.validation/extension-browser-profile-${Date.now()}`);
 const extensionDist = `${fixtureDir}/extension`;
 await buildExtension({ origin, outdir: extensionDist });
 await rm(profile, { recursive: true, force: true });
@@ -52,7 +52,7 @@ await context.route('**/*', async route => {
     if(path==='/browser-extension/queue') {
       const human=body.kind==='human';
       return json({kind:body.kind,counts:{review:followupActive?1:0,reminders:0,scheduled:0,human:1},nextCursor:null,
-        items:human?[{id:ids.B,conversation:{id:ids.B,channelId,contactName:'João · teste',phone:peers.B.split('@')[0]},reason:'Precisa de revisão humana de teste.',followup:null}]
+        items:human?[{id:ids.B,conversation:{id:ids.B,channelId,contactName:'João · teste',phone:peers.B.split('@')[0]},reason:'automated_reception_wait',followup:null}]
           :body.kind==='review'&&followupActive?[{id:'00000000-0000-4000-8000-000000000004',conversation:{id:ids.A,channelId,contactName:'Ana · teste',phone:peers.A.split('@')[0]},reason:null,followup:{id:'00000000-0000-4000-8000-000000000004',kind:'human_commercial',status:'review',scheduledAt:'2026-10-27T13:00:00.000Z',updatedAt:'2026-10-26T10:00:00.000Z'}}]:[]});
     }
     if(path==='/browser-extension/navigate') {
@@ -82,7 +82,8 @@ await context.route('**/*', async route => {
   }
   if (url.origin === waOrigin) return route.fulfill({ contentType: 'text/html', body: `<!doctype html><html><head><meta charset="utf-8"></head><body><div id="side"><div id="pane-side"><div role="row" aria-selected="true" onclick="selectPeer('${peers.A}','Ana')">Ana</div><div role="row" onclick="selectPeer('${peers.B}','João')">João</div></div></div><div id="main"></div><script>
     localStorage.setItem('last-wid-md',JSON.stringify('5547991234567:3@c.us'));
-    window.selectPeer=(peer,name)=>{document.getElementById('main').innerHTML='<header><span title="'+name+'">'+name+'</span></header><div data-id="false_'+peer+'_stanza">Mensagem sintética</div><footer><div contenteditable="true" role="textbox" aria-label="Mensagem"></div></footer>'};
+    window.selectPeer=(peer,name)=>{const main=document.getElementById('main');if(main.dataset.peer)localStorage.setItem('fixture-draft-'+main.dataset.peer,main.querySelector('[contenteditable]')?.innerText||'');main.dataset.peer=peer;document.getElementById('main').innerHTML='<header><span title="'+name+'">'+name+'</span></header><div data-id="false_'+peer+'_stanza">Mensagem sintética</div><footer><div contenteditable="true" role="textbox" aria-label="Mensagem"></div></footer>';main.querySelector('[contenteditable]').innerText=localStorage.getItem('fixture-draft-'+peer)||''};
+    document.addEventListener('input',()=>{const main=document.getElementById('main');if(main.dataset.peer)localStorage.setItem('fixture-draft-'+main.dataset.peer,main.querySelector('[contenteditable]')?.innerText||'')});
     const originalExec=document.execCommand.bind(document);
     document.execCommand=(command,ui,value)=>{
       const result=originalExec(command,ui,value);
@@ -108,8 +109,12 @@ try {
   await talk.getByRole('button', { name: 'Conectar minha conta' }).click();
   await talk.getByRole('heading', { name: 'Talk conectado ao seu navegador.' }).waitFor();
   checks.push('Login reaproveitado pela página real de conexão, com autorização explícita.');
+  await panel.evaluate(()=>{window.fixtureNotices=[];new MutationObserver(()=>{const text=document.querySelector('.notice')?.textContent;if(text&&window.fixtureNotices.at(-1)!==text)window.fixtureNotices.push(text);}).observe(document.body,{subtree:true,childList:true,characterData:true});});
   const wa = await context.newPage(); await wa.goto(waOrigin); await wa.bringToFront();
   await panel.getByRole('heading', { name: 'Ana · teste' }).waitFor({ timeout: 20_000 });
+  assert.equal(await panel.getByText('Conta conectada',{exact:true}).count(),0);
+  await panel.locator('.brand-header').getByRole('button',{name:'Sair',exact:true}).waitFor();
+  checks.push('Conta conectada removida e Sair no cabeçalho compacto.');
   await panel.locator('#reply').waitFor(); assert.equal(await panel.locator('#reply').inputValue(), bodies.A);
   await panel.screenshot({ path: `${output}/extensao-conversa-teste.png` }); checks.push('Conversa identificada; sugestão e follow-up carregados pelos dois content scripts e pelo service worker.');
   await panel.locator('#reply').fill('Texto editado no painel de teste.');
@@ -118,6 +123,8 @@ try {
   checks.push('Atualização preserva a edição do vendedor.');
   await panel.getByRole('button', { name: 'Inserir no WhatsApp' }).click();
   await waitFor(async () => (await wa.locator('[contenteditable]').innerText()) === 'Texto editado no painel de teste.');
+  await panel.getByRole('status').filter({hasText:'Inserida no WhatsApp'}).waitFor({state:'hidden',timeout:6500});
+  checks.push('Aviso de inserção some em cinco segundos sem ocupar espaço permanente.');
   checks.push('Sugestão inserida no campo nativo, sem envio automático.');
   await panel.getByRole('button', { name: 'Inserir no WhatsApp' }).click();
   await panel.getByRole('alert').filter({ hasText: 'campo de mensagem vazio' }).waitFor();
@@ -160,10 +167,28 @@ try {
   followupActive=true;
   await wa.locator('[contenteditable]').fill('Rascunho do vendedor preservado.');
   await panel.getByRole('button',{name:/^Follow-ups/}).click();
+  assert.equal(await panel.getByRole('group',{name:'Estado dos follow-ups'}).count(),0);
+  assert.equal(await panel.getByRole('button',{name:'Lembretes',exact:true}).count(),0);
+  assert.equal(await panel.getByRole('button',{name:'Agendados',exact:true}).count(),0);
   await panel.getByRole('button',{name:'Abrir e preparar follow-up: Ana · teste',exact:true}).click();
-  await panel.getByRole('status').filter({hasText:'rascunho no WhatsApp'}).waitFor();
+  await panel.getByRole('heading',{name:'Ana · teste'}).waitFor({timeout:20000});
+  await panel.getByRole('status').filter({hasText:'Mensagem preparada no WhatsApp'}).waitFor();
+  assert.equal(await wa.locator('[contenteditable]').innerText(),'Retorno preparado no ambiente de teste.');
+  checks.push('Rascunho na conversa de origem não bloqueia abrir e preparar outra conversa.');
+  await panel.getByRole('status').filter({hasText:'Mensagem preparada no WhatsApp'}).waitFor({state:'hidden',timeout:6500});
+  await wa.locator('#pane-side').getByText('João',{exact:true}).click();
+  await panel.getByRole('heading',{name:'João · teste'}).waitFor();
   assert.equal(await wa.locator('[contenteditable]').innerText(),'Rascunho do vendedor preservado.');
-  checks.push('Abrir fila não sobrescreve rascunho nativo já existente.');
+  await wa.locator('[contenteditable]').fill('');
+  await wa.locator('#pane-side').getByText('Ana',{exact:true}).click();
+  await panel.getByRole('heading',{name:'Ana · teste'}).waitFor();
+  await wa.locator('[contenteditable]').fill('Rascunho no destino preservado.');
+  await panel.getByRole('button',{name:/^Follow-ups/}).click();
+  await panel.getByRole('button',{name:'Abrir e preparar follow-up: Ana · teste',exact:true}).click();
+  await panel.getByRole('status').filter({hasText:'campo de mensagem vazio'}).waitFor({timeout:20000});
+  assert.equal(await wa.locator('[contenteditable]').innerText(),'Rascunho no destino preservado.');
+  checks.push('Volta à conversa recupera o rascunho nativo; campo de destino ocupado é preservado.');
+
   await wa.locator('[contenteditable]').fill('');
   await wa.evaluate(()=>localStorage.setItem('fixture-async-editor','true'));
   await panel.getByRole('button',{name:/^Follow-ups/}).click();
@@ -232,7 +257,9 @@ try {
   await wa.locator('[contenteditable]').fill('');
   checks.push('Contato com telefone exato visível abre e prepara sem recarregar o WhatsApp.');
   await panel.getByRole('button',{name:/^Humano necessário/}).click();
-  await panel.getByText('Precisa de revisão humana de teste.',{exact:true}).waitFor();
+  await panel.getByText('O contato respondeu com um atendimento automático. Confira a conversa.',{exact:true}).waitFor();
+  assert.equal(await panel.getByText('automated_reception_wait',{exact:true}).count(),0);
+  checks.push('Motivos humanos exibidos em português sem códigos internos.');
   await panel.getByRole('button',{name:'Abrir conversa: João · teste',exact:true}).click();
   await panel.getByRole('heading',{name:'João · teste'}).waitFor({timeout:20_000});
   assert.equal((await wa.locator('[contenteditable]').innerText()).trim(),'');
@@ -253,6 +280,7 @@ try {
 } catch (error) {
   console.error('Original browser failure:', error);
   await panel.screenshot({ path: `${output}/extensao-falha.png` }).catch(failure => console.error('Failure screenshot unavailable:', failure.message));
+  console.error('Notice transitions:',await panel.evaluate(()=>window.fixtureNotices));
   console.error('Panel text:', await panel.locator('body').innerText()); console.error('Page errors:', failures);
   for (const open of context.pages()) if (open.url().startsWith(origin)) {
     console.error('Talk fixture:', open.url(), await open.locator('body').innerText());

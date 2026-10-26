@@ -4,6 +4,7 @@ import type { ExtensionChat, ExtensionRead, ExtensionSession, ExtensionAccount, 
 import { runtimeRequest, type PanelState, type SelectedContext, type AccountContext, type OpenChatResult } from './protocol';
 import { canonicalPhone } from './whatsapp/identity';
 import { QueuePanel, emptyCounts } from './QueuePanel';
+import { humanReason } from './human-reason';
 import './panel.css';
 
 function Mark() { return <svg width="25" height="28" viewBox="0 0 25 28" fill="none" aria-hidden="true"><path d="M3 25V3h10a8 8 0 0 1 0 16H9" stroke="currentColor" strokeWidth="5" strokeLinecap="round" strokeLinejoin="round"/></svg>; }
@@ -69,6 +70,9 @@ function App() {
     return () => { if (timer) clearInterval(timer); };
   }, [key]);
   useEffect(()=>{++navigationGeneration.current;setQueueCounts(emptyCounts);setPendingNavigation(null);preparing.current=null;openingRef.current=false;setOpening(false);setNavigationStatus(null);},[session?.scope,channel]);
+  // Keep progress visible while work is running; finished feedback frees the space after 5s.
+  useEffect(()=>{if(!navigationStatus||opening)return;const timer=setTimeout(()=>setNavigationStatus(null),5000);return()=>clearTimeout(timer);},[navigationStatus,opening]);
+  useEffect(()=>{if(!notice)return;const timer=setTimeout(()=>setNotice(null),5000);return()=>clearTimeout(timer);},[notice]);
   async function openQueue(item:ExtensionQueueItem,kind:ExtensionQueueKind) {
     if(!accountContext||!account||openingRef.current)return;
     const generation=++navigationGeneration.current;openingRef.current=true;setOpening(true);setNavigationStatus('Abrindo a conversa no WhatsApp…');setActiveTab('conversation');setPendingNavigation(null);preparing.current=null;
@@ -76,7 +80,7 @@ function App() {
       const result=await runtimeRequest<OpenChatResult>({type:'OPEN_CHAT',context:accountContext,account,kind,id:item.id,expectedUpdatedAt:item.followup?.updatedAt});
       if(navigationGeneration.current!==generation)return;
       if(result.token){setPendingNavigation({...result,started:Date.now()});setNavigationStatus('Conferindo a conversa antes de preparar a mensagem…');}
-      else {setNavigationStatus(kind==='human'?(item.reason??'Confira a conversa que precisa de atenção humana.'):kind==='reminders'?'Conversa aberta. Este item é um lembrete interno.':'Conversa aberta. O agendamento foi preservado.');openingRef.current=false;setOpening(false);}
+      else {setNavigationStatus(kind==='human'?humanReason(item.reason):kind==='reminders'?'Conversa aberta. Este item é um lembrete interno.':'Conversa aberta. O agendamento foi preservado.');openingRef.current=false;setOpening(false);}
     }catch(cause){if(navigationGeneration.current===generation){setNavigationStatus(message(cause));openingRef.current=false;setOpening(false);}}
   }
   useEffect(()=>{
@@ -111,7 +115,7 @@ function App() {
     : !matches.length ? 'O número aberto no WhatsApp Web precisa corresponder a um canal conectado e verificado no Talk.'
     : 'Escolha o canal do Talk para esta conversa.';
   return <div className="panel-shell">
-    <header className="brand-header"><div className="brand-symbol"><Mark /></div><div className="brand-word">prymeira<span>talk</span></div><span className="pilot">PILOTO</span></header>
+    <header className="brand-header"><div className="brand-symbol"><Mark /></div><div className="brand-word">prymeira<span>talk</span></div>{state?.connected?<button className="text-button header-signout" onClick={() => { void runtimeRequest({ type: 'DISCONNECT' }).then(() => refreshStatus()); }}>Sair</button>:<span className="pilot">PILOTO</span>}</header>
     <main>
       {fatal && <div className="alert" role="alert">{fatal}<button className="text-button" onClick={() => void refreshStatus()}>Tentar novamente</button></div>}
       {!state?.connected ? <section className="welcome">
@@ -124,11 +128,10 @@ function App() {
         <div className="feature-row"><span className="feature-icon">↗</span><div><strong>Respostas com contexto</strong><span>O mesmo histórico e a mesma IA do Talk.</span></div></div>
         <div className="feature-row"><span className="feature-icon">◷</span><div><strong>O próximo passo à vista</strong><span>Acompanhe os retornos desta conversa.</span></div></div>
       </section> : <>
-        <div className="connection"><span className="status-dot"/>Conta conectada <button className="text-button" onClick={() => { void runtimeRequest({ type: 'DISCONNECT' }).then(() => refreshStatus()); }}>Sair</button></div>
         <nav className="panel-tabs" aria-label="Navegação do Talk">
-          <button aria-pressed={activeTab==='conversation'} onClick={()=>setActiveTab('conversation')}>Conversa</button>
-          <button className="followups-tab" aria-pressed={activeTab==='followups'} onClick={()=>setActiveTab('followups')}>Follow-ups <span>{queueCounts.review}</span></button>
-          <button aria-pressed={activeTab==='human'} onClick={()=>setActiveTab('human')}>Humano necessário <span>{queueCounts.human}</span></button>
+          <button aria-pressed={activeTab==='conversation'} onClick={()=>{setActiveTab('conversation');setNavigationStatus(null);setNotice(null);}}>Conversa</button>
+          <button className="followups-tab" aria-pressed={activeTab==='followups'} onClick={()=>{setActiveTab('followups');setNavigationStatus(null);setNotice(null);}}>Follow-ups <span>{queueCounts.review}</span></button>
+          <button aria-pressed={activeTab==='human'} onClick={()=>{setActiveTab('human');setNavigationStatus(null);setNotice(null);}}>Humano necessário <span>{queueCounts.human}</span></button>
         </nav>
         {navigationStatus&&<div className="notice" role="status">{navigationStatus}</div>}
         {accountContext&&account&&<QueuePanel context={accountContext} account={account} view={activeTab==='human'?'human':'followups'} hidden={activeTab==='conversation'} busy={opening} onCounts={setQueueCounts} onOpen={(item,kind)=>void openQueue(item,kind)}/>}
@@ -159,7 +162,7 @@ function App() {
         </>}
       </>}
     </main>
-    <footer className="panel-footer"><span className="footer-mark">p.</span><span>O contexto acompanha a conversa.</span><span>0.2.3</span></footer>
+    <footer className="panel-footer"><span className="footer-mark">p.</span><span>O contexto acompanha a conversa.</span><span>0.2.4</span></footer>
   </div>;
 }
 function message(cause: unknown) { return cause instanceof Error ? cause.message : 'Não foi possível carregar o Talk.'; }
