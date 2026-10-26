@@ -159,7 +159,7 @@ function App() {
         </>}
       </>}
     </main>
-    <footer className="panel-footer"><span className="footer-mark">p.</span><span>O contexto acompanha a conversa.</span><span>0.2.1</span></footer>
+    <footer className="panel-footer"><span className="footer-mark">p.</span><span>O contexto acompanha a conversa.</span><span>0.2.2</span></footer>
   </div>;
 }
 function message(cause: unknown) { return cause instanceof Error ? cause.message : 'Não foi possível carregar o Talk.'; }

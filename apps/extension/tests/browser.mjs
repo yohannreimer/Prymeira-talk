@@ -219,6 +219,18 @@ try {
   assert.equal(wa.url(),urlBeforeInterruptedOpen);
   assert.equal((await wa.locator('[contenteditable]').innerText()).trim(),'');
   checks.push('Navegação enquanto o destino ainda está sendo consultado também interrompe a abertura.');
+  await wa.evaluate(({peer})=>{
+    window.selectPeer(peer,'João');window.fixtureKeptDocument=true;
+    document.querySelector('#pane-side [role="row"]').innerHTML='<span title="+55 47 98765-4321">Ana</span>';
+  },{peer:peers.B});
+  await panel.getByRole('heading',{name:'João · teste'}).waitFor({timeout:20_000});
+  await panel.getByRole('button',{name:/^Follow-ups/}).click();
+  await panel.getByRole('button',{name:'Abrir e preparar follow-up: Ana · teste',exact:true}).click();
+  await panel.getByRole('status').filter({hasText:'Mensagem preparada no WhatsApp'}).waitFor({timeout:20_000});
+  assert.equal(await wa.evaluate(()=>window.fixtureKeptDocument),true);
+  assert.equal(await wa.locator('[contenteditable]').innerText(),'Retorno preparado no ambiente de teste.');
+  await wa.locator('[contenteditable]').fill('');
+  checks.push('Contato com telefone exato visível abre e prepara sem recarregar o WhatsApp.');
   await panel.getByRole('button',{name:/^Humano necessário/}).click();
   await panel.getByText('Precisa de revisão humana de teste.',{exact:true}).waitFor();
   await panel.getByRole('button',{name:'Abrir conversa: João · teste',exact:true}).click();

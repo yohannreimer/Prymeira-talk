@@ -94,12 +94,14 @@ async function handlePanel(message: PanelRequest) {
     const target=await accountCommand(message.context,message.account,{action:'navigate',account:message.account,kind:message.kind,id:message.id,expectedUpdatedAt:message.expectedUpdatedAt});
     if(!('conversation' in target) || !('prepare' in target))throw new Error('Destino inválido.');
     const url=whatsappConversationUrl(target);
-    const canOpen=await chrome.tabs.sendMessage(message.context.tabId,{type:'WA_CAN_OPEN',selfAddress:message.context.selfAddress});
-    if(!canOpen?.ok)throw new Error(canOpen?.error ?? 'Não foi possível abrir a conversa.');
     assertAccountContext(message.context,await readSelection(message.context.windowId));
-    if(navigationVersions.get(message.context.windowId)!==navigationVersion)throw new Error('Preparação interrompida pela navegação ou edição no WhatsApp.');
     const token=target.prepare?navigationIntents.create(message.context,target):null;
-    try { await chrome.tabs.update(message.context.tabId,{url}); } catch(cause) { navigationIntents.cancelTab(message.context.tabId);throw cause; }
+    try {
+      const canOpen=await chrome.tabs.sendMessage(message.context.tabId,{type:'WA_CAN_OPEN',selfAddress:message.context.selfAddress,phone:target.conversation.phone});
+      if(!canOpen?.ok)throw new Error(canOpen?.error??'Não foi possível abrir a conversa.');
+      if(navigationVersions.get(message.context.windowId)!==navigationVersion)throw new Error('Preparação interrompida pela navegação ou edição no WhatsApp.');
+      if(!canOpen.opened){assertAccountContext(message.context,await readSelection(message.context.windowId));await chrome.tabs.update(message.context.tabId,{url});}
+    } catch(cause) { navigationIntents.cancelTab(message.context.tabId);throw cause; }
     return {token,target};
   }
   if (message.type === 'PREPARE_FOLLOWUP') {

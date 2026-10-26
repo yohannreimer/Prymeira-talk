@@ -1,6 +1,6 @@
 # Prymeira Talk para WhatsApp Web
 
-Piloto 0.2.1: painel lateral com sugestões da conversa atual, fila de follow-ups e fila Humano necessário. Usa um número que já esteja conectado ao Talk.
+Piloto 0.2.2: painel lateral com sugestões da conversa atual, fila de follow-ups e fila Humano necessário. Usa um número que já esteja conectado ao Talk.
 
 ## Preparar
 
@@ -60,3 +60,5 @@ O teste de navegador carrega a extensão real, a página de conexão real e os d
 - Não habilitar envios nem alterar cadências do Talk apenas por instalar a extensão.
 
 A confirmação de inserção aguarda os eventos do editor do WhatsApp e confere o campo atual. O retorno de `execCommand` não é usado como confirmação de sucesso; a mensagem nunca é inserida novamente para tentar confirmar.
+
+A abertura prioriza o telefone exato do cabeçalho ou da lista visível do WhatsApp, sem recarregar a página. Contatos por nome não são escolhidos automaticamente. Se não houver telefone exato visível, usa o link do WhatsApp; esse carregamento pode demorar. Se o preparo expirar, aguarde a conversa abrir e selecione o acompanhamento novamente.
