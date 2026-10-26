@@ -17,9 +17,9 @@ function App() {
   const matches = session?.channels.filter(c => selection?.selfAddress && canonicalPhone(c.phoneNumber) === canonicalPhone(selection.selfAddress)) ?? [];
   const selectedChannel = matches.some(c => c.id === channel) ? channel : matches.length === 1 ? matches[0]!.id : '';
   const key = state?.connected && session && selection?.phase === 'ready' && selectedChannel
-    ? `${session.scope}:${state.tabId}:${selection.key}:${selectedChannel}` : '';
+    ? `${session.scope}:${state.windowId}:${state.tabId}:${selection.key}:${selectedChannel}` : '';
   liveRef.current = key;
-  const context: SelectedContext | null = key && state?.tabId && session && selection ? { tabId: state.tabId, key: selection.key, scope: session.scope } : null;
+  const context: SelectedContext | null = key && state?.tabId && session && selection ? { windowId: state.windowId, tabId: state.tabId, key: selection.key, scope: session.scope } : null;
   const chat: ExtensionChat | null = context && selection?.selfAddress && selection.peerAddress ? {
     channelId: selectedChannel, selfAddress: selection.selfAddress, peerAddress: selection.peerAddress, lastMessageId: selection.lastMessageId } : null;
   const data = read?.key === key && key ? read.value : null;

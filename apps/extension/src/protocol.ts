@@ -6,13 +6,18 @@ export const selectionSchema = z.object({
   lastMessageId: z.string().max(250).nullable(),
 }).strict();
 export type WaSelection = z.infer<typeof selectionSchema>;
-export type PanelState = { tabId: number | null; selection: WaSelection | null; connected: boolean; session: ExtensionSession | null };
-export type SelectedContext = { tabId: number; key: string; scope: string };
-export type PanelRequest = { type: 'STATUS' } | { type: 'CONNECT' } | { type: 'DISCONNECT' }
+export type PanelState = { windowId: number; tabId: number | null; selection: WaSelection | null; connected: boolean; session: ExtensionSession | null };
+export type SelectedContext = { windowId: number; tabId: number; key: string; scope: string };
+export type PanelRequest = { type: 'STATUS'; windowId?: number } | { type: 'CONNECT'; windowId?: number } | { type: 'DISCONNECT' }
   | { type: 'COMMAND'; context: SelectedContext; command: ExtensionCommand }
   | { type: 'INSERT'; context: SelectedContext; chat: ExtensionChat; suggestionId: string; contextKey: string; body: string };
 export type RuntimeReply<T> = { ok: true; data: T } | { ok: false; error: string };
 export async function runtimeRequest<T>(request: PanelRequest): Promise<T> {
+  if (request.type === 'STATUS' || request.type === 'CONNECT') {
+    const window = await chrome.windows.getCurrent();
+    if (typeof window.id !== 'number') throw new Error('Janela do Chrome indisponível.');
+    request = { ...request, windowId: window.id };
+  }
   const result = await chrome.runtime.sendMessage(request) as RuntimeReply<T>;
   if (!result?.ok) throw new Error(result?.error ?? 'A conexão com a extensão foi interrompida.');
   return result.data;

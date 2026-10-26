@@ -25,7 +25,7 @@ Usar, no WhatsApp Web, as sugestões e os follow-ups da conversa correspondente 
 
 ## Troca de contexto
 
-Cada observação tem uma chave aleatória. Mudanças de conversa, conta, aba ou mensagem invalidam o conteúdo anterior. Antes e depois de consultas assíncronas, o worker confirma a aba e a chave. Respostas de contexto anterior são descartadas. Navegação pela lista limpa o contexto imediatamente e nunca libera a conversa antiga apenas por ter transcorrido um prazo.
+Cada observação tem uma chave aleatória. Mudanças de conversa, conta, aba ou mensagem invalidam o conteúdo anterior. Cada painel consulta a aba ativa da própria janela do Chrome; focar outra janela não troca seu contexto. Antes e depois de consultas assíncronas, o worker confirma janela, aba e chave. Respostas de contexto anterior são descartadas. Navegação pela lista limpa o contexto imediatamente e nunca libera a conversa antiga apenas por ter transcorrido um prazo.
 
 ## Limites explícitos
 

@@ -123,6 +123,11 @@ try {
   assert.equal(await panel.locator('#reply').count(), 0); await wa.bringToFront();
   await panel.getByRole('heading', { name: 'João · teste' }).waitFor();
   checks.push('Troca de aba limpa o contexto e voltar ao WhatsApp restaura a conversa correta.');
+  const otherWindow = await worker.evaluate(() => chrome.windows.create({ url: 'about:blank', focused: true }));
+  const ownWindowStatus = await panel.evaluate(async () => chrome.runtime.sendMessage({ type: 'STATUS', windowId: (await chrome.windows.getCurrent()).id }));
+  assert.equal(ownWindowStatus.data.selection.peerAddress, peers.B);
+  await worker.evaluate(id => chrome.windows.remove(id), otherWindow.id); await wa.bringToFront();
+  checks.push('Outra janela focada não troca a conversa do painel desta janela.');
   await talk.evaluate(() => { window.fixtureUser = 'other-user'; window.dispatchEvent(new Event('fixture-auth')); });
   await talk.getByRole('button', { name: 'Conectar minha conta' }).waitFor();
   await panel.getByRole('button', { name: 'Conectar minha conta' }).waitFor({ timeout: 15_000 });

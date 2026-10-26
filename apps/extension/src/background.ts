@@ -9,11 +9,12 @@ function talkBridge(tab: chrome.tabs.Tab) {
   const url = new URL(tab.url); return url.origin === TALK_ORIGIN && url.pathname === '/extension';
 }
 function whatsapp(tab: chrome.tabs.Tab) { try { return !!tab.url && new URL(tab.url).origin === WHATSAPP_ORIGIN; } catch { return false; } }
-async function readSelection() {
-  const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-  if (!tab?.id || !whatsapp(tab)) return { tabId: null, selection: null };
-  try { return { tabId: tab.id, selection: selectionSchema.parse(await chrome.tabs.sendMessage(tab.id, { type: 'WA_READ' })) }; }
-  catch { return { tabId: tab.id, selection: null }; }
+async function readSelection(windowId: number) {
+  if (!Number.isInteger(windowId) || windowId < 0) throw new Error('Janela do Chrome inválida.');
+  const [tab] = await chrome.tabs.query({ active: true, windowId });
+  if (!tab?.id || !whatsapp(tab)) return { windowId, tabId: null, selection: null };
+  try { return { windowId, tabId: tab.id, selection: selectionSchema.parse(await chrome.tabs.sendMessage(tab.id, { type: 'WA_READ' })) }; }
+  catch { return { windowId, tabId: tab.id, selection: null }; }
 }
 async function bridge(command: ExtensionCommand) {
   const { bridgeTabId, bridgeConnected } = await chrome.storage.session.get(['bridgeTabId', 'bridgeConnected']);
@@ -25,16 +26,16 @@ async function bridge(command: ExtensionCommand) {
   if (!response?.ok) throw new Error(response?.error ?? 'Não foi possível consultar o Talk.');
   return response.data;
 }
-async function status(): Promise<PanelState> {
-  const live = await readSelection();
+async function status(windowId: number): Promise<PanelState> {
+  const live = await readSelection(windowId);
   const { bridgeConnected } = await chrome.storage.session.get('bridgeConnected');
   if (!bridgeConnected) return { ...live, connected: false, session: null };
   try { const session = await bridge({ action: 'session' });
     if (!('channels' in session)) throw new Error('Sessão inválida.');
-    return { ...await readSelection(), connected: true, session };
+    return { ...await readSelection(windowId), connected: true, session };
   } catch { await chrome.storage.session.set({ bridgeConnected: false }); return { ...live, connected: false, session: null }; }
 }
-async function connect() {
+async function connect(windowId: number) {
   const saved = await chrome.storage.session.get('bridgeTabId');
   if (typeof saved.bridgeTabId === 'number') {
     try { const existing = await chrome.tabs.get(saved.bridgeTabId);
@@ -42,14 +43,14 @@ async function connect() {
         await chrome.tabs.sendMessage(existing.id!, { type: 'BRIDGE_PING' }).catch(() => {}); return; }
     } catch { /* closed tab */ }
   }
-  const tab = await chrome.tabs.create({ url: BRIDGE_URL });
+  const tab = await chrome.tabs.create({ url: BRIDGE_URL, windowId });
   await chrome.storage.session.set({ bridgeTabId: tab.id, bridgeConnected: false });
 }
 async function command(context: SelectedContext, raw: unknown) {
   const parsed = extensionCommandSchema.parse(raw);
   if (parsed.action === 'session') throw new Error('Comando inválido para esta conversa.');
-  return withSelectionFence(context, readSelection, async () => {
-    const live = await readSelection();
+  return withSelectionFence(context, () => readSelection(context.windowId), async () => {
+    const live = await readSelection(context.windowId);
     if (live.selection?.selfAddress !== parsed.chat.selfAddress || live.selection?.peerAddress !== parsed.chat.peerAddress)
       throw new Error('A identidade da conversa mudou.');
     const session = await bridge({ action: 'session' }) as ExtensionSession;
@@ -60,8 +61,8 @@ async function command(context: SelectedContext, raw: unknown) {
   });
 }
 async function handlePanel(message: PanelRequest) {
-  if (message.type === 'STATUS') return status();
-  if (message.type === 'CONNECT') { await connect(); return null; }
+  if (message.type === 'STATUS') return status(message.windowId ?? -1);
+  if (message.type === 'CONNECT') { await connect(message.windowId ?? -1); return null; }
   if (message.type === 'DISCONNECT') {
     const { bridgeTabId } = await chrome.storage.session.get('bridgeTabId');
     await chrome.storage.session.set({ bridgeConnected: false });
@@ -69,7 +70,7 @@ async function handlePanel(message: PanelRequest) {
     notify(); return null;
   }
   if (message.type === 'COMMAND') return command(message.context, message.command);
-  if (message.type === 'INSERT') return withSelectionFence(message.context, readSelection, async () => {
+  if (message.type === 'INSERT') return withSelectionFence(message.context, () => readSelection(message.context.windowId), async () => {
     const latest = await command(message.context, { action: 'read', chat: message.chat });
     if (!('assistant' in latest) || latest.assistant.status !== 'ready' || latest.assistant.suggestion?.id !== message.suggestionId
       || latest.assistant.currentContextKey !== message.contextKey || latest.assistant.suggestion.contextKey !== message.contextKey)
