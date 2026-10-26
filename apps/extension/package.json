@@ -1,6 +1,6 @@
 {
   "name": "@prymeira-talk/extension",
-  "version": "0.2.4",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,6 +10,7 @@
     "test:browser": "node tests/browser.mjs"
   },
   "dependencies": {
+    "@clerk/chrome-extension": "3.1.99",
     "@prymeira-talk/shared": "workspace:*",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",

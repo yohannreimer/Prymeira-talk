@@ -10,3 +10,5 @@ export * from './automation-webhook.js';
 export * from './meeting-reminders.js';
 export * from "./purchasing.js";
 export * from "./contextual-followup.js";
+
+export { executeExtensionCommand } from './browser-extension-executor.js';

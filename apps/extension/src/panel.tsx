@@ -5,11 +5,11 @@ import { runtimeRequest, type PanelState, type SelectedContext, type AccountCont
 import { canonicalPhone } from './whatsapp/identity';
 import { QueuePanel, emptyCounts } from './QueuePanel';
 import { humanReason } from './human-reason';
+import { Icon, Prym, Initials, Skeleton } from './ui';
 import './panel.css';
 
-function Mark() { return <svg width="25" height="28" viewBox="0 0 25 28" fill="none" aria-hidden="true"><path d="M3 25V3h10a8 8 0 0 1 0 16H9" stroke="currentColor" strokeWidth="5" strokeLinecap="round" strokeLinejoin="round"/></svg>; }
-function Arrow() { return <svg width="16" height="16" viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M4 10h12m-5-5 5 5-5 5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"/></svg>; }
 function App() {
+  const [connecting,setConnecting]=useState(false);const connectInFlight=useRef(false);
   const [state, setState] = useState<PanelState | null>(null), [fatal, setFatal] = useState<string | null>(null);
   const [channel, setChannel] = useState(''), [read, setRead] = useState<{ key: string; value: ExtensionRead } | null>(null);
   const [error, setError] = useState<string | null>(null), [notice, setNotice] = useState<string | null>(null);
@@ -102,11 +102,9 @@ function App() {
     catch (cause) { if (liveRef.current === startedKey) setError(message(cause)); }
     finally { if (liveRef.current === startedKey) setWorking(false); }
   }
-  async function connect() { try { await runtimeRequest({ type: 'CONNECT' }); } catch (cause) { setFatal(message(cause)); } }
+  async function connect() { if(connectInFlight.current)return;connectInFlight.current=true;setConnecting(true);setFatal(null);try { await runtimeRequest({ type: 'CONNECT' }); } catch (cause) { setFatal(message(cause)); } finally {connectInFlight.current=false;setConnecting(false);} }
   const suggestion = data?.assistant.suggestion;
   const usable = !!suggestion && data?.assistant.status === 'ready' && suggestion.contextKey === data.assistant.currentContextKey;
-  const followup = data?.followup;
-  const actionableFollowup = followup && ['review', 'scheduled'].includes(followup.status);
   const emptyText = !state?.tabId ? 'Abra o WhatsApp Web neste navegador para começar.'
     : !selection || selection.phase === 'signed_out' ? 'Entre no WhatsApp Web e abra uma conversa.'
     : selection.phase === 'unsupported' ? 'O primeiro piloto está disponível para conversas individuais.'
@@ -115,54 +113,43 @@ function App() {
     : !matches.length ? 'O número aberto no WhatsApp Web precisa corresponder a um canal conectado e verificado no Talk.'
     : 'Escolha o canal do Talk para esta conversa.';
   return <div className="panel-shell">
-    <header className="brand-header"><div className="brand-symbol"><Mark /></div><div className="brand-word">prymeira<span>talk</span></div>{state?.connected?<button className="text-button header-signout" onClick={() => { void runtimeRequest({ type: 'DISCONNECT' }).then(() => refreshStatus()); }}>Sair</button>:<span className="pilot">PILOTO</span>}</header>
+    <header className="brand-header"><div className="brand-lockup"><img src="assets/prymeira.png" alt="Prymeira" width="125" height="36"/><span>talk</span></div>{state?.connected&&<button className="text-button header-signout" onClick={() => { void runtimeRequest({ type: 'DISCONNECT' }).then(() => refreshStatus()); }}>Sair <Icon name="logout" size={16}/></button>}</header>
     <main>
       {fatal && <div className="alert" role="alert">{fatal}<button className="text-button" onClick={() => void refreshStatus()}>Tentar novamente</button></div>}
       {!state?.connected ? <section className="welcome">
-        <div className="eyebrow">SEU ATENDIMENTO, COM CONTEXTO</div>
-        <h1>A próxima resposta<br/><em>começa aqui.</em></h1>
-        <p>As sugestões e os follow-ups do seu Talk, ao lado de cada conversa no WhatsApp.</p>
-        <div className="welcome-visual" aria-hidden="true"><div className="visual-line"/><span className="visual-chip">Conversa</span><div className="visual-dot"/><span className="visual-chip green">Talk</span><div className="visual-line"/></div>
-        <button className="primary wide" onClick={() => void connect()}>Conectar minha conta <Arrow /></button>
-        <p className="helper">Entre com sua conta do Talk. No piloto, mantenha a aba de conexão aberta.</p>
-        <div className="feature-row"><span className="feature-icon">↗</span><div><strong>Respostas com contexto</strong><span>O mesmo histórico e a mesma IA do Talk.</span></div></div>
-        <div className="feature-row"><span className="feature-icon">◷</span><div><strong>O próximo passo à vista</strong><span>Acompanhe os retornos desta conversa.</span></div></div>
+        <Prym large/>
+        <div className="eyebrow">PRYM, SEU ASSISTENTE NO WHATSAPP</div>
+        <h1>Seu Talk.<br/>Mais perto da conversa.</h1>
+        <p>Sugestões prontas, follow-ups para revisar e os contatos que precisam de você.</p>
+        <button className="primary wide" disabled={connecting} onClick={() => void connect()}>{connecting?'Conectando…':'Conectar minha conta'} <Icon name="arrow"/></button>
+        <p className="helper">Use a mesma conta e o mesmo número conectados ao Talk.</p>
       </section> : <>
         <nav className="panel-tabs" aria-label="Navegação do Talk">
           <button aria-pressed={activeTab==='conversation'} onClick={()=>{setActiveTab('conversation');setNavigationStatus(null);setNotice(null);}}>Conversa</button>
           <button className="followups-tab" aria-pressed={activeTab==='followups'} onClick={()=>{setActiveTab('followups');setNavigationStatus(null);setNotice(null);}}>Follow-ups <span>{queueCounts.review}</span></button>
           <button aria-pressed={activeTab==='human'} onClick={()=>{setActiveTab('human');setNavigationStatus(null);setNotice(null);}}>Humano necessário <span>{queueCounts.human}</span></button>
         </nav>
-        {navigationStatus&&<div className="notice" role="status">{navigationStatus}</div>}
         {accountContext&&account&&<QueuePanel context={accountContext} account={account} view={activeTab==='human'?'human':'followups'} hidden={activeTab==='conversation'} busy={opening} onCounts={setQueueCounts} onOpen={(item,kind)=>void openQueue(item,kind)}/>}
         {matches.length > 1 && <label className="channel-label">Canal do Talk<select aria-label="Canal do Talk" value={selectedChannel} onChange={e => setChannel(e.target.value)}><option value="">Escolher canal</option>{matches.map(c => <option value={c.id} key={c.id}>{c.displayName ?? c.phoneNumber}</option>)}</select></label>}
-        {activeTab!=='conversation' ? (!accountContext&&<section className="empty-state"><p>{emptyText}</p></section>) : !key ? <section className="empty-state"><span className="empty-icon" aria-hidden="true">↔</span><h1>Vamos abrir uma conversa?</h1><p>{emptyText}</p></section> : <>
-          <section className="contact-heading"><div className="eyebrow">CONVERSA ATUAL</div><h1>{data?.conversation.contactName ?? selection?.label ?? 'Identificando contato…'}</h1><div className="contact-meta">{data?.conversation.phone ?? selection?.peerAddress?.replace(/@.+$/, '')}<span>·</span>{matches.find(c => c.id === selectedChannel)?.displayName ?? 'Canal Talk'}</div></section>
+        {activeTab!=='conversation' ? (!accountContext&&<section className="empty-state"><p>{emptyText}</p></section>) : !key ? <section className="empty-state"><Prym large/><h1>Vamos abrir uma conversa?</h1><p>{emptyText}</p></section> : <>
+          <section className="contact-heading"><Initials name={data?.conversation.contactName ?? selection?.label ?? ''}/><div className="contact-identity"><h1>{data?.conversation.contactName ?? selection?.label ?? 'Identificando contato…'}</h1><div className="contact-meta">{data?.conversation.phone ?? selection?.peerAddress?.replace(/@.+$/, '')}<span>·</span>{matches.find(c => c.id === selectedChannel)?.displayName ?? 'Canal Talk'}</div></div></section>
           {error && <div className="alert" role="alert">{error}<button className="text-button" onClick={() => void load()}>Atualizar</button></div>}
-          {notice && <div className="notice" role="status">{notice}</div>}
-          {loading && !data && <div className="loading" role="status"><span className="status-dot"/>Buscando contexto no Talk…</div>}
+          {loading && !data && <div className="loading" role="status"><span className="sr-only">Buscando contexto no Talk…</span><Skeleton rows={5}/></div>}
           {data && <>
-            <section className="card suggestion-card"><div className="card-top"><h2><span aria-hidden="true">✳</span> Sugestão de resposta</h2><span className="subtle">{data.assistant.agentName ?? 'IA do Talk'}</span></div>
-              {usable ? <><label className="sr-only" htmlFor="reply">Revise a sugestão</label><textarea id="reply" value={draft} onChange={e => setDraft(e.target.value)} maxLength={4000} rows={6}/>
+            <section className="suggestion-card"><div className="assistant-heading"><Prym/><div><strong>Prym</strong><h2>Sugestão de resposta</h2></div></div><p className="agent-source">{data.assistant.agentName ? `IA do canal: ${data.assistant.agentName}` : 'Com o contexto do seu Talk'}</p>
+              {usable ? <><label className="sr-only" htmlFor="reply">Revise a sugestão</label><textarea id="reply" value={draft} onChange={e => setDraft(e.target.value)} maxLength={4000} rows={7}/>
                 {suggestion?.warnings.map((warning, i) => <p className="warning" key={i}>{warning}</p>)}
-                <button className="primary wide" disabled={working || !draft.trim()} onClick={() => context && chat && suggestion && void act(() => runtimeRequest({ type: 'INSERT', context, chat, suggestionId: suggestion.id, contextKey: suggestion.contextKey, body: draft }), 'Inserida no WhatsApp. Revise antes de enviar.')}>Inserir no WhatsApp <Arrow /></button><p className="helper">Você revisa e envia pelo WhatsApp.</p></>
+                <button className="primary wide" disabled={working || !draft.trim()} onClick={() => context && chat && suggestion && void act(() => runtimeRequest({ type: 'INSERT', context, chat, suggestionId: suggestion.id, contextKey: suggestion.contextKey, body: draft }), 'Inserida no WhatsApp. Revise antes de enviar.')}>Inserir no WhatsApp <Icon name="arrow"/></button><p className="helper">Você revisa e envia pelo WhatsApp.</p></>
                 : <p className="card-copy">{data.assistant.status === 'generating' || data.assistant.status === 'pending' ? 'O Talk está preparando a sugestão…' : data.assistant.status === 'paused' ? 'A IA está pausada para esta conversa.' : data.assistant.settings.mode === 'disabled' ? 'Habilite a IA de apoio deste canal no Talk.' : data.assistant.error ?? 'Peça uma sugestão com base no histórico desta conversa.'}</p>}
-              <button className="secondary wide" disabled={working || ['pending', 'generating', 'paused'].includes(data.assistant.status) || data.assistant.settings.mode === 'disabled'} onClick={() => context && chat && void act(() => runtimeRequest({ type: 'COMMAND', context, command: { action: 'generate', chat } }), 'Sugestão solicitada ao Talk.')}>{usable ? 'Gerar outra sugestão' : 'Gerar sugestão'}</button>
+              <button className="secondary wide" disabled={working || ['pending', 'generating', 'paused'].includes(data.assistant.status) || data.assistant.settings.mode === 'disabled'} onClick={() => context && chat && void act(() => runtimeRequest({ type: 'COMMAND', context, command: { action: 'generate', chat } }), 'Sugestão solicitada ao Talk.')}><Icon name="refresh"/>{usable ? 'Gerar outra sugestão' : 'Gerar sugestão'}</button>
             </section>
-            <section className="card followup-card"><div className="card-top"><h2><span aria-hidden="true">◷</span> Próximo retorno</h2>{followup && <span className="badge">{followup.kind === 'seller_reminder' ? 'Lembrete' : followup.status === 'review' ? 'Em revisão' : 'Agendado'}</span>}</div>
-              {followup ? <><p className="followup-title">{followup.analysis?.pendingItem ?? 'Acompanhamento desta conversa'}</p><p className="due">{new Intl.DateTimeFormat('pt-BR', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(followup.scheduledAt))}</p>
-                {followup.analysis?.nextStep && <p className="card-copy">{followup.analysis.nextStep}</p>}
-                {followup.draftBody && <blockquote>{followup.draftBody}</blockquote>}
-                {actionableFollowup && <div className="followup-actions"><button className="secondary" disabled={working} onClick={() => context && chat && void act(() => runtimeRequest({ type: 'COMMAND', context, command: { action: 'followup', chat, id: followup.id, operation: followup.kind === 'seller_reminder' ? 'done' : 'postpone', expectedUpdatedAt: followup.updatedAt } }), 'Acompanhamento atualizado.')}>{followup.kind === 'seller_reminder' ? 'Marcar como feito' : 'Adiar 1h útil'}</button>
-                  <button className="text-button" disabled={working} onClick={() => context && chat && void act(() => runtimeRequest({ type: 'COMMAND', context, command: { action: 'followup', chat, id: followup.id, operation: 'cancel', expectedUpdatedAt: followup.updatedAt } }), 'Acompanhamento cancelado.')}>Cancelar</button></div>}</>
-                : <p className="card-copy">Nenhum follow-up ativo para esta conversa. Os acompanhamentos configurados no Talk aparecerão aqui.</p>}
-            </section>
-            <button className="refresh-button" disabled={working || loading} onClick={() => void load()}>↻ Atualizar contexto</button>
+            <button className="refresh-button" disabled={working || loading} onClick={() => void load()}><Icon name="refresh" size={15}/>Atualizar contexto</button>
           </>}
         </>}
       </>}
     </main>
-    <footer className="panel-footer"><span className="footer-mark">p.</span><span>O contexto acompanha a conversa.</span><span>0.2.4</span></footer>
+    {(navigationStatus||notice)&&<div className="feedback-stack"><div className="notice" role="status"><Icon name={opening?'clock':'check'} size={18}/><span>{navigationStatus||notice}</span><button className="icon-button" aria-label="Dispensar aviso" onClick={()=>{setNavigationStatus(null);setNotice(null);}}><Icon name="close" size={16}/></button></div></div>}
+    <footer className="panel-footer"><span>{state?.connected?'Conectado ao seu Talk':'Prymeira Talk para WhatsApp'}</span><span>0.3.0</span></footer>
   </div>;
 }
 function message(cause: unknown) { return cause instanceof Error ? cause.message : 'Não foi possível carregar o Talk.'; }

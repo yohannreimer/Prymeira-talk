@@ -2,8 +2,9 @@ import { useEffect, useRef, useState } from 'react';
 import type { ExtensionAccount, ExtensionQueue, ExtensionQueueItem, ExtensionQueueKind } from '@prymeira-talk/shared';
 import { runtimeRequest, type AccountContext } from './protocol';
 import { humanReason } from './human-reason';
+import { Icon, Initials, Prym, Skeleton } from './ui';
 export const emptyCounts: ExtensionQueue['counts'] = { review: 0, reminders: 0, scheduled: 0, human: 0 };
-const labels = { review: 'Para revisar', human: 'Humano necessário' };
+const labels = { review: 'Para revisar', human: 'Precisam de você' };
 export function QueuePanel({ context, account, view, hidden, busy, onCounts, onOpen }: {
   context: AccountContext; account: ExtensionAccount; view: 'followups'|'human'; hidden: boolean; busy: boolean;
   onCounts: (counts: ExtensionQueue['counts'])=>void; onOpen: (item: ExtensionQueueItem, kind: ExtensionQueueKind)=>void;
@@ -27,19 +28,22 @@ export function QueuePanel({ context, account, view, hidden, busy, onCounts, onO
     } finally {if(currentRef.current===key&&epoch.current===generation)setLoading(false);}
   }
   useEffect(()=>{setCursor(undefined);setHistory([]);},[accountKey,kind]);
-  useEffect(()=>{setResult(null);void load();const timer=setInterval(()=>void load(true),15_000);return()=>{++epoch.current;clearInterval(timer);};},[currentKey,hidden]);
-  return <section className="queues" hidden={hidden} aria-label={view==='human'?'Fila de humano necessário':'Fila de follow-ups'}>
-    <div className="queue-heading"><h2>{labels[kind]}</h2><button className="text-button" onClick={()=>void load()} disabled={loading}>Atualizar fila</button></div>
-    <p className="helper queue-help">{kind==='review'?'Abra o follow-up para ler a conversa e deixar a mensagem pronta no WhatsApp.':'Abra a conversa que precisa da sua atenção. A ação continua pendente até ser concluída no Talk.'}</p>
+  useEffect(()=>{setResult(null);void load();const timer=setInterval(()=>void load(true),15_000);return()=>{++epoch.current;clearInterval(timer);};},[currentKey]);
+  useEffect(()=>{if(!hidden)void load(true);},[hidden]);
+  return <section className="queues view-enter" hidden={hidden} aria-busy={loading} aria-label={view==='human'?'Fila de humano necessário':'Fila de follow-ups'}>
+    <div className="queue-heading"><h2>{labels[kind]}</h2><button className="icon-button" title="Atualizar fila" aria-label="Atualizar fila" onClick={()=>void load()} disabled={loading}><Icon name="refresh" className={loading?'is-loading':''}/></button></div>
+    <p className="helper queue-help">{kind==='review'?'Abra a conversa e revise a mensagem.':'Abra a conversa para conferir o contexto. A pendência é concluída no Talk.'}</p>
     {error&&<div className="alert" role="alert">{error}</div>}
-    {loading&&!result&&<p role="status">Carregando fila…</p>}
-    {result&&!result.items.length&&<p className="queue-empty">Nenhuma pendência nesta fila.</p>}
+    {loading&&!result&&<div className="queue-loading" role="status"><span className="sr-only">Carregando fila…</span><Skeleton rows={6}/></div>}
+    {result&&!result.items.length&&<div className="queue-empty"><Prym large/><h3>Tudo em dia por aqui.</h3><p>{kind==='review'?'Os próximos follow-ups para revisar vão aparecer aqui.':'As conversas que precisarem da sua atenção vão aparecer aqui.'}</p></div>}
     <ul className="queue-list">{result?.items.map(item=><li key={item.id}>
       <button className="queue-item" disabled={busy} onClick={()=>onOpen(item,kind)} aria-label={`${kind==='review'?'Abrir e preparar follow-up':'Abrir conversa'}: ${item.conversation.contactName??item.conversation.phone}`}>
-        <strong>{item.conversation.contactName??item.conversation.phone}</strong><span>{item.conversation.phone}</span>
-        {kind==='human'&&<p>{humanReason(item.reason)}</p>}
-        {item.followup&&<span>{new Intl.DateTimeFormat('pt-BR',{dateStyle:'short',timeStyle:'short'}).format(new Date(item.followup.scheduledAt))}</span>}
-        <span className="queue-cta">{kind==='review'?'Abrir e preparar mensagem':'Abrir no WhatsApp'} ↗</span>
+        <Initials name={item.conversation.contactName??item.conversation.phone}/>
+        <span className="queue-item-body"><strong>{item.conversation.contactName??item.conversation.phone}</strong>
+          <span className="queue-detail">{kind==='human'?humanReason(item.reason):'Acompanhamento para revisar'}</span>
+          {item.followup&&<span className="queue-date">{new Intl.DateTimeFormat('pt-BR',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}).format(new Date(item.followup.scheduledAt))}</span>}
+        </span>
+        <span className="queue-cta"><Icon name="arrow" size={17}/><span className="sr-only">{kind==='review'?'Abrir e preparar mensagem':'Abrir no WhatsApp'}</span></span>
       </button>
     </li>)}</ul>
     {(history.length>0||result?.nextCursor)&&<div className="queue-pagination"><button className="secondary" disabled={!history.length||loading||busy} onClick={()=>{setCursor(history.at(-1));setHistory(h=>h.slice(0,-1));}}>Anterior</button><span>{history.length+1}</span><button className="secondary" disabled={!result?.nextCursor||loading||busy} onClick={()=>{setHistory(h=>[...h,cursor]);setCursor(result!.nextCursor!);}}>Próxima</button></div>}

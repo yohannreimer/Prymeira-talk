@@ -1,66 +1,42 @@
 # Prymeira Talk para WhatsApp Web
 
-Piloto 0.2.4: painel lateral com sugestões da conversa atual, fila de follow-ups e fila Humano necessário. Usa um número que já esteja conectado ao Talk.
+Versão 0.3.0: direção visual Talk claro com Prym original e logo Prymeira. Conversa exibe identidade e sugestão de resposta; Follow-ups mostra apenas Para revisar; Humano necessário exibe motivos legíveis. A linha inteira das filas é clicável e a ação visual é uma seta discreta.
 
-## Preparar
+## Conexão de produção
 
-Na raiz do monorepo:
+O build padrão usa a chave **pública** Clerk e as origens fixas de `production-auth.json`. O SDK oficial `@clerk/chrome-extension` sincroniza a sessão já autenticada no domínio Clerk e renova tokens no service worker. A autorização da extensão fica em `chrome.storage.local`, limitada a contextos confiáveis; scripts de conteúdo não recebem credenciais. Cada comando continua passando pela verificação de produto do Talk e pelas permissões existentes.
 
-Use Node.js 22 e pnpm **10.0.0**, conforme `packageManager` do projeto, para preservar a configuração do lockfile.
+Clique Conectar minha conta. Se já houver login válido, a conexão pode ser concluída no painel. Se for necessário entrar no Talk, faça o login e volte ao WhatsApp. Depois de conectar, a aba do Talk não sustenta a autorização da extensão. Sair no painel remove a autorização local; não encerra a conta do Talk em outros lugares. Troca de usuário/sessão/empresa e revogação de acesso exigem nova conexão.
+
+Permissões: sidePanel, storage e cookies; origens WhatsApp Web, Talk e `https://clerk.prymeiradigital.com.br/*`. O Chrome concede cookies sobre os sites autorizados; o código de autenticação usa o recurso no domínio Clerk. Antes de ativar uma atualização com essas permissões em uma instalação existente, obter a confirmação do usuário. Pode ser necessário registrar o ID estável da extensão nas origens permitidas da instância Clerk. A API nativa da instância já foi observada como habilitada; nenhum relaxamento dessa configuração foi feito nesta tarefa.
+
+## Build e instalação
+
+Use Node 22 e pnpm 10.0.0, conforme o packageManager do monorepo.
 
 ```sh
 pnpm install --frozen-lockfile
-pnpm prisma:generate
 pnpm --filter @prymeira-talk/extension build
 ```
 
-O build usa `https://talk.prymeiradigital.com.br`. Para um ambiente local, compile com `TALK_EXTENSION_ORIGIN=http://localhost:5176 pnpm --filter @prymeira-talk/extension build`. A origem fica fixa no pacote; não aceita URLs de API enviadas pelo WhatsApp.
+Carregue `apps/extension/dist` em `chrome://extensions`. O pacote contém a arte original extraída do PDF fornecido pelo usuário, sem depender de imagens ou fontes remotas. Na instalação do piloto já existente, conservar o mesmo diretório registrado no Chrome.
 
-**Requisito:** publicar ou executar a API e o web deste commit. Instalar somente a extensão sobre um Talk sem as rotas `/browser-extension/*` e a página `/extension` não habilita a integração.
+O build permite sobrescrever TALK_EXTENSION_ORIGIN, TALK_EXTENSION_CLERK_PUBLISHABLE_KEY e TALK_EXTENSION_CLERK_ORIGIN. A origem Clerk deve corresponder à chave pública. Ambientes locais sem configuração Clerk continuam com a ponte de página, para compatibilidade de testes; essa variante requer manter a página de conexão aberta.
 
-## Instalar o piloto
+## Comportamento
 
-1. Abra `chrome://extensions` e ative o modo do desenvolvedor.
-2. Clique em **Carregar sem compactação** e selecione `apps/extension/dist` (ou a pasta extraída do ZIP entregue).
-3. Abra o WhatsApp Web e clique no ícone da extensão para abrir o painel lateral.
-4. Clique em **Conectar minha conta**, entre no Talk e autorize a conexão na aba aberta.
-5. Mantenha essa aba do Talk aberta e volte ao WhatsApp Web com o mesmo número conectado no Talk.
-6. Abra uma conversa individual. Se houver mais de um canal correspondente, escolha o canal.
+Inserir uma sugestão e abrir um follow-up apenas preparam o campo do WhatsApp. O usuário revisa e envia pelo botão nativo. Texto na origem não bloqueia abrir outra conversa; campo de destino ocupado não é sobrescrito. Identidade canônica, revisão e edição/navegação manual continuam protegidas. Nenhuma rota de envio foi adicionada.
 
-As abas **Conversa**, **Follow-ups** (contador vermelho de itens para revisar) e **Humano necessário** acompanham o canal verificado do WhatsApp aberto. As filas têm paginação e atualização; atendentes veem somente conversas atribuídas.
+Prym acompanha sugestões e orientações iniciais; não é um novo agente nem um chat separado. O nome do agente configurado no canal continua identificado. Avisos concluídos somem após cinco segundos ou podem ser dispensados. Carregamentos, estados vazios, foco e movimento reduzido têm apresentação própria.
 
-Em **Follow-ups → Para revisar**, clicar em um item abre o contato no WhatsApp Web, comprova a conversa e revalida a revisão do acompanhamento. O texto é colocado no campo vazio; você lê, edita e aperta **Enviar** no próprio WhatsApp. Um rascunho já existente é preservado. Navegação ou digitação durante a preparação interrompe a operação. O preparo expira em um minuto. A extensão não cria um segundo disparo nem marca o item como enviado antecipadamente; a atualização no Talk depende da sincronização do envio nativo.
-
-A fila de follow-ups mostra somente **Para revisar**. **Humano necessário** mostra o motivo e abre a conversa; abrir não conclui a pendência humana.
-
-O painel mostra a sugestão existente e permite pedir outra, editar e inserir no campo vazio do WhatsApp. O vendedor revisa e envia. Follow-ups já existentes podem ser consultados, adiados ou cancelados; lembretes internos podem ser marcados como feitos. Não há botão de disparo automático na extensão.
-
-## Identificação e acesso
-
-O backend confere o número verificado do canal e resolve aliases, incluindo LID quando há vínculo conhecido. Nunca associa por nome. Atendentes continuam sujeitos às permissões da IA de apoio do Talk. Mensagens observadas precisam ter chegado ao Talk para liberar o contexto.
-
-A extensão usa somente `sidePanel`, `storage` e acesso às origens do WhatsApp Web e do Talk. Não recebe o token de login: as requisições autenticadas acontecem na página do Talk. Fechar essa aba, sair, trocar a conta ou perder acesso encerra o vínculo. Estado temporário fica em `chrome.storage.session`.
-
-## Testar
+## Verificação
 
 ```sh
 pnpm --filter @prymeira-talk/extension test
-pnpm --filter @prymeira-talk/extension exec playwright install chromium
 pnpm --filter @prymeira-talk/extension test:browser
+TEST_NATIVE_AUTH=1 pnpm --filter @prymeira-talk/extension test:browser
 ```
 
-O teste de navegador carrega a extensão real, a página de conexão real e os dois content scripts. Somente autenticação, HTTP e a tela do WhatsApp são fixtures com dados sintéticos; nenhuma mensagem real é enviada. Os resultados ficam em `.validation/extension-browser` na raiz, ou em `BROWSER_OUTPUT_DIR`.
+Chromium carrega a extensão e a ponte reais com dados sintéticos; autenticação/HTTP/WhatsApp são fixtures. Na variante nativa, somente o adaptador SDK é substituído por uma sessão sintética, enquanto conexão, armazenamento, worker, comandos e regras de invalidação são os reais. A prova de login real precisa ser registrada separadamente; testes sintéticos não comprovam configuração externa Clerk.
 
-## Limites do piloto
-
-- O DOM observado expõe a stanza sem telefone. O resolver exige uma identidade canônica única e sincronizada no canal; identidades indisponíveis bloqueiam o contexto e a preparação.
-- Grupos e número ainda não conectado ao Talk ficam fora do recorte.
-- Validar no número piloto a coexistência com o provedor, o espelhamento dos envios nativos e o cancelamento dos acompanhamentos após resposta.
-- A aba de conexão precisa continuar aberta. Publicação na Chrome Web Store e login independente da aba são etapas futuras.
-- Não habilitar envios nem alterar cadências do Talk apenas por instalar a extensão.
-
-A confirmação de inserção aguarda os eventos do editor do WhatsApp e confere o campo atual. O retorno de `execCommand` não é usado como confirmação de sucesso; a mensagem nunca é inserida novamente para tentar confirmar.
-
-A abertura prioriza o telefone exato do cabeçalho ou da lista visível do WhatsApp, sem recarregar a página. Contatos por nome não são escolhidos automaticamente. Se não houver telefone exato visível, usa o link do WhatsApp; esse carregamento pode demorar. Se o preparo expirar, aguarde a conversa abrir e selecione o acompanhamento novamente.
-
-Os avisos de operação concluída somem após cinco segundos; Sair fica no cabeçalho. Rascunho na conversa de origem não impede a navegação. Se o destino já tiver texto, a conversa abre e a extensão preserva esse texto sem inserir por cima. Os motivos de atenção humana são apresentados em português.
+Referências: https://clerk.com/docs/guides/sessions/sync-host e https://clerk.com/docs/reference/chrome-extension/create-clerk-client.

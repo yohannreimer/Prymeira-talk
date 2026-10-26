@@ -15,7 +15,7 @@ function Connection({ identity, getToken }: { identity: string; getToken: () => 
   const allowedRef = useRef(false), tokenRef = useRef(getToken); tokenRef.current = getToken;
   const lifetime = useRef(new AbortController());
   const apiUrl = readConfigValue('VITE_API_URL') ?? 'http://localhost:3002';
-  const announce = (connected: boolean) => window.postMessage({ type: EXTENSION_BRIDGE_STATUS, connected }, location.origin);
+  const announce = (connected: boolean, reason?:'user'|'revoked'|'closed') => window.postMessage({ type: EXTENSION_BRIDGE_STATUS, connected, reason }, location.origin);
   async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     if (lifetime.current.signal.aborted || (init.method && init.method !== 'GET' && !allowedRef.current)) throw new Error('Conexão encerrada.');
     const token = await tokenRef.current();
@@ -49,9 +49,9 @@ function Connection({ identity, getToken }: { identity: string; getToken: () => 
       if (!allowedRef.current) result = { ok: false, error: 'Conexão encerrada. Autorize novamente no Talk.' };
       window.postMessage({ type: EXTENSION_BRIDGE_RESPONSE, requestId: data.requestId, result }, location.origin);
     };
-    const revoked = () => { allowedRef.current = false; setAllowed(false); announce(false); };
+    const revoked = () => { allowedRef.current = false; setAllowed(false); announce(false,'revoked'); };
     window.addEventListener('message', handle); window.addEventListener('talk:access-revoked', revoked);
-    return () => { mounted = false; allowedRef.current = false; lifetime.current.abort(); announce(false); window.removeEventListener('message', handle); window.removeEventListener('talk:access-revoked', revoked); };
+    return () => { mounted = false; allowedRef.current = false; lifetime.current.abort(); announce(false,'closed'); window.removeEventListener('message', handle); window.removeEventListener('talk:access-revoked', revoked); };
   }, [identity]);
   async function connect() {
     setBusy(true); setError(null);
@@ -66,7 +66,7 @@ function Connection({ identity, getToken }: { identity: string; getToken: () => 
     <p>{allowed ? 'Volte ao WhatsApp Web e abra o painel da extensão. Mantenha esta aba aberta durante o piloto.'
       : 'Conecte sua conta para consultar sugestões de resposta e follow-ups no WhatsApp Web, com as mesmas permissões do Talk.'}</p>
     {error && <p role="alert" className="extension-connect-error">{error}</p>}
-    {allowed ? <button onClick={() => { allowedRef.current = false; setAllowed(false); announce(false); }}>Desconectar extensão</button>
+    {allowed ? <button onClick={() => { allowedRef.current = false; setAllowed(false); announce(false,'user'); }}>Desconectar extensão</button>
       : <button disabled={busy} onClick={() => void connect()}>{busy ? 'Verificando acesso…' : 'Conectar minha conta'}</button>}
     <small>Primeiro piloto · número já conectado ao Talk</small>
   </div></main>;
