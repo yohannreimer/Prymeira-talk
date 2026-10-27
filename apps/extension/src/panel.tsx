@@ -130,7 +130,7 @@ function App() {
           <button className="followups-tab" aria-pressed={activeTab==='followups'} onClick={()=>{setActiveTab('followups');setNavigationStatus(null);setNotice(null);}}>Follow-ups <span>{queueCounts.review}</span></button>
           <button aria-pressed={activeTab==='human'} onClick={()=>{setActiveTab('human');setNavigationStatus(null);setNotice(null);}}>Humano necessário <span>{queueCounts.human}</span></button>
         </nav>
-        {accountContext&&account&&<QueuePanel context={accountContext} account={account} view={activeTab==='human'?'human':'followups'} hidden={activeTab==='conversation'} busy={opening} onCounts={setQueueCounts} onOpen={(item,kind)=>void openQueue(item,kind)}/>}
+        {accountContext&&account&&<QueuePanel context={accountContext} account={account} view={activeTab==='human'?'human':'followups'} hidden={activeTab==='conversation'} busy={opening} onCounts={setQueueCounts} onNotice={setNavigationStatus} onOpen={(item,kind)=>void openQueue(item,kind)}/>}
         {matches.length > 1 && <label className="channel-label">Canal do Talk<select aria-label="Canal do Talk" value={selectedChannel} onChange={e => setChannel(e.target.value)}><option value="">Escolher canal</option>{matches.map(c => <option value={c.id} key={c.id}>{c.displayName ?? c.phoneNumber}</option>)}</select></label>}
         {activeTab!=='conversation' ? (!accountContext&&<section className="empty-state"><p>{emptyText}</p></section>) : !key ? <section className="empty-state"><Prym large/><h1>Vamos abrir uma conversa?</h1><p>{emptyText}</p></section> : <>
           <section className="contact-heading"><Initials name={data?.conversation.contactName ?? selection?.label ?? ''}/><div className="contact-identity"><h1>{data?.conversation.contactName ?? selection?.label ?? 'Identificando contato…'}</h1><div className="contact-meta">{data?.conversation.phone ?? selection?.peerAddress?.replace(/@.+$/, '')}<span>·</span>{matches.find(c => c.id === selectedChannel)?.displayName ?? 'Canal Talk'}</div></div></section>
@@ -150,7 +150,7 @@ function App() {
       </>}
     </main>
     {(navigationStatus||notice)&&<div className="feedback-stack"><div className="notice" role="status"><Icon name={opening?'clock':'check'} size={18}/><span>{navigationStatus||notice}</span><button className="icon-button" aria-label="Dispensar aviso" onClick={()=>{setNavigationStatus(null);setNotice(null);}}><Icon name="close" size={16}/></button></div></div>}
-    <footer className="panel-footer"><span>{state?.connected?'Conectado ao seu Talk':'Prymeira Talk para WhatsApp'}</span><span>0.3.0</span></footer>
+    <footer className="panel-footer"><span>{state?.connected?'Conectado ao seu Talk':'Prymeira Talk para WhatsApp'}</span><span>0.3.1</span></footer>
   </div>;
 }
 function message(cause: unknown) { return cause instanceof Error ? cause.message : 'Não foi possível carregar o Talk.'; }
