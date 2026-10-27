@@ -6,7 +6,7 @@ export const selectionSchema = z.object({
   lastMessageId: z.string().max(250).nullable(),
 }).strict();
 export type WaSelection = z.infer<typeof selectionSchema>;
-export type PanelState = { windowId: number; tabId: number | null; selection: WaSelection | null; connected: boolean; session: ExtensionSession | null };
+export type PanelState = { windowId: number; tabId: number | null; selection: WaSelection | null; connected: boolean; connectionError?:string|null; session: ExtensionSession | null };
 export type SelectedContext = { windowId: number; tabId: number; key: string; scope: string };
 export type AccountContext = { windowId: number; tabId: number; scope: string; selfAddress: string };
 export type OpenChatResult = { token: string | null; target: ExtensionNavigationTarget };

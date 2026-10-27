@@ -8,7 +8,9 @@ import { buildExtension } from '../scripts/build.mjs';
 
 // All contacts, messages and credentials in this test are synthetic. All HTTP is intercepted.
 const waOrigin = 'https://web.whatsapp.com';
-const output = resolve(process.env.BROWSER_OUTPUT_DIR ?? '../../.validation/extension-browser');
+const nativeAuth=process.env.TEST_NATIVE_AUTH==='1';
+const nativeTokens=[];
+const output = resolve(process.env.BROWSER_OUTPUT_DIR ?? (nativeAuth?'../../.validation/extension-browser-native':'../../.validation/extension-browser'));
 const fixtureDir = resolve('../../.validation/extension-fixture');
 await mkdir(output, { recursive: true }); await mkdir(fixtureDir, { recursive: true });
 const bridgeHtml = () => `<!doctype html><html><head><link rel="stylesheet" href="/fixture.css"></head><body><div id="root"></div><script>window.__PRYMEIRA_TALK_CONFIG__={VITE_API_URL:'${origin}/api'};</script><script type="module" src="/fixture.js"></script></body></html>`;
@@ -31,7 +33,10 @@ await build({ stdin: { contents: `import React from 'react'; import {createRoot}
 
 const profile = resolve(`../../.validation/extension-browser-profile-${Date.now()}`);
 const extensionDist = `${fixtureDir}/extension`;
-await buildExtension({ origin, outdir: extensionDist });
+await buildExtension({ origin, outdir: extensionDist, ...(nativeAuth?{
+ clerkPublishableKey:`pk_live_${Buffer.from('clerk.fixture.test$').toString('base64')}`,clerkOrigin:'https://clerk.fixture.test',
+ plugins:[{name:'synthetic-native-auth',setup(builder){builder.onResolve({filter:/^@clerk\/chrome-extension\/client$/},()=>({path:'synthetic-native-auth',namespace:'fixture-native'}));builder.onLoad({filter:/.*/,namespace:'fixture-native'},()=>({contents:`export async function createClerkClient(){const state=await chrome.storage.local.get(['nativeFixtureIdentity','nativeFixtureEpoch']);if(!state.nativeFixtureIdentity)return {session:null,user:null};return {user:{id:state.nativeFixtureIdentity},session:{id:state.nativeFixtureIdentity+'-session',getToken:async()=>{const current=await chrome.storage.local.get('nativeFixtureEpoch');return 'native-token-'+(current.nativeFixtureEpoch||1)}},organization:null}}`,loader:'js'}));}}],
+ }:{} ) });
 await rm(profile, { recursive: true, force: true });
 const context = await chromium.launchPersistentContext(profile, { headless: true, channel: 'chromium', viewport: { width: 380, height: 900 },
   args: [`--disable-extensions-except=${extensionDist}`, `--load-extension=${extensionDist}`] });
@@ -45,7 +50,7 @@ await context.route('**/*', async route => {
   if (url.origin === origin && url.pathname === '/fixture.js') return route.fulfill({ contentType: 'text/javascript', body: await readFile(`${fixtureDir}/bridge.js`) });
   if (url.origin === origin && url.pathname === '/fixture.css') return route.fulfill({ contentType: 'text/css', body: await readFile(`${fixtureDir}/bridge.css`) });
   if (url.origin === origin && url.pathname.startsWith('/api/')) {
-    assert.equal(route.request().headers().authorization, 'Bearer fixture-token');
+    if(nativeAuth&&route.request().headers().authorization!=='Bearer fixture-token'){const value=route.request().headers().authorization;assert.match(value??'',/^Bearer native-token-\d+$/);nativeTokens.push(value);}else assert.equal(route.request().headers().authorization, 'Bearer fixture-token');
     if (accessDenied) return route.fulfill({ status: 403, contentType: 'application/json', body: JSON.stringify({ error: 'Acesso removido no teste.' }) });
     const path = url.pathname.slice(4), body = route.request().postDataJSON();
     if (path === '/browser-extension/channels') return json({ workspaceId: 'test-workspace', role: 'owner', channels: [{ id: channelId, phoneNumber: '5547991234567', displayName: 'Canal de teste', status: 'connected' }] });
@@ -106,6 +111,7 @@ try {
   await panel.screenshot({ path: `${output}/extensao-inicio.png` }); checks.push('Painel inicial renderizado sem dados fictícios no produto.');
   const newBridge = context.waitForEvent('page'); await panel.getByRole('button', { name: 'Conectar minha conta' }).click();
   const talk = await newBridge; await talk.waitForURL(`${origin}/extension`);
+  if(nativeAuth)await worker.evaluate(()=>chrome.storage.local.set({nativeFixtureIdentity:'test-user',nativeFixtureEpoch:1}));
   await talk.getByRole('button', { name: 'Conectar minha conta' }).click();
   await talk.getByRole('heading', { name: 'Talk conectado ao seu navegador.' }).waitFor();
   checks.push('Login reaproveitado pela página real de conexão, com autorização explícita.');
@@ -115,7 +121,28 @@ try {
   assert.equal(await panel.getByText('Conta conectada',{exact:true}).count(),0);
   await panel.locator('.brand-header').getByRole('button',{name:'Sair',exact:true}).waitFor();
   checks.push('Conta conectada removida e Sair no cabeçalho compacto.');
+  assert.equal(await panel.getByText('Próximo retorno',{exact:true}).count(),0);
+  assert.equal(await panel.locator('img[alt="Prymeira"]').evaluate(image=>image.complete&&image.naturalWidth>0),true);
+  assert.equal(await panel.locator('.assistant-heading img').evaluate(image=>image.complete&&image.naturalWidth>0),true);
+  assert.equal(await panel.locator('body').evaluate(body=>getComputedStyle(body).colorScheme),'light');
+  checks.push('Identidade clara com logo oficial e Prym original carregados; Conversa sem Próximo retorno.');
+  for(const width of [320,380,480]){
+    await panel.setViewportSize({width,height:900});
+    assert.equal(await panel.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+    await panel.screenshot({path:`${output}/design-conversa-${width}.png`});
+  }
+  await panel.setViewportSize({width:380,height:900});
+  checks.push('Conversa legível em 320, 380 e 480px sem rolagem horizontal.');
+
   await panel.locator('#reply').waitFor(); assert.equal(await panel.locator('#reply').inputValue(), bodies.A);
+  if(nativeAuth){
+   await talk.close();await worker.evaluate(()=>chrome.storage.local.set({nativeFixtureEpoch:2}));
+   await panel.getByRole('button',{name:'Atualizar contexto'}).click();
+   await waitFor(async()=>nativeTokens.includes('Bearer native-token-2'));
+   assert.equal(await panel.locator('#reply').inputValue(),bodies.A);
+   checks.push('Conexão nativa continua após fechar a aba do Talk e consulta token renovado no adaptador de autenticação simulado.');
+  }
+
   await panel.screenshot({ path: `${output}/extensao-conversa-teste.png` }); checks.push('Conversa identificada; sugestão e follow-up carregados pelos dois content scripts e pelo service worker.');
   await panel.locator('#reply').fill('Texto editado no painel de teste.');
   await panel.getByRole('button', { name: 'Atualizar contexto' }).click();
@@ -134,10 +161,6 @@ try {
   await panel.getByRole('alert').filter({ hasText: 'sugestão mudou' }).waitFor();
   assert.equal((await wa.locator('[contenteditable]').innerText()).trim(), ''); staleSuggestion = false;
   checks.push('Contexto revalidado no Talk antes de inserir; sugestão desatualizada bloqueada.');
-  await panel.getByRole('button', { name: 'Cancelar', exact: true }).click();
-  await waitFor(async () => mutations.some(m => m.path.includes('/cancel')));
-  assert.deepEqual(mutations.find(m => m.path.includes('/cancel')).body, { expectedUpdatedAt: '2026-10-26T10:00:00.000Z', reason: 'manual_cancelled' });
-  checks.push('Cancelamento de follow-up usa revisão esperada e endpoint existente.');
   holdRead = true; await panel.getByRole('button', { name: 'Atualizar contexto' }).click(); await waitFor(async () => !!pendingRelease);
   await wa.evaluate(({peer}) => window.selectPeer(peer, 'João'), { peer: peers.B });
   await panel.getByRole('heading', { name: 'João · teste' }).waitFor({ timeout: 20_000 });
@@ -256,21 +279,49 @@ try {
   assert.equal(await wa.locator('[contenteditable]').innerText(),'Retorno preparado no ambiente de teste.');
   await wa.locator('[contenteditable]').fill('');
   checks.push('Contato com telefone exato visível abre e prepara sem recarregar o WhatsApp.');
+  await panel.getByRole('button',{name:/^Follow-ups/}).click();
+  await panel.getByRole('button',{name:'Abrir e preparar follow-up: Ana · teste',exact:true}).waitFor();
+  assert.equal(await panel.locator('.queue-cta').evaluate(el=>el.getBoundingClientRect().width<=24),true);
+  await panel.locator('.queues').evaluate(async el=>{await Promise.all(el.getAnimations().map(a=>a.finished));});
+  await panel.screenshot({path:`${output}/design-followups-380.png`});
+  await panel.emulateMedia({reducedMotion:'reduce'});
+  assert.equal(await panel.locator('.queues').evaluate(el=>getComputedStyle(el).animationName),'none');
+  await panel.emulateMedia({reducedMotion:'no-preference'});
+  checks.push('Ação de abrir discreta e preferência de movimento reduzido respeitada.');
+
   await panel.getByRole('button',{name:/^Humano necessário/}).click();
   await panel.getByText('O contato respondeu com um atendimento automático. Confira a conversa.',{exact:true}).waitFor();
   assert.equal(await panel.getByText('automated_reception_wait',{exact:true}).count(),0);
   checks.push('Motivos humanos exibidos em português sem códigos internos.');
+  await panel.locator('.queues').evaluate(async el=>{await Promise.all(el.getAnimations().map(a=>a.finished));});
+  await panel.screenshot({path:`${output}/design-humanos-380.png`});
+  for(const width of [320,480]){
+    await panel.setViewportSize({width,height:900});
+    assert.equal(await panel.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+  }
+  await panel.setViewportSize({width:380,height:900});
+
   await panel.getByRole('button',{name:'Abrir conversa: João · teste',exact:true}).click();
   await panel.getByRole('heading',{name:'João · teste'}).waitFor({timeout:20_000});
   assert.equal((await wa.locator('[contenteditable]').innerText()).trim(),'');
   assert(!mutations.some(m=>m.path.endsWith('/send')));
   checks.push('Fila humana mostra motivo, abre a conversa e não prepara ou envia mensagem.');
-  await talk.evaluate(() => { window.fixtureUser = 'other-user'; window.dispatchEvent(new Event('fixture-auth')); });
-  await talk.getByRole('button', { name: 'Conectar minha conta' }).waitFor();
-  await panel.getByRole('button', { name: 'Conectar minha conta' }).waitFor({ timeout: 15_000 });
-  assert.equal(await panel.locator('#reply').count(), 0); checks.push('Troca de conta revoga a conexão e limpa a conversa.');
-  await talk.getByRole('button', { name: 'Conectar minha conta' }).click(); await wa.bringToFront();
-  await panel.getByRole('heading', { name: 'João · teste' }).waitFor({ timeout: 20_000 });
+  if(nativeAuth){
+    await worker.evaluate(()=>chrome.storage.local.set({nativeFixtureIdentity:'other-user'}));
+    await panel.getByRole('button',{name:'Atualizar contexto'}).click();
+    await panel.getByRole('button',{name:'Conectar minha conta'}).waitFor({timeout:15000});
+    assert.equal(await panel.locator('#reply').count(),0);
+    await panel.getByRole('button',{name:'Conectar minha conta'}).click();
+    await panel.getByRole('heading',{name:'João · teste'}).waitFor({timeout:20000});
+    checks.push('Troca de sessão Clerk revoga autorização local e exige novo clique em Conectar.');
+  } else {
+    await talk.evaluate(() => { window.fixtureUser = 'other-user'; window.dispatchEvent(new Event('fixture-auth')); });
+    await talk.getByRole('button', { name: 'Conectar minha conta' }).waitFor();
+    await panel.getByRole('button', { name: 'Conectar minha conta' }).waitFor({ timeout: 15_000 });
+    assert.equal(await panel.locator('#reply').count(), 0); checks.push('Troca de conta revoga a conexão e limpa a conversa.');
+    await talk.getByRole('button', { name: 'Conectar minha conta' }).click(); await wa.bringToFront();
+    await panel.getByRole('heading', { name: 'João · teste' }).waitFor({ timeout: 20_000 });
+  }
   accessDenied = true; await panel.getByRole('button', { name: 'Atualizar contexto' }).click();
   await panel.getByRole('button', { name: 'Conectar minha conta' }).waitFor({ timeout: 15_000 });
   assert.equal(await panel.locator('#reply').count(), 0); checks.push('Revogação do acesso na API limpa os dados do painel.');

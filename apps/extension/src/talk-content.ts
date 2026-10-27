@@ -5,7 +5,7 @@ if (location.pathname === '/extension') {
   window.addEventListener('message', event => {
     if (event.source !== window || event.origin !== location.origin) return;
     if (event.data?.type === EXTENSION_BRIDGE_STATUS) {
-      void chrome.runtime.sendMessage({ type: 'BRIDGE_STATUS', connected: event.data.connected === true }).catch(() => {});
+      void chrome.runtime.sendMessage({ type: 'BRIDGE_STATUS', connected: event.data.connected === true, reason:event.data.reason }).catch(() => {});
     }
     if (event.data?.type === EXTENSION_BRIDGE_RESPONSE && typeof event.data.requestId === 'string') pending.get(event.data.requestId)?.(event.data.result);
   });

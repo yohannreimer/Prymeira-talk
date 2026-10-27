@@ -1,5 +1,6 @@
 import { extensionCommandSchema, type ExtensionCommand, type ExtensionReply, type ExtensionSession, type ExtensionAccount } from '@prymeira-talk/shared';
 import { BRIDGE_URL, TALK_ORIGIN, WHATSAPP_ORIGIN } from './config';
+import { persistentConnection } from './clerk-connection';
 import { selectionSchema, type PanelRequest, type PanelState, type SelectedContext, type AccountContext } from './protocol';
 import { withSelectionFence } from './selection-fence';
 import { canonicalPhone } from './whatsapp/identity';
@@ -22,6 +23,7 @@ async function readSelection(windowId: number) {
   catch { return { windowId, tabId: tab.id, selection: null }; }
 }
 async function bridge(command: ExtensionCommand) {
+  if(persistentConnection){const result=await persistentConnection.execute(command);if(!result.ok)throw new Error(result.error);return result.data;}
   const { bridgeTabId, bridgeConnected } = await chrome.storage.session.get(['bridgeTabId', 'bridgeConnected']);
   if (typeof bridgeTabId !== 'number' || !bridgeConnected) throw new Error('Conecte sua conta pela aba do Talk.');
   let tab: chrome.tabs.Tab;
@@ -33,6 +35,15 @@ async function bridge(command: ExtensionCommand) {
 }
 async function status(windowId: number): Promise<PanelState> {
   const live = await readSelection(windowId);
+  if(persistentConnection){
+    let session=await persistentConnection.session();
+    const pending=await chrome.storage.session.get('nativeConnectPendingUntil');
+    if(!session&&typeof pending.nativeConnectPendingUntil==='number'&&pending.nativeConnectPendingUntil>Date.now()){
+      const connected=await persistentConnection.connect();
+      if(connected?.ok&&'channels' in connected.data){session=connected.data;await chrome.storage.session.remove('nativeConnectPendingUntil');}
+    }
+    return {...await readSelection(windowId),connected:!!session,session,connectionError:persistentConnection.lastError()};
+  }
   const { bridgeConnected } = await chrome.storage.session.get('bridgeConnected');
   if (!bridgeConnected) return { ...live, connected: false, session: null };
   try { const session = await bridge({ action: 'session' });
@@ -41,6 +52,11 @@ async function status(windowId: number): Promise<PanelState> {
   } catch { await chrome.storage.session.set({ bridgeConnected: false }); return { ...live, connected: false, session: null }; }
 }
 async function connect(windowId: number) {
+  if(persistentConnection){
+    const connected=await persistentConnection.connect();
+    if(connected?.ok){await chrome.storage.session.remove('nativeConnectPendingUntil');notify();return;}
+    await chrome.storage.session.set({nativeConnectPendingUntil:Date.now()+5*60_000});
+  }
   const saved = await chrome.storage.session.get('bridgeTabId');
   if (typeof saved.bridgeTabId === 'number') {
     try { const existing = await chrome.tabs.get(saved.bridgeTabId);
@@ -82,6 +98,8 @@ async function handlePanel(message: PanelRequest) {
   if (message.type === 'CONNECT') { await connect(message.windowId ?? -1); return null; }
   if (message.type === 'DISCONNECT') {
     navigationIntents.clear();
+    await chrome.storage.session.remove('nativeConnectPendingUntil');
+    if(persistentConnection)await persistentConnection.disconnect();
     const { bridgeTabId } = await chrome.storage.session.get('bridgeTabId');
     await chrome.storage.session.set({ bridgeConnected: false });
     if (typeof bridgeTabId === 'number') await chrome.tabs.sendMessage(bridgeTabId, { type: 'BRIDGE_DISCONNECT' }).catch(() => {});
@@ -151,6 +169,11 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
     }
     if (message?.type === 'WA_CHANGED' && whatsapp(sender.tab) && selectionSchema.safeParse(message.selection).success) notify();
     if (message?.type === 'BRIDGE_STATUS' && talkBridge(sender.tab)) {
+      if(persistentConnection){
+        if(message.connected===false&&['user','revoked'].includes(message.reason))void persistentConnection.disconnect().then(()=>notify());
+        else notify();
+        return;
+      }
       const tabId = sender.tab.id;
       void chrome.storage.session.get('bridgeTabId').then(async saved => {
         if (saved.bridgeTabId !== tabId) return;
