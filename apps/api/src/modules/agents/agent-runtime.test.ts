@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
 import { EXTERNAL_FORM_OPENER_DIRECTIVE, createAgentRuntime } from "./agent-runtime.js";
 import { AgentMediaError } from "./agent-media-resolver.js";
 import type {
@@ -929,6 +930,103 @@ describe("createAgentRuntime", () => {
     expect(provider.generate).not.toHaveBeenCalled();
     expect(prisma.message.create).toHaveBeenCalledWith({ data: expect.objectContaining({ body: expect.stringContaining("Não consegui ler esse PDF inteiro") }) });
     expect(prisma.message.update).toHaveBeenCalledWith({ where: { id: ids.message }, data: expect.objectContaining({ metadata: expect.objectContaining({ inboundMedia: expect.objectContaining({ status: "failed", errorCode: "MEDIA_UNAVAILABLE" }) }) }) });
+  });
+
+  describe("opt-in attachment recovery", () => {
+    function setup(options: { burst?: boolean; enabled?: boolean; otherChannel?: boolean; cached?: boolean; image?: boolean; assistantCache?: boolean; staleCache?: boolean } = {}) {
+      const kind = options.image ? "image" : "document";
+      const document = { ...baseMessage, id: options.burst ? "pdf_before_text" : ids.message,
+        type: options.image ? "image" : "file", body: "Segue o projeto.", mediaUrl: "https://cdn.example/projeto.pdf",
+        createdAt: new Date(now.getTime() - (options.burst ? 1000 : 0)),
+        metadata: options.cached ? { inboundMedia: { kind, status: "processed", extractedText: "Lista já lida" } } : {} };
+      if (options.assistantCache) {
+        document.metadata = { assistantMedia: {
+          sourceHash: options.staleCache ? "stale" : createHash("sha256").update(JSON.stringify([document.id, document.type, document.mediaUrl])).digest("hex"),
+          result: { kind, status: "processed", extractedText: "Lista já lida pela preparação canônica" }
+        } } as typeof document.metadata;
+      }
+      const anchor = options.burst ? { ...baseMessage, body: "São esses materiais." } : document;
+      const prisma = buildPrisma();
+      vi.mocked(prisma.message.findFirst).mockResolvedValue(anchor);
+      vi.mocked(prisma.message.findMany).mockResolvedValue(options.burst ? [anchor, document] : [document]);
+      vi.mocked(prisma.aiAgent.findFirst).mockResolvedValue({ ...baseAgent, allowedActions: ["send_message"], behaviorConfig: {
+        harness: { agente: "atendimento", canais: [options.otherChannel ? "outro-canal" : baseConversation.channelId],
+          ...(options.enabled === false ? {} : { recuperacaoDeAnexos: "reler_e_repassar" }) }
+      } });
+      const provider = buildProvider({ confidence: 0.9, reply: "Recebi os materiais.", actions: [], handoff: { required: false, reason: null } });
+      const mediaPreparer = vi.fn().mockResolvedValue({ kind, status: "failed", errorCode: "MEDIA_UNREADABLE", fallback: "Reenvie em outro formato." });
+      const runtime = createAgentRuntime({ prisma, provider, mediaPreparer });
+      const run = () => runtime.runForMessage({ workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation, messageId: ids.message, trigger: "automation" });
+      return { prisma, provider, mediaPreparer, run, document };
+    }
+
+    it.each([false, true])("retries once and uses the recovered document (burst=%s)", async (burst) => {
+      const { mediaPreparer, provider, run } = setup({ burst });
+      mediaPreparer.mockResolvedValueOnce({ kind: "document", status: "failed", errorCode: "MEDIA_UNREADABLE" });
+      mediaPreparer.mockResolvedValueOnce({ kind: "document", status: "processed", extractedText: "12 tubos 50 x 30 x 2 mm" });
+      const result = await run();
+      expect(mediaPreparer).toHaveBeenCalledTimes(2);
+      expect(provider.generate).toHaveBeenCalled();
+      expect(result.status).not.toBe("handoff_requested");
+    });
+
+    it.each([false, true])("hands off after two failures without asking for another format (burst=%s)", async (burst) => {
+      const { mediaPreparer, provider, prisma, run, document } = setup({ burst });
+      expect((await run()).status).toBe("handoff_requested");
+      expect(mediaPreparer).toHaveBeenCalledTimes(2);
+      expect(provider.generate).not.toHaveBeenCalled();
+      expect(prisma.message.create).not.toHaveBeenCalled();
+      expect(prisma.conversation.update).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ aiControlStatus: "human_controlled" }) }));
+      expect(prisma.message.update).toHaveBeenCalledWith({ where: { id: document.id }, data: expect.objectContaining({
+        body: expect.stringContaining("Atendimento humano necessário."),
+        metadata: expect.objectContaining({ inboundMedia: expect.objectContaining({ status: "failed", attempts: 2 }) })
+      }) });
+      expect(prisma.aiAgentRun.create).toHaveBeenCalledWith({ data: expect.objectContaining({
+        status: "handoff_requested", actions: expect.arrayContaining([expect.objectContaining({ type: "request_handoff", status: "completed" })])
+      }) });
+      expect(document.mediaUrl).toBe("https://cdn.example/projeto.pdf");
+    });
+
+    it.each([{ enabled: false }, { otherChannel: true }])("preserves other agents/channels (%j)", async (options) => {
+      const { mediaPreparer, prisma, run } = setup(options);
+      expect((await run()).status).not.toBe("handoff_requested");
+      expect(mediaPreparer).toHaveBeenCalledOnce();
+      expect(prisma.message.create).toHaveBeenCalledWith({ data: expect.objectContaining({ body: "Reenvie em outro formato." }) });
+    });
+
+    it.each([false, true])("does not reread a successfully cached PDF (burst=%s)", async (burst) => {
+      const { mediaPreparer, run } = setup({ burst, cached: true });
+      await run();
+      expect(mediaPreparer).not.toHaveBeenCalled();
+    });
+
+    it.each([false, true])("reuses canonical preparation for the current attachment or burst (burst=%s)", async (burst) => {
+      const { mediaPreparer, run } = setup({ burst, assistantCache: true });
+      expect((await run()).status).not.toBe("handoff_requested");
+      expect(mediaPreparer).not.toHaveBeenCalled();
+    });
+
+    it("rejects stale canonical preparation for a changed attachment", async () => {
+      const { mediaPreparer, run } = setup({ assistantCache: true, staleCache: true });
+      expect((await run()).status).toBe("handoff_requested");
+      expect(mediaPreparer).toHaveBeenCalledTimes(2);
+    });
+
+    it.each([false, true])("also retries image extraction before a silent human handoff (burst=%s)", async (burst) => {
+      const { mediaPreparer, run, prisma } = setup({ burst, image: true });
+      expect((await run()).status).toBe("handoff_requested");
+      expect(mediaPreparer).toHaveBeenCalledTimes(2);
+      expect(prisma.message.create).not.toHaveBeenCalled();
+    });
+
+    it("continues normally when an image is read on the second attempt", async () => {
+      const { mediaPreparer, run, provider } = setup({ image: true });
+      mediaPreparer.mockResolvedValueOnce({ kind: "image", status: "failed", errorCode: "VISION_PROVIDER_UNAVAILABLE" });
+      mediaPreparer.mockResolvedValueOnce({ kind: "image", status: "processed", extractedText: "Lista legível com 12 tubos 50 x 30 x 2 mm" });
+      expect((await run()).status).not.toBe("handoff_requested");
+      expect(mediaPreparer).toHaveBeenCalledTimes(2);
+      expect(provider.generate).toHaveBeenCalled();
+    });
   });
 
   it("ignores a lone sticker without reading it, replying or handing off", async () => {

@@ -1031,6 +1031,23 @@ describe("sombra de 16/10, terceira rodada", () => {
 });
 
 describe("atendimento no motor de produção", () => {
+  it("loads scoped attendance rules without mixing them with follow-up rules", async () => {
+    const { readHarnessConfig, contextoDeProducao } = await import("./agentes/atendimento/producao.js");
+    const { renderContexto } = await import("./agentes/atendimento/ficha.js");
+    const regra = 'Ao responder "os dois", confirme as opções da pergunta anterior antes de registrar a escolha.';
+    const config = readHarnessConfig({ harness: {
+      agente: "atendimento", canais: ["canal-1"], regrasDoAtendimento: [regra, "  ", 42],
+      regrasDoFollowup: ["Regra exclusiva de follow-up"], recuperacaoDeAnexos: "reler_e_repassar"
+    } });
+    expect(config).toMatchObject({ regrasDoAtendimento: [regra], recuperacaoDeAnexos: "reler_e_repassar" });
+    const pedido = await contextoDeProducao(config!, []);
+    expect(renderContexto(pedido)).toContain(regra);
+    expect(renderContexto(pedido)).not.toContain("Regra exclusiva de follow-up");
+    const outro = readHarnessConfig({ harness: { agente: "atendimento", canais: ["c"], recuperacaoDeAnexos: "sempre_repetir" } });
+    expect(outro).not.toHaveProperty("recuperacaoDeAnexos");
+    expect((await contextoDeProducao(outro!, [])).regrasDaEmpresa).toBeUndefined();
+  });
+
   it("is off unless the agent lists the channel", async () => {
     const { readHarnessConfig, harnessNoCanal } = await import("./agentes/atendimento/producao.js");
     expect(readHarnessConfig({})).toBeNull();

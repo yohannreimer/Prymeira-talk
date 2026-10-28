@@ -134,6 +134,18 @@ describe("prepareInboundMedia", () => {
     expect(JSON.parse(fetchImpl.mock.calls[0][1].body).messages[0].content).toContain("objeto principal");
   });
 
+  it.each([
+    [429, "insufficient_quota", "VISION_PROVIDER_QUOTA_EXHAUSTED"],
+    [429, "rate_limit_exceeded", "VISION_PROVIDER_RATE_LIMITED"],
+    [401, "invalid_api_key", "VISION_PROVIDER_AUTH_FAILED"],
+    [503, "server_error", "VISION_PROVIDER_UNAVAILABLE"],
+    [400, "invalid_request_error", "VISION_REQUEST_REJECTED"]
+  ])("distinguishes provider HTTP %s failures from unreadable media", async (status, code, expected) => {
+    const fetchImpl = vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: { code, message: "private provider details" } }), { status: status as number }));
+    await expect(extractInboundVisualText({ settings, mode: "image", images: ["data:image/png;base64,aQ=="], fetchImpl }))
+      .rejects.toMatchObject({ code: expected, message: expected });
+  });
+
   it("passes an image description to the agent as processed media", async () => {
     const visionExtract = vi.fn().mockResolvedValue("Descrição visual parcial; confirme detalhes ilegíveis. Caixa retangular preta sobre pedestal com ENCOMENDAS na frente.");
     const result = await prepareInboundMedia({
@@ -218,6 +230,27 @@ describe("prepareInboundMedia", () => {
 describe("bounded PDF image metadata inspection", () => {
   const header = "page   num  type   width height color comp bpc  enc interp  object ID x-ppi y-ppi size ratio\n--------------------------------------------------------------------------------------------\n";
   const listing = (width: number, height: number, count = 1) => header + Array.from({ length: count }, (_, index) => `1 ${index} image ${width} ${height} rgb 3 8 image no 3 0 100 100 1K 1%`).join("\n");
+
+  it("uses visual extraction for the known AutoCAD character collection warning", async () => {
+    const warning = "Syntax Error: Unknown character collection 'PDFAUTOCAD-Identity0'\n";
+    const inspection = await inspectPdfImages(Buffer.from("pdf"), async () => ({ stdout: header, stderr: warning.repeat(2) }));
+    expect(inspection).toMatchObject({ hasRasterContent: false, requiresVisualExtraction: true });
+    const pdf = parser(["Native AutoCAD text that may contain incorrect glyph mappings"]);
+    vi.mocked(pdf.getText).mockRejectedValue(new Error("unsupported character collection"));
+    const visionExtract = vi.fn().mockResolvedValue("Peças visíveis no projeto, com os dados legíveis preservados.");
+    const result = await prepareInboundMedia({ attachment, settings, pdfFactory: () => pdf,
+      pdfImageInspector: async () => inspection, visionExtract });
+    expect(result.status).toBe("processed");
+    expect(pdf.getText).not.toHaveBeenCalled();
+    expect(pdf.getScreenshot).toHaveBeenCalledOnce();
+    expect(visionExtract).toHaveBeenCalledOnce();
+  });
+
+  it("does not allow unrelated parser errors alongside an AutoCAD warning", async () => {
+    await expect(inspectPdfImages(Buffer.from("pdf"), async () => ({ stdout: header,
+      stderr: "Syntax Error: Unknown character collection 'PDFAUTOCAD-Identity0'\nSyntax Warning: truncated stream\n" })))
+      .rejects.toMatchObject({ code: "PDF_IMAGE_INSPECTION_FAILED" });
+  });
 
   it("recognizes bounded raster images from metadata without decoding them", async () => {
     const result = await inspectPdfImages(Buffer.from("pdf"), async () => ({ stdout: listing(1132, 1600), stderr: "" }));

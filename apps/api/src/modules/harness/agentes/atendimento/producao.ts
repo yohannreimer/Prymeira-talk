@@ -31,6 +31,10 @@ export type HarnessConfig = {
   modelo?: string;
   /** Rules for follow-ups approved from the weekly evaluation. */
   regrasDoFollowup?: string[];
+  /** Agent-scoped instructions used by both the attendance reader and writer. */
+  regrasDoAtendimento?: string[];
+  /** Retry a failed customer image or document once, then use the human handoff flow. */
+  recuperacaoDeAnexos?: "reler_e_repassar";
   /**
    * The customer this agent belongs to ("Villefer"), when one customer runs the same agent in several
    * workspaces: they are evaluated together and an approved rule goes to all of them.
@@ -61,6 +65,8 @@ export function readHarnessConfig(behaviorConfig: unknown): HarnessConfig | null
     ...(Array.isArray(value.termosInternos) ? { termosInternos: value.termosInternos.filter((termo): termo is string => typeof termo === "string") } : {}),
     ...(typeof value.modelo === "string" && value.modelo ? { modelo: value.modelo } : {}),
     ...(Array.isArray(value.regrasDoFollowup) ? { regrasDoFollowup: value.regrasDoFollowup.filter((regra): regra is string => typeof regra === "string" && regra.trim().length > 0) } : {}),
+    ...(Array.isArray(value.regrasDoAtendimento) ? { regrasDoAtendimento: value.regrasDoAtendimento.filter((regra): regra is string => typeof regra === "string" && regra.trim().length > 0) } : {}),
+    ...(value.recuperacaoDeAnexos === "reler_e_repassar" ? { recuperacaoDeAnexos: "reler_e_repassar" as const } : {}),
     ...(typeof value.cliente === "string" && value.cliente.trim() ? { cliente: value.cliente.trim() } : {})
   };
 }
@@ -141,6 +147,7 @@ export async function contextoDeProducao(config: HarnessConfig, fontes: FonteDaB
   return {
     empresa: config.empresa ?? EMPRESA_VILLEFER,
     maxFollowups: 3,
+    ...(config.regrasDoAtendimento?.length ? { regrasDaEmpresa: config.regrasDoAtendimento.map((regra) => `- ${regra}`).join("\n") } : {}),
     base: baseCompleta(trechos),
     ...(config.catalogo === "villefer" ? { catalogo: await carregarCatalogoVillefer() } : {}),
     anexos: anexosDasFontes(fontes),
