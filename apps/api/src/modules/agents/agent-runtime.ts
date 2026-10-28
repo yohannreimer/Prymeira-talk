@@ -1087,6 +1087,9 @@ export function createAgentRuntime(input: {
             agentId: agent.id, expectedGeneration: prospectingGeneration })) return { status: "skipped", message: "Prospecting authorization changed." };
         }
 
+        const attendanceHarnessConfig = prospecting ? null : readHarnessConfig(agent.behaviorConfig);
+        const recoverAttachments = attendanceHarnessConfig?.recuperacaoDeAnexos === "reler_e_repassar" &&
+          attendanceHarnessConfig.canais.includes(conversation.channelId ?? conversation.channel?.id ?? "");
         const mediaResolver = input.mediaResolver ?? resolveAgentMedia;
         // Evolution webhooks no longer carry base64, so WhatsApp media arrives as an
         // encrypted CDN URL. Like the inbox media route, recover a readable copy from Evolution.
@@ -1109,11 +1112,37 @@ export function createAgentRuntime(input: {
         };
         // A durable copy, when the message has one, is read first; otherwise the provider path with that fallback.
         const mediaResolverFor = (entry: MessageRecord) => durableMediaResolverFor(input.durableMedia, evolutionFallback(entry))(entry);
+        const cachedAttachment = (entry: MessageRecord): InboundMediaResult | null => {
+          const metadata = isRecord(entry.metadata) ? entry.metadata : {};
+          const cache = isRecord(metadata.assistantMedia) ? metadata.assistantMedia : null;
+          const expectedHash = createHash("sha256").update(JSON.stringify([entry.id, entry.type, entry.mediaUrl ?? null])).digest("hex");
+          return cache?.sourceHash === expectedHash && isRecord(cache.result) && cache.result.status === "processed" &&
+            cache.result.kind === (entry.type === "file" ? "document" : "image") &&
+            typeof cache.result.extractedText === "string" && cache.result.extractedText.trim().length > 0
+            ? cache.result as InboundMediaResult : null;
+        };
+        const prepareAttachment = async (entry: MessageRecord): Promise<InboundMediaResult> => {
+          const metadata = isRecord(entry.metadata) ? entry.metadata : {};
+          const args = {
+            mediaUrl: entry.mediaUrl,
+            kind: entry.type === "file" ? "document" as const : "image" as const,
+            ...(isRecord(metadata.attachment) && typeof metadata.attachment.mimeType === "string" ? { mimeType: metadata.attachment.mimeType } : {}),
+            settings: providerSettings,
+            mediaResolver: mediaResolverFor(entry)
+          };
+          const prepare = input.mediaPreparer ?? prepareInboundMedia;
+          const first = await prepare(args);
+          if (!recoverAttachments || first.status === "processed") return first;
+          const second = await prepare(args);
+          return { ...second, attempts: 2,
+            ...(second.status === "failed" ? { fallback: "Atendimento humano necessário. Verifique o arquivo original anexado à conversa." } : {}) };
+        };
         let effectiveText = message.body ?? "";
         let mediaFallback: string | null = null;
         let mediaProcessingError: string | null = null;
         let mediaMetadata: Record<string, unknown> | null = null;
         let unreadableImageRequiresHandoff = false;
+        let unreadableDocumentRequiresHandoff = false;
 
         // A debounced run may be anchored on the customer's final text message,
         // leaving earlier images in that same burst unprocessed by this agent.
@@ -1155,18 +1184,7 @@ export function createAgentRuntime(input: {
           const attachmentMetadata = isRecord(attachment.metadata) ? attachment.metadata : {};
           const alreadyProcessed = isRecord(attachmentMetadata.inboundMedia) && attachmentMetadata.inboundMedia.status === "processed";
           if (alreadyProcessed) continue;
-          const cache = isRecord(attachmentMetadata.assistantMedia) ? attachmentMetadata.assistantMedia : null;
-          const expectedHash = createHash("sha256").update(JSON.stringify([attachment.id, attachment.type, attachment.mediaUrl ?? null])).digest("hex");
-          const cachedResult = cache?.sourceHash === expectedHash && isRecord(cache.result) && cache.result.status === "processed" && typeof cache.result.extractedText === "string"
-            ? cache.result as InboundMediaResult
-            : null;
-          const prepared = cachedResult ?? await (input.mediaPreparer ?? prepareInboundMedia)({
-            mediaUrl: attachment.mediaUrl,
-            kind: attachment.type === "file" ? "document" : "image",
-            ...(isRecord(attachmentMetadata.attachment) && typeof attachmentMetadata.attachment.mimeType === "string" ? { mimeType: attachmentMetadata.attachment.mimeType } : {}),
-            settings: providerSettings,
-            mediaResolver: mediaResolverFor(attachment)
-          });
+          const prepared = cachedAttachment(attachment) ?? await prepareAttachment(attachment);
           const handled = attachment.type === "image" && prepared.status === "failed"
             ? { ...prepared, fallback: IMAGE_PROCESSING_FALLBACK }
             : prepared;
@@ -1181,6 +1199,7 @@ export function createAgentRuntime(input: {
           if (prepared.status === "failed") {
             mediaProcessingError = prepared.errorCode ?? "MEDIA_EXTRACTION_FAILED";
             if (attachment.type === "image") unreadableImageRequiresHandoff = true;
+            else if (recoverAttachments) unreadableDocumentRequiresHandoff = true;
             else mediaFallback = handled.fallback ?? "Pode reenviar o arquivo?";
             input.logger?.warn({ event: "agent_context_media_processing_failed", workspaceId: runInput.workspaceId,
               conversationId: conversation.id, messageId: attachment.id, errorCode: mediaProcessingError },
@@ -1193,13 +1212,7 @@ export function createAgentRuntime(input: {
           const stored = isRecord(metadata.inboundMedia) ? metadata.inboundMedia : null;
           const media = stored?.status === "processed" && typeof stored.extractedText === "string"
             ? stored as InboundMediaResult
-            : await (input.mediaPreparer ?? prepareInboundMedia)({
-                mediaUrl: message.mediaUrl,
-                kind: message.type === "file" ? "document" : "image",
-                ...(isRecord(metadata.attachment) && typeof metadata.attachment.mimeType === "string" ? { mimeType: metadata.attachment.mimeType } : {}),
-                settings: providerSettings,
-                mediaResolver: mediaResolverFor(message)
-              });
+            : cachedAttachment(message) ?? await prepareAttachment(message);
           const handledMedia = message.type === "image" && media.status === "failed"
             ? { ...media, fallback: IMAGE_PROCESSING_FALLBACK }
             : media;
@@ -1207,7 +1220,8 @@ export function createAgentRuntime(input: {
           if (media.status === "failed") {
             mediaFallback = handledMedia.fallback ?? "Pode reenviar o arquivo?";
             mediaProcessingError = media.errorCode ?? "MEDIA_EXTRACTION_FAILED";
-            unreadableImageRequiresHandoff = message.type === "image";
+            unreadableImageRequiresHandoff ||= message.type === "image";
+            unreadableDocumentRequiresHandoff ||= recoverAttachments && message.type === "file";
             if (unreadableImageRequiresHandoff) {
               input.logger?.warn({
                 event: "agent_image_processing_failed",
@@ -1265,7 +1279,6 @@ export function createAgentRuntime(input: {
         const approvedAttachments = knowledge.flatMap(toApprovedAttachment);
         const approvedAttachmentUrls = new Set(approvedAttachments.map((attachment) => attachment.url));
         const commercialConfig = prospecting ? null : readCommercialConfig(agent.behaviorConfig);
-        const attendanceHarnessConfig = prospecting ? null : readHarnessConfig(agent.behaviorConfig);
         const harnessConfig = commercialConfig ?? attendanceHarnessConfig;
         const harnessModel = harnessConfig?.canais.includes(conversation.channelId ?? conversation.channel?.id ?? "")
           ? (input.harness?.modelFactory ?? modeloDoHarness)(providerSettings, harnessConfig.modelo)
@@ -1450,12 +1463,16 @@ export function createAgentRuntime(input: {
           return { status: "skipped", runId: run.id, message: replyPreflight.reason };
         }
 
+        const unreadableMediaRequiresHandoff = unreadableImageRequiresHandoff || unreadableDocumentRequiresHandoff;
         const runProvider = providerSettings.active
           ? (input.providerFactory ?? createOpenAiCompatibleAgentProvider)(providerSettings)
           : provider;
         runModel = providerSettings.active ? providerSettings.chatModel : agent.model;
 
-        if (unreadableImageRequiresHandoff) {
+        if (unreadableDocumentRequiresHandoff) {
+          const reason = "Não foi possível ler automaticamente o documento após duas tentativas. Verifique os arquivos originais anexados à conversa e continue o pedido.";
+          providerOutput = { confidence: 1, reply: null, actions: [{ type: "request_handoff", reason }], handoff: { required: true, reason } };
+        } else if (unreadableImageRequiresHandoff) {
           providerOutput = createUnreadableImageHandoffOutput();
         } else if (mediaFallback) {
           providerOutput = {
@@ -1638,8 +1655,8 @@ export function createAgentRuntime(input: {
 
         // The harness writes its hand-over message itself (or sends a fixed notice), so it is kept.
         const contextualHandoff = usesQualificationHandoff(agent.behaviorConfig) || Boolean(prospecting) || harnessActive;
-        // A failed image is an internal handoff: normalization would synthesize a customer reply.
-        providerOutput = unreadableImageRequiresHandoff
+        // Unreadable media is an internal handoff: normalization would synthesize a customer reply.
+        providerOutput = unreadableMediaRequiresHandoff
           ? providerOutput
           : normalizeAgentHandoffOutput(providerOutput, { preserveReply: contextualHandoff });
 
@@ -1699,7 +1716,7 @@ export function createAgentRuntime(input: {
           modelReply !== HANDOFF_ACKNOWLEDGEMENT && providerOutput.confidence >= confidenceThreshold);
         if (prospectingHandoffReply) deferredProspectingHandoff = handoffReason;
         const status: AgentRunStatus = handoffReason ? "handoff_requested" : "completed";
-        const outboundReply = unreadableImageRequiresHandoff
+        const outboundReply = unreadableMediaRequiresHandoff
           ? null
           : handoffReason
             ? contextualHandoff && providerOutput.handoff.required && providerOutput.confidence >= confidenceThreshold
@@ -1716,7 +1733,7 @@ export function createAgentRuntime(input: {
           return executeAgentActions(tools, {
             workspaceId: runInput.workspaceId,
             conversationId: conversation.id,
-            allowedActions: prospecting ? Array.from(new Set<AiAgentAllowedAction>([...allowedActions, "request_handoff"])) : unreadableImageRequiresHandoff
+            allowedActions: prospecting ? Array.from(new Set<AiAgentAllowedAction>([...allowedActions, "request_handoff"])) : unreadableMediaRequiresHandoff
               ? Array.from(new Set<AiAgentAllowedAction>([...allowedActions, "request_handoff"]))
               : allowedActions,
             allowedTags,

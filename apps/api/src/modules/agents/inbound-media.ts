@@ -31,6 +31,7 @@ export type InboundMediaResult = {
   extractedText?: string;
   errorCode?: string;
   fallback?: string;
+  attempts?: number;
 };
 export type InboundPdfParser = {
   getInfo(options?: { parsePageInfo: boolean; first: number }): Promise<{ total: number; pages: { pageNumber: number; width: number; height: number }[] }>;
@@ -76,7 +77,12 @@ const runPdfImageList: RunPdfImageList = (bytes) => new Promise((resolve, reject
 export async function inspectPdfImages(bytes: Buffer, run: RunPdfImageList = runPdfImageList) {
   let listing: Awaited<ReturnType<RunPdfImageList>>;
   try { listing = await run(bytes); } catch { fail("PDF_IMAGE_INSPECTION_FAILED"); }
-  if (listing.stderr.trim() || listing.stdout.length + listing.stderr.length > 256 * 1024) fail("PDF_IMAGE_INSPECTION_FAILED");
+  if (listing.stdout.length + listing.stderr.length > 256 * 1024) fail("PDF_IMAGE_INSPECTION_FAILED");
+  // AutoCAD exports can have a valid image inventory but an unknown text character collection.
+  // Do not trust their native text: route them through rendering/vision instead. Other diagnostics
+  // still fail closed, as do nonzero exits (handled above) and invalid/incomplete image metadata.
+  const warnings = listing.stderr.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  if (warnings.some((line) => line !== "Syntax Error: Unknown character collection 'PDFAUTOCAD-Identity0'")) fail("PDF_IMAGE_INSPECTION_FAILED");
   const lines = listing.stdout.trim().split(/\r?\n/);
   if (!/^page\s+num\s+type\s+width\s+height\s/.test(lines[0] ?? "") || !/^-{10,}$/.test(lines[1] ?? "")) fail("PDF_IMAGE_INSPECTION_FAILED");
   let imageCount = 0;
@@ -92,7 +98,7 @@ export async function inspectPdfImages(bytes: Buffer, run: RunPdfImageList = run
     totalPixels += pixels;
     if (pixels > MAX_PDF_IMAGE_PIXELS || totalPixels > 30_000_000 || imageCount > 50) fail("PDF_IMAGE_TOO_LARGE");
   }
-  return { hasRasterContent: imageCount > 0, imageCount, totalPixels };
+  return { hasRasterContent: imageCount > 0, imageCount, totalPixels, ...(warnings.length ? { requiresVisualExtraction: true } : {}) };
 }
 function assertText(text: string) {
   if (!text.trim()) fail("MEDIA_UNREADABLE");
@@ -123,7 +129,15 @@ export const extractInboundVisualText: VisionExtract = async ({ settings, images
       ]
     })
   });
-  if (!response.ok) fail("VISION_EXTRACTION_FAILED");
+  if (!response.ok) {
+    // Retain a safe operational category, never the provider's raw message or credentials.
+    const error = await response.json().catch(() => null) as { error?: { code?: string; type?: string } } | null;
+    if (error?.error?.code === "insufficient_quota" || error?.error?.type === "insufficient_quota") fail("VISION_PROVIDER_QUOTA_EXHAUSTED");
+    if (response.status === 429) fail("VISION_PROVIDER_RATE_LIMITED");
+    if (response.status === 401 || response.status === 403) fail("VISION_PROVIDER_AUTH_FAILED");
+    if (response.status >= 500) fail("VISION_PROVIDER_UNAVAILABLE");
+    fail("VISION_REQUEST_REJECTED");
+  }
   const payload = await response.json() as { choices?: { finish_reason?: string; message?: { content?: string } }[] };
   const choice = payload.choices?.[0];
   if (choice?.finish_reason !== "stop" || typeof choice.message?.content !== "string") fail("VISION_EXTRACTION_INCOMPLETE");
@@ -209,9 +223,10 @@ export async function prepareInboundMedia(input: InboundMediaDependencies & {
         // Metadata-only subprocess preflight happens before any raster decode or canvas.
         // getImage() cannot serve as preflight: it allocates canvases and can omit errors.
         const imageInspection = await (input.pdfImageInspector ?? inspectPdfImages)(media.bytes);
-        const extracted = await pdf.getText({ lineEnforce: true, cellSeparator: "\t", pageJoiner: "" });
-        if (extracted.pages.length !== pages || extracted.pages.some((page, index) => page.num !== index + 1)) fail("PDF_INCOMPLETE");
-        if (!imageInspection.hasRasterContent && extracted.pages.every((page) => page.text.trim().length >= 40)) {
+        const extracted = imageInspection.hasRasterContent || imageInspection.requiresVisualExtraction
+          ? null : await pdf.getText({ lineEnforce: true, cellSeparator: "\t", pageJoiner: "" });
+        if (extracted && (extracted.pages.length !== pages || extracted.pages.some((page, index) => page.num !== index + 1))) fail("PDF_INCOMPLETE");
+        if (extracted && extracted.pages.every((page) => page.text.trim().length >= 40)) {
           text = extracted.pages.map((page) => `Página ${page.num}\n${page.text.trim()}`).join("\n\n");
         } else {
           if (!input.settings.active) fail("MEDIA_PROVIDER_UNAVAILABLE");
