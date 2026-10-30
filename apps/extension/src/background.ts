@@ -69,7 +69,7 @@ async function connect(windowId: number) {
 }
 async function command(context: SelectedContext, raw: unknown) {
   const parsed = extensionCommandSchema.parse(raw);
-  if (parsed.action === 'session' || parsed.action === 'queue' || parsed.action === 'navigate') throw new Error('Comando inválido para esta conversa.');
+  if (parsed.action === 'session' || parsed.action === 'queue' || parsed.action === 'navigate' || parsed.action === 'cancel-followup' || parsed.action === 'complete-handoff') throw new Error('Comando inválido para esta conversa.');
   return withSelectionFence(context, () => readSelection(context.windowId), async () => {
     const live = await readSelection(context.windowId);
     if (live.selection?.selfAddress !== parsed.chat.selfAddress || live.selection?.peerAddress !== parsed.chat.peerAddress || (live.selection?.lastMessageId ?? null) !== (parsed.chat.lastMessageId ?? null))
@@ -104,6 +104,11 @@ async function handlePanel(message: PanelRequest) {
     await chrome.storage.session.set({ bridgeConnected: false });
     if (typeof bridgeTabId === 'number') await chrome.tabs.sendMessage(bridgeTabId, { type: 'BRIDGE_DISCONNECT' }).catch(() => {});
     notify(); return null;
+  }
+  if(message.type==='QUEUE_ACTION'){
+    const command=extensionCommandSchema.parse(message.command);
+    if(command.action!=='cancel-followup'&&command.action!=='complete-handoff')throw new Error('Ação indisponível nesta fila.');
+    return accountCommand(message.context,command.account,command);
   }
   if (message.type === 'QUEUE') return accountCommand(message.context, message.account, { action: 'queue', account: message.account, kind: message.kind, cursor: message.cursor });
   if (message.type === 'OPEN_CHAT') {
