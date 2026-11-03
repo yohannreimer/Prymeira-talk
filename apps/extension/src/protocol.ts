@@ -11,6 +11,7 @@ export type SelectedContext = { windowId: number; tabId: number; key: string; sc
 export type AccountContext = { windowId: number; tabId: number; scope: string; selfAddress: string };
 export type OpenChatResult = { token: string | null; target: ExtensionNavigationTarget };
 export type PanelRequest = { type: 'STATUS'; windowId?: number } | { type: 'CONNECT'; windowId?: number } | { type: 'DISCONNECT' }
+  | { type: 'QUEUE_ACTION'; context: AccountContext; command: Extract<ExtensionCommand,{action:'cancel-followup'|'complete-handoff'}> }
   | { type: 'QUEUE'; context: AccountContext; account: ExtensionAccount; kind: ExtensionQueueKind; cursor?: string }
   | { type: 'OPEN_CHAT'; context: AccountContext; account: ExtensionAccount; kind: ExtensionQueueKind; id: string; expectedUpdatedAt?: string }
   | { type: 'PREPARE_FOLLOWUP'; context: SelectedContext; chat: ExtensionChat; token: string }

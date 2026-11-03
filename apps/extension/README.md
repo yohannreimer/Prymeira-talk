@@ -1,6 +1,6 @@
 # Prymeira Talk para WhatsApp Web
 
-Versão 0.3.0: direção visual Talk claro com Prym original e logo Prymeira. Conversa exibe identidade e sugestão de resposta; Follow-ups mostra apenas Para revisar; Humano necessário exibe motivos legíveis. A linha inteira das filas é clicável e a ação visual é uma seta discreta.
+Versão 0.3.1: direção visual Talk claro com Prym original e logo Prymeira. Conversa exibe identidade e sugestão de resposta; Follow-ups mostra apenas Para revisar; Humano necessário exibe motivos legíveis. A linha principal das filas abre a conversa com uma seta discreta. Ações de texto separadas permitem cancelar o follow-up e desmarcar humano necessário.
 
 ## Conexão de produção
 
@@ -26,6 +26,8 @@ O build permite sobrescrever TALK_EXTENSION_ORIGIN, TALK_EXTENSION_CLERK_PUBLISH
 ## Comportamento
 
 Inserir uma sugestão e abrir um follow-up apenas preparam o campo do WhatsApp. O usuário revisa e envia pelo botão nativo. Texto na origem não bloqueia abrir outra conversa; campo de destino ocupado não é sobrescrito. Identidade canônica, revisão e edição/navegação manual continuam protegidas. Nenhuma rota de envio foi adicionada.
+
+Cancelar follow-up usa a revisão exata do item e o cancelamento existente do Talk. Desmarcar humano necessário conclui a pendência com complete_handoff_action e mantém o atendimento sob controle humano; não libera a IA. Ambas as ações revalidam conta, canal e item, aguardam sucesso antes de retirar a linha e atualizam os contadores. Falhas mantêm o item disponível. Nenhuma dessas ações navega no WhatsApp ou altera seu campo de mensagem.
 
 Prym acompanha sugestões e orientações iniciais; não é um novo agente nem um chat separado. O nome do agente configurado no canal continua identificado. Avisos concluídos somem após cinco segundos ou podem ser dispensados. Carregamentos, estados vazios, foco e movimento reduzido têm apresentação própria.
 

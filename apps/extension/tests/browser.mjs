@@ -40,7 +40,7 @@ await buildExtension({ origin, outdir: extensionDist, ...(nativeAuth?{
 await rm(profile, { recursive: true, force: true });
 const context = await chromium.launchPersistentContext(profile, { headless: true, channel: 'chromium', viewport: { width: 380, height: 900 },
   args: [`--disable-extensions-except=${extensionDist}`, `--load-extension=${extensionDist}`] });
-const failures = [], checks = [], mutations = [], networkFailures = []; let holdRead = false, pendingRelease = null, accessDenied = false, followupActive = true, staleSuggestion = false, followupRevisionChanged = false, holdNavigation = false, pendingNavigationRelease = null;
+const failures = [], checks = [], mutations = [], networkFailures = []; let holdRead = false, pendingRelease = null, accessDenied = false, followupActive = true, humanActive = true, cancelFailure = false, completeFailure = false, staleSuggestion = false, followupRevisionChanged = false, holdNavigation = false, pendingNavigationRelease = null;
 context.on('page', page => page.on('pageerror', error => failures.push(error.message)));
 context.on('requestfailed', request => networkFailures.push({ url: request.url(), failure: request.failure() }));
 await context.route('**/*', async route => {
@@ -56,8 +56,8 @@ await context.route('**/*', async route => {
     if (path === '/browser-extension/channels') return json({ workspaceId: 'test-workspace', role: 'owner', channels: [{ id: channelId, phoneNumber: '5547991234567', displayName: 'Canal de teste', status: 'connected' }] });
     if(path==='/browser-extension/queue') {
       const human=body.kind==='human';
-      return json({kind:body.kind,counts:{review:followupActive?1:0,reminders:0,scheduled:0,human:1},nextCursor:null,
-        items:human?[{id:ids.B,conversation:{id:ids.B,channelId,contactName:'João · teste',phone:peers.B.split('@')[0]},reason:'automated_reception_wait',followup:null}]
+      return json({kind:body.kind,counts:{review:followupActive?1:0,reminders:0,scheduled:0,human:humanActive?1:0},nextCursor:null,
+        items:human&&humanActive?[{id:ids.B,conversation:{id:ids.B,channelId,contactName:'João · teste',phone:peers.B.split('@')[0]},reason:'automated_reception_wait',followup:null}]
           :body.kind==='review'&&followupActive?[{id:'00000000-0000-4000-8000-000000000004',conversation:{id:ids.A,channelId,contactName:'Ana · teste',phone:peers.A.split('@')[0]},reason:null,followup:{id:'00000000-0000-4000-8000-000000000004',kind:'human_commercial',status:'review',scheduledAt:'2026-10-27T13:00:00.000Z',updatedAt:'2026-10-26T10:00:00.000Z'}}]:[]});
     }
     if(path==='/browser-extension/navigate') {
@@ -75,7 +75,8 @@ await context.route('**/*', async route => {
       kind: 'human_commercial', status: 'review', stepIndex: 1, scheduledAt: '2026-10-27T13:00:00.000Z', draftBody: 'Retorno preparado no ambiente de teste.', contact: { name: 'Contato de teste', phone: null }, channel: { displayName: 'Canal de teste' },
       anchorMessage: { id: null, body: null, type: null, createdAt: null }, purpose: null, reasonCode: null,
       analysis: { situation: 'waiting_customer', pendingItem: 'Cliente está avaliando o orçamento de teste.', nextStep: 'Retomar a conversa após a avaliação.', timingNote: null, rationale: 'Dados sintéticos.', confidence: 1 }, createdAt: '2026-10-26T10:00:00.000Z', updatedAt: followupRevisionChanged?'2026-10-26T11:00:00.000Z':'2026-10-26T10:00:00.000Z' } : null });
-    if (path.startsWith('/followups/')) { mutations.push({ path, body }); followupActive = false; return json({}); }
+    if (path.startsWith('/followups/')) { if(cancelFailure)return route.fulfill({status:409,contentType:'application/json',body:JSON.stringify({error:'Cancelamento indisponível no teste.'})});mutations.push({ path, body }); followupActive = false; return json({}); }
+    if(path===`/conversations/${ids.B}/actions`){if(completeFailure)return route.fulfill({status:500,contentType:'application/json',body:JSON.stringify({error:'Conclusão indisponível no teste.'})});assert.deepEqual(body,{action:'complete_handoff_action'});mutations.push({path,body});humanActive=false;return json({humanControlled:true});}
     if (path.endsWith('/suggestions')) { mutations.push({ path, body }); return json({ status: 'pending' }); }
     if (path.startsWith('/assistant/conversations/')) {
       if (holdRead && which === 'A') { holdRead = false; await new Promise(resolve => { pendingRelease = resolve; }); }
@@ -306,6 +307,38 @@ try {
   assert.equal((await wa.locator('[contenteditable]').innerText()).trim(),'');
   assert(!mutations.some(m=>m.path.endsWith('/send')));
   checks.push('Fila humana mostra motivo, abre a conversa e não prepara ou envia mensagem.');
+  const preservedUrl=wa.url(),preservedDraft='Rascunho preservado durante ações de fila.';
+  await wa.locator('[contenteditable]').fill(preservedDraft);
+  await panel.getByRole('button',{name:/^Follow-ups/}).click();
+  const cancel=panel.getByRole('button',{name:'Cancelar follow-up: Ana · teste',exact:true});
+  await cancel.waitFor();
+  cancelFailure=true;await cancel.click();
+  await panel.getByRole('alert').filter({hasText:'Cancelamento indisponível no teste.'}).waitFor();
+  await cancel.waitFor();assert.equal(followupActive,true);cancelFailure=false;
+  checks.push('Falha de cancelamento mantém o follow-up na fila para tentar novamente.');
+  followupRevisionChanged=true;const writesBefore=mutations.length;await cancel.click();
+  await panel.getByRole('alert').filter({hasText:'acompanhamento mudou'}).waitFor();
+  assert.equal(mutations.length,writesBefore);followupRevisionChanged=false;
+  checks.push('Revisão obsoleta bloqueia cancelamento antes da escrita.');
+  await cancel.click();await cancel.waitFor({state:'hidden'});
+  await waitFor(async()=>await panel.getByRole('button',{name:/^Follow-ups/}).innerText()==='Follow-ups\n0');
+  assert.equal(await panel.getByRole('button',{name:/^Follow-ups/}).getAttribute('aria-pressed'),'true');
+  assert.equal(wa.url(),preservedUrl);assert.equal(await wa.locator('[contenteditable]').innerText(),preservedDraft);
+  assert.deepEqual(mutations.at(-1),{path:'/followups/00000000-0000-4000-8000-000000000004/cancel',body:{expectedUpdatedAt:'2026-10-26T10:00:00.000Z',reason:'manual_cancelled'}});
+  checks.push('Cancelar confirma no Talk, retira o item e atualiza contador sem navegar ou alterar rascunho.');
+  await panel.getByRole('button',{name:/^Humano necessário/}).click();
+  const complete=panel.getByRole('button',{name:'Desmarcar humano necessário: João · teste',exact:true});
+  await complete.waitFor();completeFailure=true;await complete.click();
+  await panel.getByRole('alert').filter({hasText:'Conclusão indisponível no teste.'}).waitFor();
+  await complete.waitFor();assert.equal(humanActive,true);completeFailure=false;
+  checks.push('Falha ao desmarcar mantém a pendência humana disponível.');
+  await complete.click();await complete.waitFor({state:'hidden'});
+  await waitFor(async()=>await panel.getByRole('button',{name:/^Humano necessário/}).innerText()==='Humano necessário\n0');
+  assert.equal(wa.url(),preservedUrl);assert.equal(await wa.locator('[contenteditable]').innerText(),preservedDraft);
+  assert.deepEqual(mutations.at(-1),{path:`/conversations/${ids.B}/actions`,body:{action:'complete_handoff_action'}});
+  assert(!mutations.some(m=>m.path.endsWith('/send')||m.body.action==='release_human_control'));
+  checks.push('Desmarcar conclui handoff com a ação existente; contador zera sem envio, navegação ou liberação da IA.');
+  await panel.getByRole('button',{name:'Conversa',exact:true}).click();
   if(nativeAuth){
     await worker.evaluate(()=>chrome.storage.local.set({nativeFixtureIdentity:'other-user'}));
     await panel.getByRole('button',{name:'Atualizar contexto'}).click();

@@ -19,7 +19,7 @@ export function createPersistentConnection(deps:NativeConnectionDependencies){
   }
   const request=async<T>(path:string,init:RequestInit={}):Promise<T>=>{
    ensureCurrent(expected);
-   if(!/^\/(browser-extension\/(channels|resolve|queue|navigate)|assistant\/conversations\/[a-f0-9-]{36}(\/suggestions)?|conversations\/[a-f0-9-]{36}\/followup|followups\/[a-f0-9-]{36}\/(postpone|cancel|done|no-followup))$/.test(path))throw new ConnectionError('Comando indisponível.',403);
+   if(!/^\/(browser-extension\/(channels|resolve|queue|navigate)|assistant\/conversations\/[a-f0-9-]{36}(\/suggestions)?|conversations\/[a-f0-9-]{36}\/(followup|actions)|followups\/[a-f0-9-]{36}\/(postpone|cancel|done|no-followup))$/.test(path))throw new ConnectionError('Comando indisponível.',403);
    const token=await auth.getToken();ensureCurrent(expected);
    if(!token){await disconnect('A sessão expirou. Entre novamente no Talk.');throw new ConnectionError('Entre novamente no Talk.');}
    const response=await deps.fetch(`${deps.apiUrl}${path}`,{...init,credentials:'omit',redirect:'error',cache:'no-store',signal:AbortSignal.timeout(20_000),headers:{'Content-Type':'application/json',Authorization:`Bearer ${token}`}});

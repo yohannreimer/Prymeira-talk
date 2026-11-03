@@ -26,6 +26,8 @@ export const extensionCommandSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('session') }).strict(),
   z.object({ action: z.literal('queue'), ...extensionQueueQuerySchema.shape }).strict(),
   z.object({ action: z.literal('navigate'), ...extensionNavigationSchema.shape }).strict(),
+  z.object({ action: z.literal('cancel-followup'), account: extensionAccountSchema, id: z.string().uuid(), expectedUpdatedAt: z.string().datetime({offset:true}) }).strict(),
+  z.object({ action: z.literal('complete-handoff'), account: extensionAccountSchema, id: z.string().uuid() }).strict(),
   z.object({ action: z.literal('read'), chat: extensionChatSchema }).strict(),
   z.object({ action: z.literal('generate'), chat: extensionChatSchema, instruction: z.string().trim().max(2000).optional() }).strict(),
   z.object({ action: z.literal('followup'), chat: extensionChatSchema, id: z.string().uuid(),
