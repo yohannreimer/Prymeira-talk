@@ -27,7 +27,7 @@ export const followupQualityCases: FollowupQualityCase[] = [
   { id: "new-sheet-quote-after-delivered-order", group: "control", goal: "Retomar só a cotação nova de dez chapas de cada formato, sem misturar o pedido entregue.", expected: ["mensagem"], require: ["chapa"], forbid: ["5 chapas|cinco chapas|entrega pendente"], rows: [
     ["contato", "Confirmo as5chapas4,75mm."], ["humano", "Pedido pago e entregue, tudo certo."],
     ["contato", "Novo pedido:10chapas2,65mm1200x3000 e10chapas2,65mm1500x3000."], ["humano", "Segue ORÇAMENTO NOVO.pdf com dez de cada formato."], ["contato", "Vou avaliar esse orçamento novo."] ] },
-  { id: "old-beam-quote-survives-tube-refusal", group: "control", goal: "Recusa só dos tubos não cancela cotação de viga ainda aberta.", expected: ["mensagem"], require: ["viga|W200|perfil"], forbid: ["tubo"], rows: [
+  { id: "old-beam-quote-survives-tube-refusal", group: "control", goal: "Recusa só dos tubos não cancela cotação de viga ainda aberta; preservar designação sem truncar26,60para26.", expected: ["mensagem"], require: ["viga|W200|perfil"], forbid: ["tubo", "W\\s*200\\s*[x×]\\s*26(?![,.]6)"], rows: [
     ["contato", "Pode cotar vigaW200x26,60,4barras6m?"], ["humano", "Segue orçamento das vigasW200x26,60."], ["contato", "Vou avaliar."],
     ["contato", "Outro assunto, tem tubos para amanhã?"], ["humano", "Só em dez dias úteis."], ["contato", "Então os tubos não vão servir, precisava amanhã."] ] },
   { id: "steel-grade-alternative-is-a-question", group: "control", goal: "Pode perguntar se1020serve no lugar de1045, sem afirmar equivalência.", expected: ["mensagem"], require: ["1020"], forbid: ["são equivalentes|mesma resistência|já substituí"], rows: [

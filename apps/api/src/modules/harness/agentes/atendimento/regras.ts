@@ -72,6 +72,21 @@ const semValorNovo: Rule = {
   }
 };
 
+/** A beam designation is an identifier, not a quantity that the writer may round. */
+const designacoesW = (text: string) => [...text.matchAll(/W\s*(\d{2,4})\s*[x×]\s*(\d{1,3}(?:[,.]\d+)?)/giu)]
+  .map(match => ({ original: match[0], canonica: `W${Number(match[1])}x${Number(match[2].replace(",", "."))}` }));
+const designacaoDoFollowup: Rule = {
+  id: "designacao_do_followup",
+  check: ({ texto, historico, jogada }) => {
+    if (jogada.tipo !== "cobrar_pendencia") return { ok: true };
+    const conhecidas = historico.flatMap(message => designacoesW(message.texto));
+    const alterada = designacoesW(texto).find(ref => !conhecidas.some(original => original.canonica === ref.canonica));
+    return alterada
+      ? { ok: false, regra: "designacao_do_followup", motivo: `A designação ${alterada.original} não aparece na conversa. Preserve a referência técnica original sem arredondar ou trocar a variante. Referências da conversa: ${[...new Set(conhecidas.map(ref => ref.original))].join("; ") || "nenhuma"}. Pode citar só o orçamento sem repetir a designação.` }
+      : { ok: true };
+  }
+};
+
 const semPressao: Rule = {
   id: "sem_pressao",
   check: ({ texto }) => /\b(ultimas? unidades|so hoje|corre que|nao perca|promocao acaba|ultima chance)\b/.test(texto.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase())
@@ -146,4 +161,4 @@ const aberturaUtil: Rule = {
     : { ok: true }
 };
 
-export const regras: Rule[] = [semAgradecimentoDeContato, aberturaUtil, respondePerguntas, semTerceirizar, naoRepete, naoRepeteFrase, semValorNovo, semPressao, naoInverteRecusa, naoPrometeAnexo, semTermoInterno];
+export const regras: Rule[] = [semAgradecimentoDeContato, aberturaUtil, respondePerguntas, semTerceirizar, naoRepete, naoRepeteFrase, semValorNovo, designacaoDoFollowup, semPressao, naoInverteRecusa, naoPrometeAnexo, semTermoInterno];
