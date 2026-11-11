@@ -43,6 +43,17 @@ describe('same-channel two QR setup', () => {
     await act(async () => finish(qr('evolution', 'single-request', 'evo')));
     expect(button('Gerar outro QR Code')?.disabled).toBe(false);
   });
+  it('shows a newly issued QR after the preceding QR has connected and been hidden', async () => {
+    await act(async () => root.render(<ChannelsPage />));
+    await act(async () => button('Reconectar').click());
+    const connecting = { ...channel, connections: [{ ...primary, status: 'connecting' }] };
+    await act(async () => mocks.onEvent({ type: 'channel.updated', workspaceId: 'workspace', payload: connecting }));
+    await act(async () => mocks.onEvent({ type: 'channel.updated', workspaceId: 'workspace', payload: channel }));
+    expect(container.querySelector('.qr-image')).toBeNull();
+    mocks.apiStartChannelQr.mockResolvedValueOnce(qr('evolution', 'new-pairing-after-login', 'evo'));
+    await act(async () => button('Reconectar com QR Code').click());
+    expect(container.querySelector('.qr-image')).not.toBeNull();
+  });
   it.each(['button', 'overlay'] as const)('does not reopen the drawer when a pending Evolution QR resolves after %s dismissal', async (dismissal) => {
     let finish!: (result: unknown) => void;
     mocks.apiStartChannelQr.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));

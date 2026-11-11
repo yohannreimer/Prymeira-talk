@@ -10,6 +10,11 @@ import './channel-connections.css';
 type QrEvent = Extract<RealtimeEvent, { type: 'channel.qr_updated' }>;
 type Display = ReturnType<typeof connectionDisplay>[number];
 
+// Hiding a consumed QR must not hide every future issuance for this connection.
+function issuedQrKey(qr: ChannelQrResultDto) {
+  return JSON.stringify([qrKey(qr), qr.qr.issuedAt, qr.qr.expiresAt, qr.qrCode]);
+}
+
 /** Problems worth telling a person, only while they matter (a disconnected or unhealthy connection). */
 function problem(entry: Display): { tone: 'error' | 'warning'; text: string } | null {
   const error = entry.connection?.lastError;
@@ -74,7 +79,7 @@ export function ChannelConnectionsPanel({ channel, primaryQr, qrEvent, getToken,
       const before = previousStatus.current[entry.provider];
       if (before && before !== 'connected' && entry.status === 'connected') {
         setLinked(entry.provider);
-        if (entry.provider === 'evolution' && primaryQr) setHiddenPrimaryQr(qrKey(primaryQr));
+        if (entry.provider === 'evolution' && primaryQr) setHiddenPrimaryQr(issuedQrKey(primaryQr));
       }
       previousStatus.current[entry.provider] = entry.status;
     }
@@ -161,7 +166,7 @@ export function ChannelConnectionsPanel({ channel, primaryQr, qrEvent, getToken,
       const { provider, label, connection, status, isActiveWriter } = entry;
       const isPrimary = provider === 'evolution';
       const enabled = isPrimary || channel.redundancyEnabled;
-      const pendingQr = isPrimary ? (primaryQr && qrKey(primaryQr) !== hiddenPrimaryQr ? primaryQr : null) : secondaryQr;
+      const pendingQr = isPrimary ? (primaryQr && issuedQrKey(primaryQr) !== hiddenPrimaryQr ? primaryQr : null) : secondaryQr;
       const qr = status === 'disconnected' || status === 'failed' ? null : pendingQr;
       const issue = enabled ? problem(entry) : null;
       const stateLabel = !enabled ? 'Desligada' : status === 'connected' ? (entry.health === 'degraded' ? 'Conectada · instável' : entry.health === 'unhealthy' ? 'Conectada · sem resposta' : 'Conectada')

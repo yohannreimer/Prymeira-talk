@@ -12,4 +12,6 @@
 - [x] Verify with channel suites, web tests/typecheck/build; inspect only this change's diff and run regression cases.
 - [x] Record observed production evidence and remaining limitations separately; prepare reviewable patch without resetting sessions.
 
-Observed validation: 708 web tests in 101 files passed; web typecheck and production build passed; frozen lockfile installation passed. No API or provider code changed. Production deployment remains separate from local validation. WAHA historical failure cause and the actual blue QR content remain unconfirmed.
+Observed validation: 709 web tests in 101 files passed; web typecheck and production build passed; frozen lockfile installation passed. No API or provider code changed. Production deployment remains separate from local validation. WAHA historical failure cause and the actual blue QR content remain unconfirmed.
+
+Additional regression: a newly issued primary QR must appear after a preceding successful pairing hid its old QR. A failing UI test reproduced the old connection-only hide key; hiding now compares the individual QR issuance. Five real-browser synthetic image/text cases passed. Two preserved production Evolution payloads passed structural validation inside the ingress process without exporting their contents.
