@@ -9,6 +9,14 @@ const channel = (connections: unknown[]) => ({ id: 'c', workspaceId: 'w', provid
 const render = (value: never) => renderToStaticMarkup(<ChannelConnectionsPanel channel={value} primaryQr={null} qrEvent={null} getToken={async () => null} onChannel={() => {}} onPrimaryQr={() => {}} />);
 
 describe('connections panel', () => {
+  it.each(['failed', 'disconnected'])('does not invite scanning after the provider reports %s', (status) => {
+    const current = channel([conn('evolution', { status }), conn('waha')]);
+    const qr: any = { channel: current, provider: 'evolution', connectionId: 'evolution', qrCode: 'data:image/png;base64,provisional', qr: { expiresAt: new Date(Date.now() + 60_000).toISOString() } };
+    const html = renderToStaticMarkup(<ChannelConnectionsPanel channel={current} primaryQr={qr} qrEvent={null} getToken={async () => null} onChannel={() => {}} onPrimaryQr={() => {}} />);
+    expect(html).not.toContain('qr-box');
+    expect(html).not.toContain('aponte a câmera');
+    expect(html).not.toContain('Código válido por');
+  });
   it('when healthy: a calm summary, no QR area and no technical notices', () => {
     const html = render(channel([conn('evolution', { lastError: 'PRIMARY_PHONE_UNVERIFIED' }), conn('waha', { lastError: 'REMOTE_STOP_UNCONFIRMED' })]));
     expect(html).toContain('Tudo funcionando'); expect(html).toContain('+55 (47) 99999-0000');

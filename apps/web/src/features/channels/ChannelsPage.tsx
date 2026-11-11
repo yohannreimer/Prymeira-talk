@@ -125,6 +125,7 @@ export function ChannelsPage() {
   const deletedChannelIdsRef = useRef(deletedChannelIds);
   const qrChannelIdRef = useRef<string | null>(null);
   const primaryGeneration = useRef(0);
+  const primaryQrInFlight = useRef(false);
   const [qrEvent, setQrEvent] = useState<Extract<RealtimeEvent, { type: "channel.qr_updated" }> | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
@@ -375,6 +376,8 @@ export function ChannelsPage() {
   }
 
   async function reconnectChannel(channel: ChannelDto) {
+    if (primaryQrInFlight.current) return;
+    primaryQrInFlight.current = true;
     setIsSaving(true);
     setError(null);
     setNotice(null);
@@ -396,6 +399,7 @@ export function ChannelsPage() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Erro ao reconectar.");
     } finally {
+      primaryQrInFlight.current = false;
       setIsSaving(false);
     }
   }
@@ -850,6 +854,7 @@ export function ChannelsPage() {
               {selectedChannel?.provider === "evolution" ? (
                 <ChannelConnectionsPanel key={selectedChannel.id} channel={selectedChannel}
                   primaryQr={qrResult?.channel.id === selectedChannel.id ? qrResult : null}
+                  primaryBusy={isSaving}
                   qrEvent={qrEvent} getToken={getToken} onChannel={updatePhysicalChannel}
                   onPrimaryQr={() => void reconnectChannel(selectedChannel)} />
               ) : null}
