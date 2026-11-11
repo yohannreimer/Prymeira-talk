@@ -10,10 +10,10 @@ const result = (tipo: FollowupDoHarness["tipo"], text: string): FollowupDoHarnes
   jogada: "test", ficha: fichaInicial(), trace: [] } as FollowupDoHarness);
 
 describe("follow-up order quality regression contract", () => {
-  it("covers four failures and thirteen working controls with anonymous fixtures", () => {
+  it("covers four failures and fourteen working controls with anonymous fixtures", () => {
     expect(followupQualityCases.filter(c => c.group === "error")).toHaveLength(4);
-    expect(followupQualityCases.filter(c => c.group === "control")).toHaveLength(13);
-    expect(new Set(followupQualityCases.map(c => c.id)).size).toBe(17);
+    expect(followupQualityCases.filter(c => c.group === "control")).toHaveLength(14);
+    expect(new Set(followupQualityCases.map(c => c.id)).size).toBe(18);
     for (const item of followupQualityCases) expect(qualityMessages(item).at(-1)?.texto).toBe(item.rows.at(-1)?.[1]);
   });
 

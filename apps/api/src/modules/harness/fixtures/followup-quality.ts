@@ -39,7 +39,7 @@ export const followupQualityCases: FollowupQualityCase[] = [
   { id: "corrected-quote-awaits-decision", group: "control", goal: "Retomar orçamento corrigido sem recuperar o preço inválido.", expected: ["mensagem"], require: ["orçamento|cotaç|chapa"], forbid: ["R\\$"], rows: [
     ["contato", "Cote chapa19,05mm1500x3000."], ["humano", "O valor que mandei estava errado. Segue o orçamento corrigido.pdf, desconsidere o anterior."] ] },
   { id: "accepted-alternative-still-needs-quote", group: "control", goal: "Cliente pediu orçamento da alternativa; cobrar vendedor, sem voltar a pedir aceite.", expected: ["lembrete_vendedor"], rows: [
-    ["contato", "Preciso chapa piso1,25em tamanho especial."], ["humano", "Só tenho2,65mm1200x3000. Atende?"], ["contato", "Pode mandar o orçamento dessa alternativa para eu validar com a manutenção."] ] },
+    ["contato", "Preciso de uma chapa piso1,25em tamanho especial."], ["humano", "Só tenho2,65mm1200x3000. Atende?"], ["contato", "Pode mandar o orçamento de uma chapa dessa alternativa para eu validar com a manutenção."] ] },
   { id: "promised-tube-quote-still-open", group: "control", goal: "Prazo aceito e cotação prometida mantêm tarefa do vendedor aberta.", expected: ["lembrete_vendedor"], rows: [
     ["contato", "Preciso95tubos120x100x4,25com6m."], ["humano", "Prazo7a10diasúteis. Serve?"], ["contato", "Serve. Preciso do orçamento formal."], ["humano", "Vou enviar amanhã."] ] },
   { id: "thanks-is-not-purchase-closure", group: "control", goal: "Agradecimento por orçamento não encerra a compra.", expected: ["mensagem"], rows: [
@@ -51,7 +51,11 @@ export const followupQualityCases: FollowupQualityCase[] = [
   ,{ id: "explicit-parallel-orders-of-same-product", group: "control", goal: "Pedidos explicitamente separados do mesmo produto não se cancelam: preservar a cantoneira5mm ainda válida.", expected: ["mensagem"], require: ["largura|5\\s?mm"], forbid: ["galvanizada"], rows: [
     ["contato", "Quero 2 cantoneiras de 6m e 5mm para a obra A."], ["humano", "Qual a largura para a obra A?"],
     ["contato", "Outro pedido separado, para a obra B: cantoneira20x20mm1/8galvanizada6m. O pedido de5mm da obra A continua valendo."],
-    ["humano", "A galvanizada para a obra B não forneço. As cantoneiras da obra A consigo, só falta a largura."], ["contato", "Certo, vou verificar a largura para a obra A."] ] }
+    ["humano", "A galvanizada para a obra B não forneço. As cantoneiras da obra A consigo, só falta a largura."], ["contato", "Certo, vou verificar a largura para a obra A."] ] },
+  { id: "alternative-quote-missing-quantity", group: "control", goal: "Pedido de orçamento da alternativa sem quantidade deve pedir só a quantidade, não repetir se serve.", expected: ["mensagem"], require: ["quantidade|quantas"], forbid: ["serve|atende"], rows: [
+    ["contato", "Preciso cotar chapas piso1,25em tamanho especial, ainda não defini quantidade."],
+    ["humano", "Só tenho2,65mm1200x3000. Atende?"], ["contato", "Quero orçamento dessa alternativa para avaliar com manutenção. Qual quantidade mínima?"],
+    ["humano", "Para essa alternativa não há mínimo de peças. Quantas chapas você precisa cotar?"] ] }
 ];
 
 export function qualityMessages(item: FollowupQualityCase): MensagemDaConversa[] {
