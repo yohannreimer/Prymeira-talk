@@ -11,7 +11,8 @@ import {
 } from "./conversation-context-builder.js";
 import { MAX_AUTOMATIC_FOLLOWUP_STEPS } from "../followups/conversation-followups.service.js";
 import { calculateFollowupDueAt, resolveFollowupPlan } from "../followups/channel-followup-plan.js";
-import type { FollowupBrain, FollowupBrainAnalysis } from "../followups/followup-brain.js";
+import type { FollowupAudioTranscriber, FollowupBrain, FollowupBrainAnalysis } from "../followups/followup-brain.js";
+import { prepareFollowupAudio } from "../followups/followup-audio-context.js";
 import { saveAiFollowupAudience } from "../followups/followup-contact-audience.js";
 import { nextBusinessStart } from "../followups/business-time.js";
 import {
@@ -172,6 +173,7 @@ export function createAgentFollowupRuntime(input: {
   publisher?: ConversationFollowupPublisher;
   /** Single-call analysis for follow-ups created in brain mode (decision.mode === "brain"). */
   followupBrain?: FollowupBrain;
+  transcribeAudio?: FollowupAudioTranscriber;
   contextualFollowup?: Pick<ReturnType<typeof createContextualFollowupRuntime>, "runFollowup">;
   /** The new attendance agent's follow-up, on the channels its config lists (harness/agentes/atendimento/producao.ts). */
   harness?: {
@@ -224,15 +226,16 @@ export function createAgentFollowupRuntime(input: {
     followup: ConversationFollowupRecord;
     decision: unknown;
     reason: string;
-    draftBody?: string;
+    draftBody?: string | null;
   }) {
     const updated = await prisma.conversationFollowup.updateMany({
       where: { workspaceId: input.followup.workspaceId, id: input.followup.id, activeKey: "active" },
       data: {
         status: "review",
+        lockedAt: null,
         decision: input.decision,
         reason: input.reason,
-        ...(input.draftBody ? { draftBody: input.draftBody } : {})
+        ...(input.draftBody !== undefined ? { draftBody: input.draftBody } : {})
       }
     });
     if (updated.count === 1) await publish(input.followup);
@@ -407,6 +410,18 @@ export function createAgentFollowupRuntime(input: {
         buildConversationContext(prisma, { workspaceId: runInput.workspaceId, conversationId: followup.conversationId, limit: 200 }),
         prisma.aiKnowledgeSource.findMany({ where: { workspaceId: runInput.workspaceId, agentId: agent.id, status: "ready" }, orderBy: [{ createdAt: "desc" }] })
       ]);
+      const audio = await prepareFollowupAudio({ workspaceId: runInput.workspaceId, conversationId: followup.conversationId,
+        messages: context.messages, transcribe: input.transcribeAudio });
+      if (audio.unavailableMessageIds.length) {
+        await markReview({ followup, draftBody: null, reason: "followup_audio_unavailable",
+          decision: { mode: "harness", unreadAudioMessageIds: audio.unavailableMessageIds, pendingAudioMessageIds: audio.pendingMessageIds } });
+        return { status: "review", followupId: followup.id };
+      }
+      if (audio.pendingMessageIds.length) {
+        await input.followups.recoverClaimedFollowup({ workspaceId: runInput.workspaceId, followupId: followup.id, claim: claimToken,
+          outcome: "retry", reason: "harness_audio_pending", scheduledAt: new Date(clock().getTime() + 60_000) });
+        return { status: "deferred", followupId: followup.id };
+      }
       session = followup.sessionId && prisma.aiAgentSession
         ? await prisma.aiAgentSession.findFirst({ where: { workspaceId: runInput.workspaceId, id: followup.sessionId } })
         : null;
@@ -418,7 +433,7 @@ export function createAgentFollowupRuntime(input: {
       result = await seguirComHarness({
         config: d.config, model: models.model, analista: models.analista, jev: input.harness?.jev,
         fontes: knowledge,
-        mensagens: context.messages.map((entry) => ({
+        mensagens: audio.messages.map((entry) => ({
           id: entry.id,
           autor: autorDaMensagem({ direction: entry.direction, type: entry.type, metadata: byId.get(entry.id)?.metadata, sentByUserId: byId.get(entry.id)?.sentByUserId }),
           tipo: entry.type, texto: entry.body, em: entry.createdAt

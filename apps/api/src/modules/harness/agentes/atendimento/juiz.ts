@@ -1,6 +1,7 @@
 import { choice, noul, type JevClient, type JevQuestion } from "../../core/jev.js";
 import { CRITERIO_INVENTA, PERGUNTA_INVENTA, type Judge } from "../../core/review.js";
 import type { FichaDoAtendimento } from "./tipos.js";
+import { contextoDosPedidos } from "./contexto-dos-pedidos.js";
 
 type Requisito = { id: string; exigencia: string; pergunta: JevQuestion & { type: "choice" }; falhas: Record<string, string> };
 
@@ -92,6 +93,7 @@ export function createJuizDeAtendimento(jev: JevClient): Judge {
 /** Concrete defects only: useful reactivation does not require new information or a fresh promise to reply. */
 export function createJuizDeFollowup(jev: JevClient): Judge {
   const falhas: Record<string, string> = {
+    mistura_pedidos: "A mensagem combina dados de pedidos distintos ou retoma uma especificação substituída. Use só os dados e a etapa da oportunidade retomada.",
     contradiz_negociacao: "A mensagem altera uma condição informada pelo vendedor nesta negociação. Preserve o combinado, mesmo quando difere da base geral.",
     etapa_antecipada: "A mensagem pede medida ou cadastro antes de saber se a alternativa atende. Pergunte primeiro só pela viabilidade da alternativa.",
     cobra_empresa: "A pendência é da empresa: falta responder ou enviar o que o cliente pediu. Gere lembrete interno, sem cobrar avaliação de algo não entregue.",
@@ -105,6 +107,7 @@ export function createJuizDeFollowup(jev: JevClient): Judge {
   };
   return async ({ texto, jogada, historico, fichaTexto, pedidoTexto, fontesExtras }) => {
     const exigencia = `Revise a retomada de uma venda parada e escolha uma falha concreta, ou adequada.
+${contextoDosPedidos}
 Silêncio, cobranças anteriores sem resposta, agradecimento pelo orçamento e 'vou ver e aviso' NÃO encerram a compra. Retomar o mesmo produto com outra abordagem é o objetivo, não repetição indevida. Não exija novidade, urgência, desconto ou promessa de resposta para permitir follow-up. O sistema controla cadência e limite: avalie conteúdo, não invente intervalo.
 A condição informada pelo vendedor nesta negociação prevalece sobre a base geral; 500 kg informados pelo vendedor não podem ser corrigidos para 1.000 kg. Não exija mencionar vendedor nem confirmação. Não deduza estoque atual de oferta antiga. Cada condição pertence ao produto/modalidade informado: mínimo de tubos não vale automaticamente para perfis, e não se pode somar perfil U com tubo para atingir 500 kg sem autorização explícita. Isso é contradiz_negociacao, mesmo se a ficha ou a jogada tiver resumido errado: o histórico original prevalece sobre essas interpretações.
 Pedido detalhado de cotação ainda sem orçamento respondido gera lembrete interno, mesmo se a última mensagem da empresa só informou mínimo genérico, disse "registrei" ou ofereceu catálogo/vendedor. Isso não obriga o cliente a pedir novamente para seguir. Só cobre dado essencial ausente ou aceite explicitamente perguntado e não respondido. Para quem pediu retalho, confirmar se chapa inteira serve é válido, sem pedir medidas antes desse aceite; orçamento enviado e agradecido permite retomada. Aprovação com pagamento ainda indefinido mantém essa decisão em aberto. Cortesia não é fechamento. Uma alternativa recusada não deve ser oferecida de novo, mas o pedido original pode continuar se ainda houver caminho de compra. Não presuma equivalência entre vigas ou materiais.

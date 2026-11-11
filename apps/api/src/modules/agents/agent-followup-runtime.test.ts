@@ -224,6 +224,7 @@ function buildRuntime(overrides: Record<string, any> = {}) {
     outbound: { createPendingOutboundMessage },
     publisher: overrides.publisher,
     followupBrain: overrides.followupBrain,
+    transcribeAudio: overrides.transcribeAudio,
     harness: overrides.harness,
     // Future router dependency; keep this injection local until the contextual runtime exists.
     ...("contextualFollowup" in overrides ? { contextualFollowup: overrides.contextualFollowup } : {}),
@@ -1141,7 +1142,7 @@ describe("follow-up by the new attendance agent", () => {
     contato: { tipo: "cliente" as const, prova: null },
     pendencias: [{ id: "p1", dono, descricao: dono === "cliente" ? "informar a espessura da chapa" : "mandar o orçamento das chapas", prova: { mensagem: 2, trecho: "Qual espessura você precisa?" }, status: "aberta" as const, resolvidaPor: null }]
   });
-  function setup(input: { dono: "cliente" | "empresa"; reason?: string; writer?: string; anchorMessageAt?: Date; delivery?: "review" | "automatic" }) {
+  function setup(input: { dono: "cliente" | "empresa"; reason?: string; writer?: string; anchorMessageAt?: Date; delivery?: "review" | "automatic"; overrides?: Record<string, any> }) {
     const analista = createScriptedModel("analista", () => ({ content: null, toolCalls: [] }));
     const model = createScriptedModel("escritor", () => ({ content: null, toolCalls: [toolCall("responder", { texto: input.writer ?? "Oi Ana, conseguiu ver a espessura da chapa?" })] }));
     const followup = { ...baseFollowup, kind: "human_commercial" as const, sessionId: ids.session, status: "processing", lockedAt: now, reason: input.reason ?? "scheduled", anchorMessageAt: input.anchorMessageAt ?? new Date("2026-09-22T10:01:00.000Z") };
@@ -1151,7 +1152,8 @@ describe("follow-up by the new attendance agent", () => {
       aiAgent: { findFirst: vi.fn().mockResolvedValue({ ...baseAgent, behaviorConfig: { ...baseAgent.behaviorConfig, harness: { agente: "atendimento", canais: [channelId] } } }) },
       conversation: { findUnique: vi.fn().mockResolvedValue({ ...baseConversation, channel: { ...baseConversation.channel, id: channelId, followupConfig: { ...baseConversation.channel.followupConfig, humanCommercialDelivery: input.delivery ?? "automatic" } } }) },
       revalidateActiveFollowup: vi.fn().mockResolvedValue({ status: "valid", context }),
-      harness: { modelFactory: () => ({ model, analista }) }
+      harness: { modelFactory: () => ({ model, analista }) },
+      ...input.overrides
     });
     const update = vi.fn().mockResolvedValue({});
     Object.assign(harness.prisma, { aiAgentSession: { findFirst: vi.fn().mockResolvedValue(session), update } });
@@ -1200,5 +1202,53 @@ describe("follow-up by the new attendance agent", () => {
     expect(complete).not.toHaveBeenCalled();
     expect(write).not.toHaveBeenCalled();
     expect(prisma.conversationFollowup.updateMany).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ status: "scheduled", reason: "harness_waiting_step" }) }));
+  });
+
+  const audio = (id: string, direction: string, body: string | null = "Áudio recebido") => ({
+    id, direction, body, type: "audio", sentByUserId: direction === "outbound" ? "seller" : null,
+    createdAt: new Date("2026-09-22T10:02:00Z")
+  });
+
+  it("reads seller and customer audio before analysing and keeps cached transcripts", async () => {
+    const messages = [...baseMessages, audio("seller_audio", "outbound"), audio("customer_audio", "inbound", null), audio("cached", "outbound", "Só trabalho com barras de seis metros.")];
+    const transcribeAudio = vi.fn().mockResolvedValueOnce("Não trabalho com a linha de tubos.").mockResolvedValueOnce("Preciso somente das barras chatas.");
+    const h = setup({ dono: "cliente", delivery: "review", overrides: { message: { findMany: vi.fn().mockResolvedValue(messages) }, transcribeAudio } });
+    const analyse = vi.spyOn(h.analista, "complete");
+    const write = vi.spyOn(h.model, "complete");
+    expect((await h.runtime.runFollowup({ workspaceId: ids.workspace, followupId: ids.followup })).status).toBe("review");
+    expect(transcribeAudio.mock.calls.map(([target]) => target)).toEqual([
+      { workspaceId: ids.workspace, conversationId: ids.conversation, messageId: "seller_audio" },
+      { workspaceId: ids.workspace, conversationId: ids.conversation, messageId: "customer_audio" }
+    ]);
+    for (const calls of [analyse.mock.calls, write.mock.calls]) {
+      const text = JSON.stringify(calls);
+      expect(text).toContain("Não trabalho com a linha de tubos.");
+      expect(text).toContain("Preciso somente das barras chatas.");
+      expect(text).toContain("Só trabalho com barras de seis metros.");
+    }
+    expect(messages[2].body).toBe("Áudio recebido");
+    expect(h.createPendingOutboundMessage).not.toHaveBeenCalled();
+  });
+
+  it.each(["failed", "throws", "missing"])("requires review when audio is %s instead of guessing or sending", async outcome => {
+    const transcribeAudio = outcome === "missing" ? undefined : outcome === "throws" ? vi.fn().mockRejectedValue(new Error("provider unavailable")) : vi.fn().mockResolvedValue(null);
+    const h = setup({ dono: "cliente", overrides: { message: { findMany: vi.fn().mockResolvedValue([...baseMessages, audio("unreadable", "outbound")]) }, transcribeAudio } });
+    const analyse = vi.spyOn(h.analista, "complete");
+    expect((await h.runtime.runFollowup({ workspaceId: ids.workspace, followupId: ids.followup })).status).toBe("review");
+    expect(analyse).not.toHaveBeenCalled();
+    expect(h.update).not.toHaveBeenCalled();
+    expect(h.createPendingOutboundMessage).not.toHaveBeenCalled();
+    expect(h.prisma.conversationFollowup.updateMany).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ reason: "followup_audio_unavailable", draftBody: null, lockedAt: null }) }));
+  });
+
+  it("continues an audio backlog in bounded batches before generating anything", async () => {
+    const transcribeAudio = vi.fn().mockResolvedValue("Vou avaliar as condições do orçamento.");
+    const h = setup({ dono: "cliente", overrides: { message: { findMany: vi.fn().mockResolvedValue([...baseMessages, ...Array.from({ length: 9 }, (_, i) => audio(`audio_${i}`, "inbound"))]) }, transcribeAudio } });
+    const analyse = vi.spyOn(h.analista, "complete");
+    expect((await h.runtime.runFollowup({ workspaceId: ids.workspace, followupId: ids.followup })).status).toBe("deferred");
+    expect(transcribeAudio).toHaveBeenCalledTimes(8);
+    expect(analyse).not.toHaveBeenCalled();
+    expect(h.createPendingOutboundMessage).not.toHaveBeenCalled();
+    expect(h.recoverClaimedFollowup).toHaveBeenCalledWith(expect.objectContaining({ outcome: "retry", reason: "harness_audio_pending", scheduledAt: new Date(now.getTime() + 60_000) }));
   });
 });

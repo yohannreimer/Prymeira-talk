@@ -63,7 +63,7 @@ export type FollowupBrainInput = {
 export type FollowupAudioTranscriber = (input: { workspaceId: string; conversationId: string; messageId: string }) => Promise<string | null>;
 
 /** Bodies the platform writes for an audio until someone transcribes it. */
-export const UNTRANSCRIBED_AUDIO_BODY = /^(Áudio recebido|Áudio enviado|Processando áudio\.\.\.|Não foi possível transcrever este áudio\.)$/i;
+export const UNTRANSCRIBED_AUDIO_BODY = /^(Áudio recebido|Áudio enviado|Processando áudio\.\.\.|Não foi possível transcrever este áudio\.|\[áudio(?: sem transcrição)?\])$/i;
 const MAX_AUDIO_TRANSCRIPTIONS = 8;
 
 export type FollowupBrain = {
