@@ -1,26 +1,43 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import QRCode from 'qrcode';
-import { getQrDisplaySource } from './qr-display';
+import { readPairingQr } from './qr-display';
 
-/** Shared renderer for both providers, including Evolution image and raw WAHA QR formats. */
-export function ChannelQrView({ qrCode, expiresAt, provider }: { qrCode?: string; expiresAt?: string; provider: string }) {
-  const source = useMemo(() => getQrDisplaySource(qrCode), [qrCode]);
-  const [generated, setGenerated] = useState<string | null>(null);
-  const [error, setError] = useState(false);
+/** Both providers share the same validation, expiry and scanning instruction gate. */
+export function ChannelQrView({ qrCode, expiresAt, provider, children }: {
+  qrCode?: string; expiresAt?: string; provider: string; children?: (ready: boolean) => ReactNode;
+}) {
+  const identity = JSON.stringify([provider, qrCode, expiresAt]);
+  const [result, setResult] = useState<{ identity: string; image: string | null } | null>(null);
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1_000);
     return () => window.clearInterval(timer);
   }, []);
   useEffect(() => {
-    let cancelled = false; setGenerated(null); setError(false);
-    if (source?.kind === 'payload') void QRCode.toDataURL(source.payload, { errorCorrectionLevel: 'M', margin: 3, scale: 9, color: { dark: '#000000', light: '#ffffff' } })
-      .then((data) => { if (!cancelled) setGenerated(data); }).catch(() => { if (!cancelled) setError(true); });
-    return () => { cancelled = true; };
-  }, [source]);
-  const expired = expiresAt && Date.parse(expiresAt) <= now;
-  const image = source?.kind === 'image' ? source.src : generated;
-  return <div className="qr-box" aria-label={`QR Code ${provider}`}>
-    {expired ? <span>QR expirado — gere outro QR Code.</span> : image ? <img className="qr-image" alt={`QR Code ${provider} para conectar o WhatsApp`} src={image} /> : <span>{error ? 'Não foi possível renderizar o QR recebido.' : qrCode ? 'Gerando QR visível...' : 'Gere o QR Code para esta conexão.'}</span>}
-  </div>;
+    const controller = new AbortController();
+    void (async () => {
+      try {
+        const payload = await readPairingQr(qrCode, controller.signal);
+        if (controller.signal.aborted) return;
+        const image = payload ? await QRCode.toDataURL(payload, {
+          errorCorrectionLevel: 'M', margin: 3, scale: 9, color: { dark: '#000000', light: '#ffffff' }
+        }) : null;
+        if (!controller.signal.aborted) setResult({ identity, image });
+      } catch { if (!controller.signal.aborted) setResult({ identity, image: null }); }
+    })();
+    return () => controller.abort();
+  }, [identity, qrCode]);
+  const expires = expiresAt ? Date.parse(expiresAt) : NaN;
+  const expired = !!expiresAt && (!Number.isFinite(expires) || expires <= Math.max(now, Date.now()));
+  // Checking identity during render prevents even one frame of the previous QR.
+  const current = result?.identity === identity ? result : null;
+  const image = !expired ? current?.image : null;
+  const ready = !!image;
+  return <>
+    <div className="qr-box" aria-label={`QR Code ${provider}`} aria-busy={!expired && !current}>
+      {expired ? <span>QR expirado — gere outro QR Code.</span> : image ? <img className="qr-image" alt={`QR Code ${provider} para conectar o WhatsApp`} src={image} />
+        : <span role="status">{!qrCode ? 'Gere o QR Code para esta conexão.' : current ? 'O provedor ainda não enviou um QR válido do WhatsApp. Aguarde a atualização ou gere outro código.' : 'Aguarde, preparando e verificando o QR Code. Ainda não escaneie.'}</span>}
+    </div>
+    {children?.(ready)}
+  </>;
 }

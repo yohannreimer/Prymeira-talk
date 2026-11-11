@@ -12,7 +12,11 @@ vi.mock('qrcode', () => ({ default: { toDataURL: vi.fn(async (payload: string) =
 const primary = { id: 'evo', channelId: 'channel', provider: 'evolution', sessionName: 'evo-session', status: 'connected', health: 'healthy', verifiedPhoneNumber: '5547999990000', eligible: true, isActiveWriter: true, lastCheckedAt: null };
 const secondary = { ...primary, id: 'waha', provider: 'waha', sessionName: 'waha-session', status: 'connecting', health: 'unknown', eligible: false, isActiveWriter: false };
 const channel: any = { id: 'channel', workspaceId: 'workspace', provider: 'evolution', providerKey: 'evo-session', phoneNumber: '5547999990000', displayName: 'Comercial', status: 'connected', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), redundancyAvailable: true, redundancyEnabled: false, activeConnectionId: 'evo', connectedCount: 1, connectionTotal: 2, connections: [primary] };
-function qr(provider: string, value: string, connectionId: string, nextChannel = channel) { return { mode: 'real', channel: nextChannel, provider, connectionId, qrCode: value, qr: { payload: value, issuedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString() } }; }
+function qr(provider: string, reference: string, connectionId: string, nextChannel = channel) {
+  const key = 'A'.repeat(43) + '=';
+  const value = `2@synthetic-reference-${reference},${key},${key},${key}`;
+  return { mode: 'real', channel: nextChannel, provider, connectionId, qrCode: value, qr: { payload: value, issuedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString() } };
+}
 describe('same-channel two QR setup', () => {
   let root: Root; let container: HTMLDivElement;
   const button = (label: string) => [...container.querySelectorAll<HTMLButtonElement>('button')].find((b) => b.textContent?.trim() === label)!;
@@ -28,6 +32,17 @@ describe('same-channel two QR setup', () => {
     mocks.apiGetConnectionState.mockResolvedValue({ mode: 'real', channel: next });
   });
   afterEach(async () => { await act(async () => root.unmount()); container.remove(); });
+  it('starts only one Evolution request on rapid clicks and disables generation until it settles', async () => {
+    let finish!: (value: unknown) => void;
+    mocks.apiStartChannelQr.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    await act(async () => root.render(<ChannelsPage />));
+    const reconnect = button('Reconectar');
+    await act(async () => { reconnect.click(); reconnect.click(); });
+    expect(mocks.apiStartChannelQr).toHaveBeenCalledTimes(1);
+    expect(button('Preparando QR Code…')?.disabled).toBe(true);
+    await act(async () => finish(qr('evolution', 'single-request', 'evo')));
+    expect(button('Gerar outro QR Code')?.disabled).toBe(false);
+  });
   it.each(['button', 'overlay'] as const)('does not reopen the drawer when a pending Evolution QR resolves after %s dismissal', async (dismissal) => {
     let finish!: (result: unknown) => void;
     mocks.apiStartChannelQr.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));

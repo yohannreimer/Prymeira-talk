@@ -33,15 +33,16 @@ function Countdown({ expiresAt }: { expiresAt?: string }) {
 /** The QR, with WhatsApp's own steps beside it, so anyone can relink a number without help. */
 function QrStep({ provider, qr, phone }: { provider: string; qr: ChannelQrResultDto; phone: string | null }) {
   return <div className="connection-qr">
-    <ChannelQrView key={qrKey(qr)} provider={provider} qrCode={qr.qrCode} expiresAt={qr.qr.expiresAt} />
-    <div className="connection-qr-steps">
+    <ChannelQrView key={qrKey(qr)} provider={provider} qrCode={qr.qrCode} expiresAt={qr.qr.expiresAt}>{(ready) => <div className="connection-qr-steps">
+      {ready ? <>
       <ol>
         <li>Abra o WhatsApp no celular{phone ? <> do número <strong>{phone}</strong></> : null}.</li>
         <li>Toque em <strong>Mais opções ⋮</strong> ou <strong>Configurações</strong> e depois em <strong>Aparelhos conectados</strong>.</li>
         <li>Toque em <strong>Conectar aparelho</strong> e aponte a câmera para este código.</li>
       </ol>
       <Countdown expiresAt={qr.qr.expiresAt} />
-    </div>
+      </> : <p>Aguarde o QR Code do WhatsApp ficar pronto antes de apontar a câmera.</p>}
+    </div>}</ChannelQrView>
   </div>;
 }
 
@@ -51,7 +52,7 @@ function formatPhone(value: string | null | undefined) {
   return match ? `+55 (${match[1]}) ${match[2]}-${match[3]}` : digits ? `+${digits}` : null;
 }
 
-export function ChannelConnectionsPanel({ channel, primaryQr, qrEvent, getToken, onChannel, onPrimaryQr }: { channel: ChannelDto; primaryQr: ChannelQrResultDto | null; qrEvent: QrEvent | null; getToken: () => Promise<string | null>; onChannel: (channel: ChannelDto) => void; onPrimaryQr: () => void }) {
+export function ChannelConnectionsPanel({ channel, primaryQr, qrEvent, getToken, onChannel, onPrimaryQr, primaryBusy = false }: { channel: ChannelDto; primaryQr: ChannelQrResultDto | null; qrEvent: QrEvent | null; getToken: () => Promise<string | null>; onChannel: (channel: ChannelDto) => void; onPrimaryQr: () => void; primaryBusy?: boolean }) {
   const [secondaryQr, setSecondaryQr] = useState<ChannelQrResultDto | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -160,7 +161,8 @@ export function ChannelConnectionsPanel({ channel, primaryQr, qrEvent, getToken,
       const { provider, label, connection, status, isActiveWriter } = entry;
       const isPrimary = provider === 'evolution';
       const enabled = isPrimary || channel.redundancyEnabled;
-      const qr = isPrimary ? (primaryQr && qrKey(primaryQr) !== hiddenPrimaryQr ? primaryQr : null) : secondaryQr;
+      const pendingQr = isPrimary ? (primaryQr && qrKey(primaryQr) !== hiddenPrimaryQr ? primaryQr : null) : secondaryQr;
+      const qr = status === 'disconnected' || status === 'failed' ? null : pendingQr;
       const issue = enabled ? problem(entry) : null;
       const stateLabel = !enabled ? 'Desligada' : status === 'connected' ? (entry.health === 'degraded' ? 'Conectada · instável' : entry.health === 'unhealthy' ? 'Conectada · sem resposta' : 'Conectada')
         : status === 'connecting' ? 'Conectando…' : status === 'failed' ? 'Falhou' : 'Desconectada';
@@ -179,8 +181,8 @@ export function ChannelConnectionsPanel({ channel, primaryQr, qrEvent, getToken,
         {!isPrimary && notice ? <p className="connection-callout is-error" role="status"><CircleAlert size={15} aria-hidden="true" /> {notice}</p> : null}
         {qr ? <QrStep provider={label} qr={qr} phone={phone} /> : null}
         {isPrimary ? <div className="connection-actions">
-          <button className={status === 'connected' && !qr ? 'secondary-button' : 'primary-button'} type="button" onClick={onPrimaryQr}>
-            <QrCode size={15} aria-hidden="true" />{qr ? 'Gerar outro QR Code' : status === 'connected' ? 'Reconectar com QR Code' : 'Gerar QR Code'}
+          <button className={status === 'connected' && !qr ? 'secondary-button' : 'primary-button'} type="button" disabled={primaryBusy} onClick={onPrimaryQr}>
+            {primaryBusy ? <LoaderCircle className="connection-spin" size={15} aria-hidden="true" /> : <QrCode size={15} aria-hidden="true" />}{primaryBusy ? 'Preparando QR Code…' : qr ? 'Gerar outro QR Code' : status === 'connected' ? 'Reconectar com QR Code' : 'Gerar QR Code'}
           </button>
         </div> : channel.redundancyAvailable === false ? <p className="connection-card-hint">A conexão reserva ainda não está liberada para este canal.</p> : <div className="connection-actions">
           {status !== 'connected' || qr ? <button className={qr ? 'secondary-button' : 'primary-button'} type="button" disabled={busy} onClick={() => void generateSecondary()}>
