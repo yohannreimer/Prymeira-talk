@@ -1,5 +1,5 @@
 import { extensionCommandSchema, type ExtensionCommand, type ExtensionSession, type ExtensionConversation,
-  type ExtensionReply, type ExtensionQueue, type ExtensionNavigationTarget } from './browser-extension.js';
+  type ExtensionReply, type ExtensionQueue, type ExtensionNavigationTarget, type ExtensionConnection } from './browser-extension.js';
 import type { AssistantConversationDto } from './assistant.js';
 import type { ConversationFollowupDto } from './domain.js';
 
@@ -10,6 +10,13 @@ export async function executeExtensionCommand(raw: unknown, request: Request, id
   const connection = await request<Connection>('/browser-extension/channels');
   const scope = `${identity}:${connection.workspaceId}:${connection.role}`;
   if (command.action === 'session') return { ok: true, data: { ...connection, scope } };
+  if (command.action === 'connection-status' || command.action === 'reconnect') {
+    if (!connection.channels.some(c => c.id === command.account.channelId)) throw new Error('Canal indisponível nesta sessão.');
+    const path = command.action === 'reconnect' ? '/browser-extension/reconnect' : '/browser-extension/connection';
+    const result = await request<ExtensionConnection>(path, { method: 'POST', body: JSON.stringify(command.account) });
+    if (result.channelId !== command.account.channelId) throw new Error('O canal da conexão mudou. Atualize o painel.');
+    return { ok: true, data: { ...result, scope } };
+  }
   if (command.action === 'queue' || command.action === 'navigate') {
     if (!connection.channels.some(c => c.id === command.account.channelId)) throw new Error('Canal indisponível nesta sessão.');
     const { action, ...body } = command;

@@ -41,6 +41,7 @@ await rm(profile, { recursive: true, force: true });
 const context = await chromium.launchPersistentContext(profile, { headless: true, channel: 'chromium', viewport: { width: 380, height: 900 },
   args: [`--disable-extensions-except=${extensionDist}`, `--load-extension=${extensionDist}`] });
 const failures = [], checks = [], mutations = [], networkFailures = []; let holdRead = false, pendingRelease = null, accessDenied = false, followupActive = true, humanActive = true, cancelFailure = false, completeFailure = false, staleSuggestion = false, followupRevisionChanged = false, holdNavigation = false, pendingNavigationRelease = null;
+let connectionAvailable = true, qrRequests = 0, holdQr = false, releaseQr = null;
 context.on('page', page => page.on('pageerror', error => failures.push(error.message)));
 context.on('requestfailed', request => networkFailures.push({ url: request.url(), failure: request.failure() }));
 await context.route('**/*', async route => {
@@ -53,7 +54,15 @@ await context.route('**/*', async route => {
     if(nativeAuth&&route.request().headers().authorization!=='Bearer fixture-token'){const value=route.request().headers().authorization;assert.match(value??'',/^Bearer native-token-\d+$/);nativeTokens.push(value);}else assert.equal(route.request().headers().authorization, 'Bearer fixture-token');
     if (accessDenied) return route.fulfill({ status: 403, contentType: 'application/json', body: JSON.stringify({ error: 'Acesso removido no teste.' }) });
     const path = url.pathname.slice(4), body = route.request().postDataJSON();
-    if (path === '/browser-extension/channels') return json({ workspaceId: 'test-workspace', role: 'owner', channels: [{ id: channelId, phoneNumber: '5547991234567', displayName: 'Canal de teste', status: 'connected' }] });
+    if (path === '/browser-extension/channels') return json({ workspaceId: 'test-workspace', role: 'owner', channels: [{ id: channelId, phoneNumber: '5547991234567', displayName: 'Canal de teste', status: connectionAvailable ? 'connected' : 'disconnected' }] });
+    if (path === '/browser-extension/connection' || path === '/browser-extension/reconnect') {
+      assert.equal(body.channelId, channelId); assert.equal(body.selfAddress, '5547991234567@s.whatsapp.net');
+      assert.deepEqual(Object.keys(body).sort(), ['channelId','selfAddress']);
+      const reconnect = path.endsWith('/reconnect');
+      if (reconnect) { qrRequests++; if (holdQr) { holdQr = false; await new Promise(resolve => { releaseQr = resolve; }); } }
+      return json({ channelId, phoneNumber: '5547991234567', available: connectionAvailable, canReconnect: true,
+        qr: reconnect && !connectionAvailable ? { connectionId: 'test-connection', provider: 'waha', code: `2@synthetic-test-qr-${qrRequests}`, expiresAt: new Date(Date.now() + 6_000).toISOString() } : null });
+    }
     if(path==='/browser-extension/queue') {
       const human=body.kind==='human';
       return json({kind:body.kind,counts:{review:followupActive?1:0,reminders:0,scheduled:0,human:humanActive?1:0},nextCursor:null,
@@ -339,6 +348,37 @@ try {
   assert(!mutations.some(m=>m.path.endsWith('/send')||m.body.action==='release_human_control'));
   checks.push('Desmarcar conclui handoff com a ação existente; contador zera sem envio, navegação ou liberação da IA.');
   await panel.getByRole('button',{name:'Conversa',exact:true}).click();
+  assert.equal(await panel.getByRole('region',{name:'Reconexão do WhatsApp'}).count(),0);
+  assert.equal(qrRequests,0);
+  checks.push('Uma conexão funcional mantém a extensão saudável, sem aviso ou botão de reconexão.');
+  const beforeReconnectDraft=await wa.locator('[contenteditable]').innerText(),beforeReconnectUrl=wa.url();
+  connectionAvailable=false;
+  await panel.getByRole('button',{name:'Reconectar',exact:true}).waitFor({timeout:20000});
+  assert.equal(await panel.locator('#reply').count(),0);
+  await panel.screenshot({path:`${output}/reconexao-sem-conexao.png`});
+  await panel.getByRole('button',{name:'Reconectar',exact:true}).click();
+  await panel.getByAltText('QR code para reconectar este WhatsApp ao Talk').waitFor();
+  assert.match(await panel.getByAltText('QR code para reconectar este WhatsApp ao Talk').getAttribute('src'),/^data:image\/png/);
+  await panel.screenshot({path:`${output}/reconexao-qr.png`});
+  await waitFor(async()=>qrRequests>=2,20000);
+  checks.push('Sem conexão, o canal permanece identificado; QR aparece no painel e renova automaticamente ao expirar.');
+  connectionAvailable=true;
+  await panel.getByRole('region',{name:'Reconexão do WhatsApp'}).waitFor({state:'hidden',timeout:20000});
+  await panel.getByRole('heading',{name:'João · teste'}).waitFor({timeout:20000});
+  assert.equal(await wa.locator('[contenteditable]').innerText(),beforeReconnectDraft); assert.equal(wa.url(),beforeReconnectUrl);
+  checks.push('Uma conexão recuperada remove o QR e restaura o contexto sem navegar, enviar ou alterar o rascunho.');
+  connectionAvailable=false;
+  await panel.getByRole('button',{name:'Reconectar',exact:true}).waitFor({timeout:20000});
+  holdQr=true; await panel.getByRole('button',{name:'Reconectar',exact:true}).click();
+  await waitFor(async()=>!!releaseQr);
+  await wa.evaluate(peer=>{localStorage.setItem('last-wid-md',JSON.stringify('5511999999999:3@c.us'));window.selectPeer(peer,'Outro WhatsApp');},peers.B);
+  await panel.getByRole('region',{name:'Reconexão do WhatsApp'}).waitFor({state:'hidden',timeout:10000});
+  releaseQr(); releaseQr=null;
+  await waitFor(async()=>await panel.getByAltText('QR code para reconectar este WhatsApp ao Talk').count()===0);
+  checks.push('Troca do número aberto invalida uma geração pendente e não exibe QR da conta anterior.');
+  connectionAvailable=true;
+  await wa.evaluate(peer=>{localStorage.setItem('last-wid-md',JSON.stringify('5547991234567:3@c.us'));window.selectPeer(peer,'João');},peers.B);
+  await panel.getByRole('heading',{name:'João · teste'}).waitFor({timeout:20000});
   if(nativeAuth){
     await worker.evaluate(()=>chrome.storage.local.set({nativeFixtureIdentity:'other-user'}));
     await panel.getByRole('button',{name:'Atualizar contexto'}).click();

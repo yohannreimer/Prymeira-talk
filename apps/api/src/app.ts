@@ -859,7 +859,8 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
     agentImprovements
   });
   await app.register(assistantRoutes);
-  await app.register(browserExtensionRoutes);
+  await app.register(browserExtensionRoutes, { evolution: evolutionRuntime, waha: wahaRuntime,
+    clearManualDisconnect: id => channelWatchdog?.clearManualDisconnect(id) });
   await app.register(assistantInboxRoutes, { scheduler: assistantScheduler, handoffBriefService, evolution: evolutionRuntime });
   await app.register(crmRoutes, {
     vinculaApiUrl: env.VINCULA_CRM_API_URL

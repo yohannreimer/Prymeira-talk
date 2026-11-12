@@ -110,8 +110,8 @@ describe('browser extension read-only conversation resolver', () => {
     }
     expect(db.message.findFirst).not.toHaveBeenCalled();
   });
-  it('lists only connected channels with provider-verified phone identities', async () => {
+  it('retains previously verified channels during disconnection, without listing unverified or archived channels', async () => {
     await listExtensionChannels(db as never, auth);
-    expect(db.channel.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { workspaceId: auth.workspaceId, archivedAt: null, status: 'connected', verifiedMessagingPhoneNumber: { not: null } } }));
+    expect(db.channel.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { workspaceId: auth.workspaceId, archivedAt: null, verifiedMessagingPhoneNumber: { not: null } } }));
   });
 });

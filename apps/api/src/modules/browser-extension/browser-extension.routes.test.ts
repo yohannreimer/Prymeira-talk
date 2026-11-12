@@ -19,7 +19,7 @@ describe('extension endpoints stay behind the existing Talk authentication', () 
     try {
       expect((await app.inject({ url: '/browser-extension/channels' })).statusCode).toBe(401);
       expect((await app.inject({ method: 'POST', url: '/browser-extension/resolve', payload: {} })).statusCode).toBe(401);
-      for(const path of ['queue','navigate']) expect((await app.inject({method:'POST',url:`/browser-extension/${path}`,payload:{}})).statusCode).toBe(401);
+      for(const path of ['queue','navigate','connection','reconnect']) expect((await app.inject({method:'POST',url:`/browser-extension/${path}`,payload:{}})).statusCode).toBe(401);
       expect(db.userProfile.findFirst).not.toHaveBeenCalled();
     } finally { await app.close(); }
   });
@@ -44,7 +44,7 @@ describe('extension endpoints stay behind the existing Talk authentication', () 
   });
   it('rejects caller URLs and workspace fields on queue and navigation requests',async()=>{
     const {app,headers,db}=await setup();try{
-      for(const path of ['queue','navigate']){
+      for(const path of ['queue','navigate','connection','reconnect']){
         const response=await app.inject({method:'POST',url:`/browser-extension/${path}`,headers,payload:{account:{channelId:'00000000-0000-4000-8000-000000000001',selfAddress:'self'},kind:'human',workspaceId:'victim',url:'https://evil.test'}});
         expect(response.statusCode).toBe(400);
       }expect(db.userProfile.findFirst).not.toHaveBeenCalled();

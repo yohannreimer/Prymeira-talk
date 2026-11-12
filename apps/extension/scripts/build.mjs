@@ -3,6 +3,7 @@ import { mkdir, writeFile, readFile, cp, rm } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 export async function buildExtension({ origin = process.env.TALK_EXTENSION_ORIGIN ?? 'https://talk.prymeiradigital.com.br', outdir = 'dist', clerkPublishableKey, clerkOrigin, plugins = [] } = {}) {
 const talkOrigin = new URL(origin).origin;
+const { version } = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
 const production=JSON.parse(await readFile(new URL('../production-auth.json',import.meta.url),'utf8'));
 clerkPublishableKey??=process.env.TALK_EXTENSION_CLERK_PUBLISHABLE_KEY??(talkOrigin===production.talkOrigin?production.clerkPublishableKey:'');
 clerkOrigin??=process.env.TALK_EXTENSION_CLERK_ORIGIN??(talkOrigin===production.talkOrigin?production.clerkOrigin:'');
@@ -17,7 +18,7 @@ await build({ ...common, entryPoints: { 'panel': 'src/panel.tsx', 'background': 
 await build({ ...common, entryPoints: { 'whatsapp-content': 'src/whatsapp/content.ts', 'talk-content': 'src/talk-content.ts' }, outdir, format: 'iife' });
 await cp('panel.html', `${outdir}/panel.html`);
 await cp('assets', `${outdir}/assets`, {recursive:true});
-await writeFile(`${outdir}/manifest.json`, JSON.stringify({ manifest_version: 3, name: 'Prymeira Talk para WhatsApp', version: '0.3.1',
+await writeFile(`${outdir}/manifest.json`, JSON.stringify({ manifest_version: 3, name: 'Prymeira Talk para WhatsApp', version,
   description: 'Sugestões de resposta e follow-ups do seu Talk ao lado da conversa no WhatsApp Web.', minimum_chrome_version: '116',
   permissions: ['sidePanel', 'storage', ...(nativeAuth?['cookies']:[])], host_permissions: ['https://web.whatsapp.com/*', `${talkOrigin}/*`, ...(nativeAuth?[`${new URL(clerkOrigin).origin}/*`]:[])],
   icons: {16:'assets/icon-16.png',32:'assets/icon-32.png',48:'assets/icon-48.png',128:'assets/icon-128.png'},
