@@ -1,6 +1,14 @@
 # Prymeira Talk para WhatsApp Web
 
-Versão 0.3.1: direção visual Talk claro com Prym original e logo Prymeira. Conversa exibe identidade e sugestão de resposta; Follow-ups mostra apenas Para revisar; Humano necessário exibe motivos legíveis. A linha principal das filas abre a conversa com uma seta discreta. Ações de texto separadas permitem cancelar o follow-up e desmarcar humano necessário.
+Versão 0.4.0: reconexão por QR no painel lateral quando nenhuma conexão do canal estiver apta. Uma conexão funcional, principal ou reserva, é saudável e não produz aviso. A direção visual Talk claro, o Prym original, as sugestões, os follow-ups e as pendências humanas permanecem disponíveis.
+
+## Reconexão do canal
+
+O número previamente verificado continua identificado durante uma queda. Quando nenhuma conexão estiver apta, o painel oferece Reconectar a gestores e proprietários. O Talk gera o QR de uma conexão já habilitada, preserva a prova do número, acompanha o vínculo e volta ao atendimento quando uma conexão estiver apta. Agentes recebem a orientação para pedir a reconexão ao responsável. A extensão não habilita redundância nem encerra uma sessão funcional para recuperar a outra.
+
+O QR é renderizado localmente e renovado durante uma tentativa limitada a dois minutos. Trocar número, conta, aba ou canal invalida o painel anterior. O QR não é gravado no armazenamento persistente da extensão; o servidor compartilha uma geração em andamento e mantém apenas o QR atual em memória até expirar, evitando reiniciar sessões quando uma resposta demora. Falha de serviço não é apresentada como reconexão concluída. O fluxo não envia mensagens nem altera rascunhos do WhatsApp.
+
+**Implantação:** atualizar primeiro a API do Talk que contém `/browser-extension/connection` e `/browser-extension/reconnect`, depois o pacote da extensão. Não há migração de banco. Permissões e hosts são os mesmos da versão 0.3.1. O ZIP de loja deve ser atualizado no item já existente, preservando seu ID oficial. Build e testes locais não comprovam implantação nem pareamento real em produção.
 
 ## Conexão de produção
 

@@ -13,6 +13,17 @@ function requestWith(followup: unknown = null) {
   });
 }
 describe('authenticated Talk bridge allowlist', () => {
+  it('uses fixed scoped connection routes even while the known channel is disconnected', async () => {
+    const account = { channelId, selfAddress: '5547991234567@s.whatsapp.net' };
+    const request = vi.fn(async (path: string) => path.endsWith('/channels')
+      ? { workspaceId: 'w', role: 'owner', channels: [{ id: channelId, status: 'disconnected' }] }
+      : { channelId, available: false, qr: null });
+    for (const action of ['connection-status', 'reconnect']) {
+      expect(await executeExtensionCommand({ action, account }, request as never, 'user')).toMatchObject({ ok: true, data: { scope: 'user:w:owner', channelId } });
+    }
+    expect(request).toHaveBeenLastCalledWith('/browser-extension/reconnect', { method: 'POST', body: JSON.stringify(account) });
+    await expect(executeExtensionCommand({ action: 'reconnect', account, url: '/settings' }, request as never, 'user')).rejects.toThrow();
+  });
   it('reuses the existing APIs after resolving identity and returns no credentials', async () => {
     const request = requestWith();
     const result = await executeExtensionCommand({ action: 'read', chat }, request as never, 'user-session');

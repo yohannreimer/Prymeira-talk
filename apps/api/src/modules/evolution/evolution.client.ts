@@ -666,7 +666,7 @@ export function createEvolutionClient(options: CreateEvolutionClientOptions): Ev
         integration: "WHATSAPP-BAILEYS",
         qrcode: true,
         webhook: webhookPayload(input.webhookUrl, input.webhookSecret)
-      });
+      }, 15_000);
 
       return {
         instanceName: extractInstanceName(responseBody, input.instanceName),
@@ -677,7 +677,7 @@ export function createEvolutionClient(options: CreateEvolutionClientOptions): Ev
 
     async connectInstance(input) {
       identities.delete(input.instanceName);
-      const responseBody = await get(`/instance/connect/${encodeURIComponent(input.instanceName)}`);
+      const responseBody = await get(`/instance/connect/${encodeURIComponent(input.instanceName)}`, 15_000);
 
       return {
         instanceName: extractInstanceName(responseBody, input.instanceName),
@@ -692,20 +692,20 @@ export function createEvolutionClient(options: CreateEvolutionClientOptions): Ev
     },
 
     async getConnectionState(input) {
-      const responseBody = await get(`/instance/connectionState/${encodeURIComponent(input.instanceName)}`);
+      const responseBody = await get(`/instance/connectionState/${encodeURIComponent(input.instanceName)}`, 8_000);
       const state = getString(getRecord(responseBody, "instance"), "state") ?? getString(responseBody, "state");
       if (state !== "open") identities.delete(input.instanceName);
       return state === "open" || state === "connecting" || state === "close" ? state : null;
     },
 
     async getWebhook(input) {
-      return get(`/webhook/find/${encodeURIComponent(input.instanceName)}`);
+      return get(`/webhook/find/${encodeURIComponent(input.instanceName)}`, 8_000);
     },
 
     async setWebhook(input) {
       const responseBody = await post(
         `/webhook/set/${encodeURIComponent(input.instanceName)}`,
-        setWebhookPayload(input.webhookUrl, input.webhookSecret)
+        setWebhookPayload(input.webhookUrl, input.webhookSecret), 15_000
       );
 
       return { raw: responseBody };

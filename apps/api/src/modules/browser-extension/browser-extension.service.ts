@@ -12,7 +12,7 @@ const failure = (code: string, message: string, status = 409): never => { throw 
 export async function listExtensionChannels(db: Db, auth: Auth) {
   await resolveAssistantActor(db, auth);
   const channels = await db.channel.findMany({ where: { workspaceId: auth.workspaceId, archivedAt: null,
-    status: 'connected', verifiedMessagingPhoneNumber: { not: null } }, orderBy: { createdAt: 'asc' },
+    verifiedMessagingPhoneNumber: { not: null } }, orderBy: { createdAt: 'asc' },
     select: { id: true, displayName: true, verifiedMessagingPhoneNumber: true, status: true } });
   return { workspaceId: auth.workspaceId, role: auth.role, channels: channels.map(c => ({ id: c.id,
     displayName: c.displayName, phoneNumber: c.verifiedMessagingPhoneNumber!, status: c.status })) };

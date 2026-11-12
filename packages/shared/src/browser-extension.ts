@@ -24,6 +24,8 @@ export type ExtensionQueue = { kind: ExtensionQueueKind; items: ExtensionQueueIt
 export type ExtensionNavigationTarget = { conversation: ExtensionConversation; prepare: { id: string; expectedUpdatedAt: string } | null };
 export const extensionCommandSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('session') }).strict(),
+  z.object({ action: z.literal('connection-status'), account: extensionAccountSchema }).strict(),
+  z.object({ action: z.literal('reconnect'), account: extensionAccountSchema }).strict(),
   z.object({ action: z.literal('queue'), ...extensionQueueQuerySchema.shape }).strict(),
   z.object({ action: z.literal('navigate'), ...extensionNavigationSchema.shape }).strict(),
   z.object({ action: z.literal('cancel-followup'), account: extensionAccountSchema, id: z.string().uuid(), expectedUpdatedAt: z.string().datetime({offset:true}) }).strict(),
@@ -36,10 +38,14 @@ export const extensionCommandSchema = z.discriminatedUnion('action', [
 export type ExtensionCommand = z.infer<typeof extensionCommandSchema>;
 export type ExtensionChannel = { id: string; displayName: string | null; phoneNumber: string; status: string };
 export type ExtensionSession = { scope: string; workspaceId: string; role: string; channels: ExtensionChannel[] };
+export type ExtensionConnection = {
+  channelId: string; phoneNumber: string; available: boolean; canReconnect: boolean; pending?: boolean;
+  qr: { connectionId: string; provider: 'evolution' | 'waha'; code: string; expiresAt: string } | null;
+};
 export type ExtensionConversation = { id: string; contactName: string | null; phone: string; channelId: string };
 export type ExtensionRead = { scope: string; conversation: ExtensionConversation; assistant: AssistantConversationDto;
   followup: ConversationFollowupDto | null };
-export type ExtensionReply = { ok: true; data: ExtensionSession | ExtensionRead | (ExtensionQueue & { scope: string }) | (ExtensionNavigationTarget & { scope: string }) | { accepted: true; scope: string } }
+export type ExtensionReply = { ok: true; data: ExtensionSession | ExtensionRead | (ExtensionConnection & { scope: string }) | (ExtensionQueue & { scope: string }) | (ExtensionNavigationTarget & { scope: string }) | { accepted: true; scope: string } }
   | { ok: false; error: string; code?: string };
 export const EXTENSION_BRIDGE_REQUEST = 'prymeira:extension:request:v1';
 export const EXTENSION_BRIDGE_RESPONSE = 'prymeira:extension:response:v1';

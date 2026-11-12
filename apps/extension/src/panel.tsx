@@ -6,11 +6,14 @@ import { canonicalPhone } from './whatsapp/identity';
 import { QueuePanel, emptyCounts } from './QueuePanel';
 import { humanReason } from './human-reason';
 import { Icon, Prym, Initials, Skeleton } from './ui';
+import { ConnectionRecovery } from './ConnectionRecovery';
+import { version } from '../package.json';
 import './panel.css';
 
 function App() {
   const [connecting,setConnecting]=useState(false);const connectInFlight=useRef(false);
   const [state, setState] = useState<PanelState | null>(null), [fatal, setFatal] = useState<string | null>(null);
+  const [availability, setAvailability] = useState<{ key: string; value: boolean } | null>(null);
   const [channel, setChannel] = useState(''), [read, setRead] = useState<{ key: string; value: ExtensionRead } | null>(null);
   const [error, setError] = useState<string | null>(null), [notice, setNotice] = useState<string | null>(null);
   const [loading, setLoading] = useState(false), [working, setWorking] = useState(false), [draft, setDraft] = useState('');
@@ -20,10 +23,14 @@ function App() {
   const [pendingNavigation,setPendingNavigation]=useState<(OpenChatResult & { started:number })|null>(null);
   const pendingToken=useRef<string|null>(null);pendingToken.current=pendingNavigation?.token??null;
   const preparing=useRef<string|null>(null),openingRef=useRef(false),navigationGeneration=useRef(0);
+  const stableAccount = useRef('');
   const selection = state?.selection, session = state?.session;
   const matches = session?.channels.filter(c => selection?.selfAddress && canonicalPhone(c.phoneNumber) === canonicalPhone(selection.selfAddress)) ?? [];
   const selectedChannel = matches.some(c => c.id === channel) ? channel : matches.length === 1 ? matches[0]!.id : '';
-  const key = state?.connected && session && selection?.phase === 'ready' && selectedChannel
+  const connectionKey = state?.connected && session && state.tabId && selection?.selfAddress && selectedChannel
+    ? `${session.scope}:${state.windowId}:${state.tabId}:${canonicalPhone(selection.selfAddress)}:${selectedChannel}` : '';
+  const channelAvailable = availability?.key === connectionKey ? availability.value : matches.find(c => c.id === selectedChannel)?.status === 'connected';
+  const key = state?.connected && session && selection?.phase === 'ready' && selectedChannel && channelAvailable
     ? `${session.scope}:${state.windowId}:${state.tabId}:${selection.key}:${selectedChannel}` : '';
   liveRef.current = key;
   const context: SelectedContext | null = key && state?.tabId && session && selection ? { windowId: state.windowId, tabId: state.tabId, key: selection.key, scope: session.scope } : null;
@@ -39,6 +46,10 @@ function App() {
       if (generation === statusGeneration.current) { setState(result); setFatal(null); }
     } catch (cause) { if (generation === statusGeneration.current) { setState(null); setRead(null); setFatal(message(cause)); } }
   }, []);
+  const connectionChanged = useCallback((available: boolean) => {
+    setAvailability(previous => previous?.key === connectionKey && previous.value === available ? previous : { key: connectionKey, value: available });
+    if (available && matches.find(c => c.id === selectedChannel)?.status !== 'connected') void refreshStatus();
+  }, [connectionKey, selectedChannel, session, refreshStatus]);
   useEffect(() => {
     const changed = (event: { type?: string;token?:string }) => {
       if(event.type==='NAVIGATION_CANCELLED'&&event.token===pendingToken.current){++navigationGeneration.current;setPendingNavigation(null);preparing.current=null;openingRef.current=false;setOpening(false);setNavigationStatus('Preparação interrompida pela navegação ou edição no WhatsApp. Seu rascunho foi preservado.');return;}
@@ -69,7 +80,15 @@ function App() {
     const timer = key ? setInterval(() => void load(true), 5000) : null;
     return () => { if (timer) clearInterval(timer); };
   }, [key]);
-  useEffect(()=>{++navigationGeneration.current;setQueueCounts(emptyCounts);setPendingNavigation(null);preparing.current=null;openingRef.current=false;setOpening(false);setNavigationStatus(null);},[session?.scope,channel]);
+  const resetNavigation = useCallback(() => { ++navigationGeneration.current; setQueueCounts(emptyCounts); setPendingNavigation(null); preparing.current=null; openingRef.current=false; setOpening(false); setNavigationStatus(null); }, []);
+  useEffect(() => { resetNavigation(); }, [session?.scope,channel,resetNavigation]);
+  useEffect(() => {
+    // Selection is temporarily absent during the verified navigation itself. Only a newly
+    // observed, different account cancels preparation; a transient null must not cancel it.
+    if (!connectionKey) return;
+    if (stableAccount.current && stableAccount.current !== connectionKey) resetNavigation();
+    stableAccount.current = connectionKey;
+  }, [connectionKey,resetNavigation]);
   // Keep progress visible while work is running; finished feedback frees the space after 5s.
   useEffect(()=>{if(!navigationStatus||opening)return;const timer=setTimeout(()=>setNavigationStatus(null),5000);return()=>clearTimeout(timer);},[navigationStatus,opening]);
   useEffect(()=>{if(!notice)return;const timer=setTimeout(()=>setNotice(null),5000);return()=>clearTimeout(timer);},[notice]);
@@ -110,7 +129,7 @@ function App() {
     : selection.phase === 'unsupported' ? 'O primeiro piloto está disponível para conversas individuais.'
     : selection.phase === 'switching' ? 'Identificando a nova conversa…'
     : selection.phase !== 'ready' ? 'Abra uma conversa com número ou identificador disponível. Nenhum contato será associado pelo nome.'
-    : !matches.length ? 'O número aberto no WhatsApp Web precisa corresponder a um canal conectado e verificado no Talk.'
+    : !matches.length ? 'O número aberto no WhatsApp Web precisa corresponder a um canal verificado no Talk.'
     : 'Escolha o canal do Talk para esta conversa.';
   return <div className="panel-shell">
     <header className="brand-header"><div className="brand-lockup"><img src="assets/prymeira.png" alt="Prymeira" width="125" height="36"/><span>talk</span></div>{state?.connected&&<button className="text-button header-signout" onClick={() => { void runtimeRequest({ type: 'DISCONNECT' }).then(() => refreshStatus()); }}>Sair <Icon name="logout" size={16}/></button>}</header>
@@ -125,6 +144,9 @@ function App() {
         <button className="primary wide" disabled={connecting} onClick={() => void connect()}>{connecting?'Conectando…':'Conectar minha conta'} <Icon name="arrow"/></button>
         <p className="helper">Use a mesma conta e o mesmo número conectados ao Talk.</p>
       </section> : <>
+        {accountContext && account && <ConnectionRecovery key={connectionKey} context={accountContext} account={account}
+          initialAvailable={matches.find(c => c.id === selectedChannel)?.status === 'connected'} onAvailability={connectionChanged}/>}
+        {(!connectionKey || channelAvailable) && <>
         <nav className="panel-tabs" aria-label="Navegação do Talk">
           <button aria-pressed={activeTab==='conversation'} onClick={()=>{setActiveTab('conversation');setNavigationStatus(null);setNotice(null);}}>Conversa</button>
           <button className="followups-tab" aria-pressed={activeTab==='followups'} onClick={()=>{setActiveTab('followups');setNavigationStatus(null);setNotice(null);}}>Follow-ups <span>{queueCounts.review}</span></button>
@@ -147,10 +169,11 @@ function App() {
             <button className="refresh-button" disabled={working || loading} onClick={() => void load()}><Icon name="refresh" size={15}/>Atualizar contexto</button>
           </>}
         </>}
+        </>}
       </>}
     </main>
     {(navigationStatus||notice)&&<div className="feedback-stack"><div className="notice" role="status"><Icon name={opening?'clock':'check'} size={18}/><span>{navigationStatus||notice}</span><button className="icon-button" aria-label="Dispensar aviso" onClick={()=>{setNavigationStatus(null);setNotice(null);}}><Icon name="close" size={16}/></button></div></div>}
-    <footer className="panel-footer"><span>{state?.connected?'Conectado ao seu Talk':'Prymeira Talk para WhatsApp'}</span><span>0.3.1</span></footer>
+    <footer className="panel-footer"><span>{state?.connected?'Conectado ao seu Talk':'Prymeira Talk para WhatsApp'}</span><span>{version}</span></footer>
   </div>;
 }
 function message(cause: unknown) { return cause instanceof Error ? cause.message : 'Não foi possível carregar o Talk.'; }
