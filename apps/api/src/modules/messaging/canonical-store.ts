@@ -431,8 +431,13 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
     const sameReceipts = receipts.filter(r => equal(r.receiptTuple, receiptTuple));
     // Context timing/mode is delivery provenance, never a reason to replay created.
     // Quote/reaction are presentation added later; a redelivery normalized before they existed is still the same fact.
+    const wahaHistoryReceipt = c.provider === 'waha' && event.kind === 'message' && !event.providerEventId
+      && ['history', 'recovered_live'].includes(c.mode);
     const envelope = (value: unknown) => {
       const { context: ignored, ctwa: auxiliaryCtwa, ...data } = record(value);
+      // A contact's current display name can change between historical reads,
+      // including after a reconnect. It is not part of the WhatsApp message fact.
+      if (wahaHistoryReceipt) delete data.pushName;
       const { quoted: q, reaction: r, ...content } = record(data.content);
       return data.content === undefined ? data : { ...data, content };
     };
@@ -464,10 +469,19 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
       && sameReceipts.some(r => r.reason === 'receipt_key_conflict' || (preservedTemplateMessageId !== null && r.reason === 'revision_reconciliation_required')
         || !equal(record(r.payload).addressMappings, event.addressMappings));
     const previous = sameReceipts.find(r => equal(envelope(r.payload), envelope(event))) ?? (mappingRefresh ? sameReceipts[0] : undefined);
+    // Earlier workers persisted name-only false conflicts. All actual facts,
+    // including the exact key and address proofs, must agree before replaying
+    // their existing identity under the current trusted source. Unlike new LID
+    // enrichment, an unchanged proof needs no generation-specific replacement.
+    const nameRefresh = wahaHistoryReceipt && sameReceipts.length > 0
+      && sameReceipts.some(r => r.reason === 'receipt_key_conflict')
+      && sameReceipts.every(r => r.kind === 'message' && ['history', 'recovered_live'].includes(r.mode)
+        && (r.state === 'resolved' || r.reason === 'receipt_key_conflict')
+        && equal(envelope(r.payload), envelope(event)));
     const receiptConflict = sameReceipts.length > 0 && !previous;
     const result: CanonicalStoreResult = { outcome: 'held', observationId: '', messageId: null, conversationId: null, chatId: null, identityId: null,
       allowOperationalEffects: false, reconciliationReasons: [], changes: [] };
-    if (mappingRefresh && !replay && event.kind === 'message') {
+    if ((mappingRefresh || nameRefresh) && !replay && event.kind === 'message') {
       const anchor = sameReceipts.find(r => r.identityId !== null) ?? previous!;
       const proofs = [...sameReceipts.flatMap(r => (r.payload as unknown as MessageEvent).addressMappings), ...event.addressMappings];
       // Validate the UNION: replacing a phone proof with a contradictory one must
@@ -481,7 +495,7 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
       if (repaired.outcome === 'held' || !repaired.identityId) return repaired;
       for (const old of sameReceipts.filter(r => r.reason === 'receipt_key_conflict' || (preservedTemplateMessageId !== null && r.reason === 'revision_reconciliation_required'))) {
         await tx.canonicalObservation.update({ where: { id: old.id }, data: { state: 'resolved', reason: null, identityId: repaired.identityId,
-          resolutionEvidence: json({ kind: preservedTemplateMessageId ? 'verified_template_presentation_preserved' : 'verified_address_mapping_enrichment', previousEvidence: old.resolutionEvidence,
+          resolutionEvidence: json({ kind: preservedTemplateMessageId ? 'verified_template_presentation_preserved' : nameRefresh ? 'verified_history_display_name_refresh' : 'verified_address_mapping_enrichment', previousEvidence: old.resolutionEvidence,
             ...(preservedTemplateMessageId ? { nativeTemplateSnapshot: { nativeId: options.wahaTemplateSnapshot!.nativeId, digest: sha(stable(options.wahaTemplateSnapshot)) } } : {}),
             addressMappings: proofs, verifiedBy: c }) } });
       }
@@ -491,7 +505,7 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
         await tx.canonicalMessageIdentity.update({ where: { id: identity.id }, data: { contentState: record(message.metadata).deletedAt ? 'deleted' : 'ready' } });
       }
       repaired.allowOperationalEffects = false;
-      repaired.changes.push('verified_address_mapping_enriched');
+      repaired.changes.push(nameRefresh ? 'verified_history_display_name_refreshed' : 'verified_address_mapping_enriched');
       return repaired;
     }
     if (previous && !replay) {
