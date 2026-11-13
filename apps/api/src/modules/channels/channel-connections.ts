@@ -492,6 +492,9 @@ export async function applyAuthenticatedConnectionObservation(tx: Prisma.Transac
     const connection = await tx.channelConnection.findUniqueOrThrow({ where: { id: source.connectionId } });
     const channel = await tx.channel.findUniqueOrThrow({ where: { id: source.channelId } });
     const status = event.control === 'qr' ? 'connecting' : event.status;
+    // WAHA may reconnect via STARTING -> WORKING without a STOPPED/FAILED event.
+    // Keep the first departure so repeated STARTING updates cannot shorten its gap.
+    const wahaDeparture = connection.provider === 'waha' && connection.status === 'connected' && status === 'connecting';
     // Evolution reconnects in place (connecting, then open a second later). The primary is back in use when it says it
     // is open as the same account, like the periodic probe decides; a different or unknown account waits for the probe.
     // The WAHA secondary always waits: it is only usable once its number is proven against the primary.
@@ -504,7 +507,7 @@ export async function applyAuthenticatedConnectionObservation(tx: Prisma.Transac
     const primaryBack = status === 'connected' && connection.provider === 'evolution' && observedPhone !== null && (!anchor || anchor === observedPhone) && (knownPhone === null || knownPhone === observedPhone);
     await tx.channelConnection.update({ where: { workspaceId_id: { workspaceId: source.workspaceId, id: connection.id } }, data: { status,
             ...(status === 'connected' ? primaryBack ? { eligible: true, verifiedPhoneNumber: observedPhone } : {} : { eligible: false, health: 'unknown', lastHealthyAt: connection.provider === 'waha' && event.control !== 'qr' ? connection.lastHealthyAt : null, ...(event.control === 'qr' && connection.provider === 'waha' ? { verifiedPhoneNumber: null } : {}) }),
-            ...(status === 'disconnected' || status === 'failed' ? { disconnectedAt: new Date(source.observedAt) } : {}) } });
+            ...(status === 'disconnected' || status === 'failed' || wahaDeparture ? { disconnectedAt: new Date(source.observedAt) } : {}) } });
     if (connection.provider === 'evolution' && observedPhone && ((knownPhone && observedPhone !== knownPhone) || (anchor && observedPhone !== anchor))) {
         await tx.channelConnection.update({ where: { workspaceId_id: { workspaceId: source.workspaceId, id: connection.id } }, data: { eligible: false, verifiedPhoneNumber: observedPhone } });
         await tx.channelConnection.updateMany({ where: { workspaceId: source.workspaceId, channelId: source.channelId, provider: 'waha', ...(anchor ? { OR: [{ verifiedPhoneNumber: null }, { verifiedPhoneNumber: { not: anchor } }] } : {}) }, data: { eligible: false, lastHealthyAt: null, health: 'degraded', lastError: 'PHONE_MISMATCH' } });

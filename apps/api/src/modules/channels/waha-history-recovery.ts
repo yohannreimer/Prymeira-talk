@@ -1,22 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import { Prisma, type ChannelConnection, type PrismaClient } from '@prisma/client';
-import { z } from 'zod';
+import { recoveryCursorSchema as cursorSchema, recoveryLanes, dueRecoveryLane, nextRecoveryAttempt,
+  RECENT_WINDOW_MS, RECOVERY_WINDOW_MS as WINDOW_MS, RECOVERY_OVERLAP_MS as OVERLAP_MS,
+  type RecoveryLane, type RecoveryCursor } from './waha-recovery-lanes.js';
 import type { WahaMessage, WahaRecoveryPage, WahaRecoveryQuery } from '../waha/waha.client.js';
 import { historyDigest } from './history-memory-budget.js';
 
 const PAGE_SIZE = 50;
-const WINDOW_MS = 5 * 60_000;
-const OVERLAP_MS = 10 * 60_000;
 const SETTLE_MS = 30_000;
 const LEASE_MS = 120_000;
-const digest = z.string().regex(/^[a-f0-9]{64}$/);
-const cursorSchema = z.object({
-  version: z.literal(1), generation: z.number().int().nonnegative(), checkpoint: z.string().datetime().nullable(),
-  from: z.number().int().nonnegative(), to: z.number().int().nonnegative(), offset: z.number().int().min(0).max(100_000),
-  pages: z.array(digest).max(2000), previousPages: z.array(digest).max(2000).nullable(),
-  changedPasses: z.number().int().nonnegative()
-});
-type Cursor = z.infer<typeof cursorSchema>;
 type Dependencies = {
   read(input: WahaRecoveryQuery): Promise<WahaRecoveryPage>;
   /** Canonical persistence is idempotent. It MUST finish before the page cursor moves. */
@@ -36,34 +28,49 @@ export async function recoverWahaWindow(db: PrismaClient, connection: ChannelCon
   const token = randomUUID(), checkpoint = connection.recoveredThroughAt?.toISOString() ?? null;
   const identity = { id: connection.id, workspaceId: connection.workspaceId, channelId: connection.channelId,
     lifecycleGeneration: connection.lifecycleGeneration, recoveredThroughAt: connection.recoveredThroughAt, status: 'connected' as const, eligible: true };
-  const claimed = await db.channelConnection.updateMany({ where: { ...identity, AND: [
+  const usesLanes = recoveryLanes(connection, now) !== null;
+  const claimed = await db.channelConnection.updateMany({ where: { ...identity, sessionName: connection.sessionName, verifiedPhoneNumber: connection.verifiedPhoneNumber, AND: [
     { OR: [{ historyRecoveryLeaseUntil: null }, { historyRecoveryLeaseUntil: { lt: new Date(started) } }] },
-    { OR: [{ historyRecoveryNextAttemptAt: null }, { historyRecoveryNextAttemptAt: { lte: new Date(started) } }] }
+    ...(usesLanes ? [] : [{ OR: [{ historyRecoveryNextAttemptAt: null }, { historyRecoveryNextAttemptAt: { lte: new Date(started) } }] }])
   ] }, data: { historyRecoveryLeaseToken: token, historyRecoveryLeaseUntil: new Date(started + LEASE_MS) } });
   if (!claimed.count) return { recovered: 0, chats: 0, advanced: false, pending: true };
-  const fence = () => ({ ...identity, historyRecoveryLeaseToken: token, historyRecoveryLeaseUntil: { gt: new Date(clock()) } });
+  const fence = () => ({ ...identity, sessionName: connection.sessionName, verifiedPhoneNumber: connection.verifiedPhoneNumber, historyRecoveryLeaseToken: token, historyRecoveryLeaseUntil: { gt: new Date(clock()) } });
   let recovered = 0;
+  let lanes: ReturnType<typeof recoveryLanes> = null, active: RecoveryLane | null = null;
   const heartbeat = setInterval(() => { void db.channelConnection.updateMany({ where: fence(), data: { historyRecoveryLeaseUntil: new Date(clock() + LEASE_MS) } }).catch(() => undefined); }, LEASE_MS / 3);
   try {
     const fresh = await db.channelConnection.findUniqueOrThrow({ where: { id: connection.id } });
-    const parsed = cursorSchema.safeParse(fresh.historyRecoveryCursor);
-    let cursor: Cursor;
-    if (parsed.success && parsed.data.generation === connection.lifecycleGeneration && parsed.data.checkpoint === checkpoint
-      && parsed.data.to >= parsed.data.from && parsed.data.to - parsed.data.from <= OVERLAP_MS / 1000 + WINDOW_MS / 1000 + 1) cursor = parsed.data;
+    lanes = recoveryLanes(fresh, now); active = lanes ? dueRecoveryLane(lanes, started) : null;
+    if (lanes && !active) {
+      await db.channelConnection.updateMany({ where: fence(), data: { historyRecoveryLeaseToken: null, historyRecoveryLeaseUntil: null, historyRecoveryNextAttemptAt: nextRecoveryAttempt(lanes) } });
+      return { recovered, chats: 0, advanced: false, pending: true };
+    }
+    const recent = active === 'recent';
+    const laneCheckpoint = recent ? lanes!.recentThroughAt : checkpoint;
+    const maxWindow = recent ? RECENT_WINDOW_MS : WINDOW_MS;
+    const parsed = cursorSchema.safeParse(lanes && active ? lanes[active].cursor : fresh.historyRecoveryCursor);
+    let cursor: RecoveryCursor;
+    const stateData = () => lanes ? { historyRecoveryCursor: lanes as Prisma.InputJsonValue,
+      historyRecoveryNextAttemptAt: nextRecoveryAttempt(lanes), historyRecoveryFailures: lanes.recent.failures + lanes.backlog.failures } : {};
+    if (parsed.success && parsed.data.generation === connection.lifecycleGeneration && parsed.data.checkpoint === laneCheckpoint
+      && parsed.data.to >= parsed.data.from && parsed.data.to - parsed.data.from <= OVERLAP_MS / 1000 + maxWindow / 1000 + 1) cursor = parsed.data;
     else {
-      const base = connection.recoveredThroughAt?.getTime() ?? now - 15 * 60_000;
-      const end = Math.floor(Math.min(now - SETTLE_MS, base + WINDOW_MS) / 1000);
+      const recentBase = lanes?.recentThroughAt ? Date.parse(lanes.recentThroughAt) : lanes?.recentFromAt;
+      const base = recent ? recentBase! : connection.recoveredThroughAt?.getTime() ?? now - 15 * 60_000;
+      const end = Math.floor(Math.min(now - SETTLE_MS, base + maxWindow) / 1000);
       if (end * 1000 <= base) {
+        if (lanes && active) { lanes[active].cursor = null; lanes[active].nextAttemptAt = clock() + WINDOW_MS; }
         await db.channelConnection.updateMany({ where: fence(), data: { historyRecoveryCursor: Prisma.DbNull, historyRecoveryLeaseToken: null,
-          historyRecoveryLeaseUntil: null, historyRecoveryNextAttemptAt: new Date(clock() + WINDOW_MS) } });
+          historyRecoveryLeaseUntil: null, historyRecoveryNextAttemptAt: new Date(clock() + WINDOW_MS), ...stateData() } });
         return { recovered, chats: 0, advanced: false, pending: false };
       }
-      cursor = { version: 1, generation: connection.lifecycleGeneration, checkpoint,
+      cursor = { version: 1, generation: connection.lifecycleGeneration, checkpoint: laneCheckpoint,
         from: Math.max(0, Math.floor((base - OVERLAP_MS) / 1000)), to: end, offset: 0, pages: [], previousPages: null, changedPasses: 0 };
     }
     const save = async () => {
+      if (lanes && active) lanes[active].cursor = cursor;
       const result = await db.channelConnection.updateMany({ where: fence(), data: {
-        historyRecoveryCursor: cursor as Prisma.InputJsonValue, historyRecoveryLeaseUntil: new Date(clock() + LEASE_MS)
+        historyRecoveryCursor: (lanes ?? cursor) as Prisma.InputJsonValue, historyRecoveryLeaseUntil: new Date(clock() + LEASE_MS)
       } });
       if (result.count !== 1) throw failure('HISTORY_LEASE_LOST');
     };
@@ -80,13 +87,18 @@ export async function recoverWahaWindow(db: PrismaClient, connection: ChannelCon
       }
       if (page.exhausted) {
         if (cursor.previousPages !== null && JSON.stringify(cursor.pages) === JSON.stringify(cursor.previousPages)) {
+          if (lanes && active) {
+            lanes[active].cursor = null; lanes[active].failures = 0;
+            lanes[active].nextAttemptAt = clock() + (cursor.to < Math.floor((now - SETTLE_MS) / 1000) ? 30_000 : WINDOW_MS);
+            if (recent) lanes.recentThroughAt = new Date(cursor.to * 1000).toISOString();
+          }
           const changed = await db.channelConnection.updateMany({ where: fence(), data: {
-            recoveredThroughAt: new Date(cursor.to * 1000), historyRecoveryCursor: Prisma.DbNull,
+            ...(recent ? {} : { recoveredThroughAt: new Date(cursor.to * 1000) }), historyRecoveryCursor: Prisma.DbNull,
             historyRecoveryLeaseToken: null, historyRecoveryLeaseUntil: null, historyRecoveryFailures: 0,
-            historyRecoveryNextAttemptAt: new Date(clock() + (cursor.to < Math.floor((now - SETTLE_MS) / 1000) ? 30_000 : WINDOW_MS))
+            historyRecoveryNextAttemptAt: new Date(clock() + (cursor.to < Math.floor((now - SETTLE_MS) / 1000) ? 30_000 : WINDOW_MS)), ...stateData()
           } });
           if (changed.count !== 1) throw failure('HISTORY_LEASE_LOST');
-          return { recovered, chats: 0, advanced: true, pending: false };
+          return { recovered, chats: 0, advanced: true, pending: false, ...(active ? { lane: active } : {}) };
         }
         if (cursor.previousPages !== null) cursor.changedPasses++;
         cursor.previousPages = cursor.pages; cursor.pages = []; cursor.offset = 0;
@@ -115,17 +127,26 @@ export async function recoverWahaWindow(db: PrismaClient, connection: ChannelCon
       if (cursor.offset > 100_000 || cursor.pages.length > 2000) throw failure('HISTORY_SCAN_LIMIT');
       await save();
     }
+    if (lanes && active) { lanes[active].failures = 0; lanes[active].nextAttemptAt = clock() + 30_000; }
     const released = await db.channelConnection.updateMany({ where: fence(), data: { historyRecoveryLeaseToken: null,
-      historyRecoveryLeaseUntil: null, historyRecoveryFailures: 0, historyRecoveryNextAttemptAt: new Date(clock() + 30_000) } });
+      historyRecoveryLeaseUntil: null, historyRecoveryFailures: 0, historyRecoveryNextAttemptAt: new Date(clock() + 30_000), ...stateData() } });
     if (released.count !== 1) throw failure('HISTORY_LEASE_LOST');
     return { recovered, chats: 0, advanced: false, pending: true };
   } catch (error) {
-    // A failed page stays at its previous cursor. This backoff survives a worker restart.
-    const current = await db.channelConnection.findUnique({ where: { id: connection.id }, select: { historyRecoveryFailures: true } });
-    const failures = (current?.historyRecoveryFailures ?? 0) + 1;
-    await db.channelConnection.updateMany({ where: { id: connection.id, workspaceId: connection.workspaceId, historyRecoveryLeaseToken: token }, data: {
-      historyRecoveryLeaseToken: null, historyRecoveryLeaseUntil: null, historyRecoveryFailures: failures,
-      historyRecoveryNextAttemptAt: new Date(clock() + Math.min(60 * 60_000, 60_000 * 2 ** Math.min(failures - 1, 6)))
+    const current = await db.channelConnection.findUniqueOrThrow({ where: { id: connection.id } });
+    if (current.lifecycleGeneration !== connection.lifecycleGeneration || current.sessionName !== connection.sessionName
+      || current.verifiedPhoneNumber !== connection.verifiedPhoneNumber || current.status !== 'connected' || !current.eligible) {
+      await db.channelConnection.updateMany({ where: { id: connection.id, historyRecoveryLeaseToken: token }, data: { historyRecoveryLeaseToken: null, historyRecoveryLeaseUntil: null } });
+      throw error;
+    }
+    const failures = lanes && active ? ++lanes[active].failures : current.historyRecoveryFailures + 1;
+    const next = new Date(clock() + Math.min(60 * 60_000, 60_000 * 2 ** Math.min(failures - 1, 6)));
+    if (lanes && active) lanes[active].nextAttemptAt = next.getTime();
+    await db.channelConnection.updateMany({ where: fence(), data: {
+      historyRecoveryLeaseToken: null, historyRecoveryLeaseUntil: null,
+      historyRecoveryFailures: lanes ? lanes.recent.failures + lanes.backlog.failures : failures,
+      historyRecoveryNextAttemptAt: lanes ? nextRecoveryAttempt(lanes) : next,
+      ...(lanes ? { historyRecoveryCursor: lanes as Prisma.InputJsonValue } : {})
     } });
     throw error;
   } finally { clearInterval(heartbeat); }
