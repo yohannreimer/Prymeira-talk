@@ -4,7 +4,8 @@ import type { WahaMessage, WahaRecoveryPage, WahaRecoveryQuery } from '../waha/w
 /** Independent operator scan: never replaces or jumps the live recovery frontier. */
 export type HistoryBackfillCursor = {
   from: number; to: number; offset: number; pages: string[]; previousPages: string[] | null;
-  holdsByOffset: Record<string, number>; scanned: number; inserted: number; complete: boolean;
+  holdsByOffset: Record<string, number>; previousHoldsByOffset?: Record<string, number>;
+  scanned: number; inserted: number; complete: boolean;
 };
 export function newHistoryBackfill(from: number, to: number): HistoryBackfillCursor {
   if (![from, to].every(Number.isSafeInteger) || from < 0 || to < from || to - from > 15 * 86400) throw new Error('BACKFILL_RANGE');
@@ -36,13 +37,16 @@ export async function stepHistoryBackfill(input: {
       if (c.previousPages !== null && JSON.stringify(c.pages) === JSON.stringify(c.previousPages)) {
         c.complete = true; await input.save(c); return c;
       }
-      c.previousPages = c.pages; c.pages = []; c.offset = 0; c.holdsByOffset = {};
+      c.previousPages = c.pages; c.previousHoldsByOffset = c.holdsByOffset;
+      c.pages = []; c.offset = 0; c.holdsByOffset = {};
       await input.save(c); continue;
     }
     const fingerprint = historyDigest({ rawDigest: page.rawDigest, rawCount: page.rawCount, messages: page.messages.map(m => [m.id, historyDigest(m)]) });
-    // Re-persist on verification as well: a previously held row may now reconcile.
-    // Per-message canonical transactions keep duplicate records and side effects suppressed.
-    const result = await input.persist(page.messages);
+    // A byte-identical verified page with a successful prior canonical write needs
+    // no repeated writes. Missing legacy proof or any hold must retry persistence.
+    const verified = c.previousPages?.[c.pages.length] === fingerprint
+      && c.previousHoldsByOffset?.[String(c.offset)] === 0;
+    const result = verified ? { inserted: 0, held: 0 } : await input.persist(page.messages);
     c.holdsByOffset[String(c.offset)] = result.held;
     c.inserted += result.inserted; c.scanned += page.messages.length;
     c.pages.push(fingerprint); c.offset = page.nextOffset;

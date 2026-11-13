@@ -5,6 +5,13 @@ const page = (messages: Array<{ id: string; timestamp: number }>, offset = 0): W
   messages, rawCount: messages.length, nextOffset: offset + messages.length, exhausted: !messages.length, rawDigest: 'a'.repeat(64)
 });
 describe('bounded independent WAHA history backfill', () => {
+  it('verifies an identical successful page without repeating canonical writes', async () => {
+    const c = newHistoryBackfill(100, 200), persist = vi.fn(async () => ({ inserted: 1, held: 0 }));
+    const read = vi.fn(async q => q.offset ? page([], q.offset) : page([{ id: 'a', timestamp: 150 }]));
+    const input = { session: 'owned', cursor: c, read, persist, save: vi.fn(async () => {}), maxPages: 2 };
+    await stepHistoryBackfill(input); await stepHistoryBackfill(input);
+    expect(c.complete).toBe(true); expect(c.inserted).toBe(1); expect(persist).toHaveBeenCalledTimes(1);
+  });
   it('requires two identical complete scans and keeps holds visible instead of claiming reconciliation', async () => {
     const c = newHistoryBackfill(100, 200), save = vi.fn(async () => {}), persist = vi.fn(async () => ({ inserted: 0, held: 1 }));
     const read = vi.fn(async q => q.offset ? page([], q.offset) : page([{ id: 'a', timestamp: 150 }]));

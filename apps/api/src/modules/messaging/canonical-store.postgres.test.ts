@@ -275,6 +275,29 @@ describe.skipIf(!url)('canonical transactional store on PostgreSQL', () => {
       outcome: 'held', reconciliationReasons: ['receipt_key_conflict'], allowOperationalEffects: false
     });
   });
+  it('tolerates one floating-point roundtrip unit in WAHA history coordinates but holds real movement', async () => {
+    const c = { ...await context(undefined, undefined, 'waha'), mode: 'history' as const };
+    const event = msg(c);
+    event.content.location = { latitude: 26.12345678901234, longitude: -48.12345678901234, name: null, address: null, isLive: false };
+    const first = await persist(event, 'location-history');
+    const rounded = { ...event, content: { ...event.content, location: { ...event.content.location, latitude: 26.123456789012344 } } };
+    expect(await persist(rounded, 'location-history')).toMatchObject({ outcome: 'duplicate', messageId: first.messageId, allowOperationalEffects: false });
+    expect(await db.canonicalObservation.count({ where: { workspaceId: c.workspaceId, state: 'held' } })).toBe(0);
+    const original = await db.canonicalObservation.findUniqueOrThrow({ where: { id: first.observationId } });
+    const { id, ...copy } = original;
+    await db.canonicalObservation.create({ data: { ...copy, receiptTuple: copy.receiptTuple as Prisma.InputJsonValue,
+      sourceOrder: copy.sourceOrder as Prisma.InputJsonValue, currentRevision: Prisma.DbNull, resolutionEvidence: Prisma.DbNull,
+      payload: JSON.parse(JSON.stringify(rounded)), identityId: null, state: 'held', reason: 'receipt_key_conflict' } });
+    await db.canonicalObservation.update({ where: { id }, data: { state: 'held', reason: 'receipt_key_conflict' } });
+    await db.canonicalMessageIdentity.update({ where: { id: first.identityId! }, data: { contentState: 'pending_reconciliation' } });
+    const repairResult = await persist(rounded, 'location-history');
+    expect(repairResult).toMatchObject({ outcome: 'duplicate', messageId: first.messageId, allowOperationalEffects: false });
+    expect(await db.canonicalObservation.count({ where: { workspaceId: c.workspaceId, state: 'held' } })).toBe(0);
+    expect((await db.canonicalObservation.findUniqueOrThrow({ where: { id } })).payload).toEqual(original.payload);
+    const moved = { ...rounded, content: { ...rounded.content, location: { ...rounded.content.location, latitude: 26.123456790012347 } } };
+    expect(await persist(moved, 'location-history')).toMatchObject({ outcome: 'held', reconciliationReasons: ['receipt_key_conflict'] });
+    expect((await db.message.findUniqueOrThrow({ where: { id: first.messageId! } })).body).toBe('hello');
+  });
   it('repairs prior mapping-only recovery conflicts but keeps other content frontiers pending', async () => {
     const c = { ...await context(undefined, undefined, 'waha'), mode: 'recovered_live' as const };
     const event = msg(c), first = await persist(event, 'recovery');
