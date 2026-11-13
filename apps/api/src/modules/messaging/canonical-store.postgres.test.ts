@@ -234,6 +234,70 @@ describe.skipIf(!url)('canonical transactional store on PostgreSQL', () => {
     expect(await db.canonicalAddressEvidence.count({ where: { workspaceId: c.workspaceId } })).toBe(1);
     expect(await db.canonicalObservation.count({ where: { workspaceId: c.workspaceId, state: 'held' } })).toBe(0);
   });
+  it('does not treat a changed push name as a new WAHA history message or content revision', async () => {
+    for (const mode of ['history', 'recovered_live'] as const) {
+      const c = { ...await context(undefined, undefined, 'waha'), mode };
+      const event = msg(c), first = await persist(event, 'renamed-history');
+      expect(await persist({ ...event, pushName: 'Renamed contact' }, 'renamed-history')).toMatchObject({
+        outcome: 'duplicate', messageId: first.messageId, allowOperationalEffects: false
+      });
+      expect(await db.message.count({ where: { workspaceId: c.workspaceId } })).toBe(1);
+      expect(await db.canonicalObservation.count({ where: { workspaceId: c.workspaceId, state: 'held' } })).toBe(0);
+      expect(await db.canonicalMessageIdentity.findUnique({ where: { id: first.identityId! } })).toMatchObject({ contentState: 'ready' });
+    }
+  });
+  it('repairs persisted name-only history conflicts after reconnect while retaining receipt payloads', async () => {
+    const c = { ...await context(undefined, undefined, 'waha'), mode: 'recovered_live' as const };
+    const event = msg(c), first = await persist(event, 'renamed-history');
+    const original = await db.canonicalObservation.findUniqueOrThrow({ where: { id: first.observationId } });
+    await db.channelConnection.update({ where: { id: c.connectionId }, data: { lifecycleGeneration: 2 } });
+    const incoming = { ...event, context: { ...c, lifecycleGeneration: 2 }, pushName: 'Renamed contact' };
+    const { id, ...copy } = original;
+    const second = await db.canonicalObservation.create({ data: { ...copy, lifecycleGeneration: 2,
+      receiptTuple: copy.receiptTuple as Prisma.InputJsonValue, sourceOrder: copy.sourceOrder as Prisma.InputJsonValue,
+      currentRevision: Prisma.DbNull, resolutionEvidence: Prisma.DbNull,
+      payload: JSON.parse(JSON.stringify(incoming)), identityId: null, state: 'held', reason: 'receipt_key_conflict' } });
+    await db.canonicalObservation.update({ where: { id }, data: { state: 'held', reason: 'receipt_key_conflict' } });
+    await db.canonicalMessageIdentity.update({ where: { id: first.identityId! }, data: { contentState: 'pending_reconciliation' } });
+    expect(await persist(incoming, 'renamed-history')).toMatchObject({ outcome: 'duplicate', messageId: first.messageId, allowOperationalEffects: false });
+    expect(await db.canonicalObservation.count({ where: { workspaceId: c.workspaceId, state: 'held' } })).toBe(0);
+    expect((await db.canonicalObservation.findUniqueOrThrow({ where: { id } })).payload).toEqual(original.payload);
+    expect((await db.canonicalObservation.findUniqueOrThrow({ where: { id: second.id } })).payload).toEqual(JSON.parse(JSON.stringify(incoming)));
+    expect(await db.canonicalMessageIdentity.findUnique({ where: { id: first.identityId! } })).toMatchObject({ contentState: 'ready' });
+    expect(await db.message.findUnique({ where: { id: first.messageId! } })).toMatchObject({ body: 'hello' });
+    const changed = { ...incoming, content: { ...incoming.content, body: 'actually changed' } };
+    expect(await persist(changed, 'renamed-history')).toMatchObject({ outcome: 'held', reconciliationReasons: ['receipt_key_conflict'] });
+  });
+  it('keeps live receipt conflict handling unchanged when a push name changes', async () => {
+    const c = await context(undefined, undefined, 'waha');
+    const event = msg(c); await persist(event, 'live-name');
+    expect(await persist({ ...event, pushName: 'Changed' }, 'live-name')).toMatchObject({
+      outcome: 'held', reconciliationReasons: ['receipt_key_conflict'], allowOperationalEffects: false
+    });
+  });
+  it('tolerates one floating-point roundtrip unit in WAHA history coordinates but holds real movement', async () => {
+    const c = { ...await context(undefined, undefined, 'waha'), mode: 'history' as const };
+    const event = msg(c);
+    event.content.location = { latitude: 26.12345678901234, longitude: -48.12345678901234, name: null, address: null, isLive: false };
+    const first = await persist(event, 'location-history');
+    const rounded = { ...event, content: { ...event.content, location: { ...event.content.location, latitude: 26.123456789012344 } } };
+    expect(await persist(rounded, 'location-history')).toMatchObject({ outcome: 'duplicate', messageId: first.messageId, allowOperationalEffects: false });
+    expect(await db.canonicalObservation.count({ where: { workspaceId: c.workspaceId, state: 'held' } })).toBe(0);
+    const original = await db.canonicalObservation.findUniqueOrThrow({ where: { id: first.observationId } });
+    const { id, ...copy } = original;
+    await db.canonicalObservation.create({ data: { ...copy, receiptTuple: copy.receiptTuple as Prisma.InputJsonValue,
+      sourceOrder: copy.sourceOrder as Prisma.InputJsonValue, currentRevision: Prisma.DbNull, resolutionEvidence: Prisma.DbNull,
+      payload: JSON.parse(JSON.stringify(rounded)), identityId: null, state: 'held', reason: 'receipt_key_conflict' } });
+    await db.canonicalObservation.update({ where: { id }, data: { state: 'held', reason: 'receipt_key_conflict' } });
+    await db.canonicalMessageIdentity.update({ where: { id: first.identityId! }, data: { contentState: 'pending_reconciliation' } });
+    const repairResult = await persist(rounded, 'location-history');
+    expect(repairResult).toMatchObject({ outcome: 'duplicate', messageId: first.messageId, allowOperationalEffects: false });
+    expect(await db.canonicalObservation.count({ where: { workspaceId: c.workspaceId, state: 'held' } })).toBe(0);
+    expect((await db.canonicalObservation.findUniqueOrThrow({ where: { id } })).payload).toEqual(original.payload);
+    const moved = { ...rounded, content: { ...rounded.content, location: { ...rounded.content.location, latitude: 26.123456790012347 } } };
+    expect(await persist(moved, 'location-history')).toMatchObject({ outcome: 'held', reconciliationReasons: ['receipt_key_conflict'] });
+    expect((await db.message.findUniqueOrThrow({ where: { id: first.messageId! } })).body).toBe('hello');
+  });
   it('repairs prior mapping-only recovery conflicts but keeps other content frontiers pending', async () => {
     const c = { ...await context(undefined, undefined, 'waha'), mode: 'recovered_live' as const };
     const event = msg(c), first = await persist(event, 'recovery');
