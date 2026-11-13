@@ -317,7 +317,7 @@ const responderPergunta: Tool<z.infer<typeof respostaArgs>> = {
 const semBaseArgs = z.object({ perguntaId: idDaPergunta });
 const marcarSemBase: Tool<z.infer<typeof semBaseArgs>> = {
   name: "marcar_sem_base",
-  description: "Marca que os documentos não respondem a pergunta. Só depois de buscar. Fica pendente no resumo interno; continue coletando até o pedido estar qualificado ou haver impedimento real.",
+  description: "Marca que os documentos não respondem a pergunta. Só depois de buscar. Pergunta factual explícita (natureza=pergunta) determina repasse ao vendedor no mesmo turno, sem mais coleta; simples solicitação de item/especificação fica interna para o orçamento.",
   parameters: { type: "object", properties: { perguntaId: { type: "string" } }, required: ["perguntaId"], additionalProperties: false },
   schema: semBaseArgs,
   execute(args, context) {

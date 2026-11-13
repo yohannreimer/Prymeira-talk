@@ -129,11 +129,26 @@ const semTermoInterno: Rule = {
   }
 };
 
+/** A customer needs an action, never a recital of the assistant's missing knowledge. */
+const semExporDesconhecimento: Rule = {
+  id: "sem_expor_desconhecimento",
+  check: ({ texto }) => /\bnao (?:sei|sabemos|consigo|conseguimos)\s+(?:te |lhe |ainda )?(?:informar|confirmar|dizer|responder|garantir|verificar)|\bnao (?:tenho|temos)\b.{0,45}\b(?:informacao|informacoes|confirmacao|confirmad[oa]s?)\b|\b(?:disponibilidade|fornecimento|entrega|frete|prazo|condicao|minimo)\b[^.!?\n]{0,60}\bnao (?:esta|estao|foi|foram)\s+(?:ainda )?(?:definid[oa]s?|confirmad[oa]s?)\b/.test(sem(texto))
+    ? { ok: false, regra: "sem_expor_desconhecimento", motivo: "Retire a explicação de desconhecimento. Se a base responde, dê a resposta. Se é apenas uma especificação para cotação, registre e colete o dado necessário sem ressalva. Se uma dúvida factual continua sem resposta, use pedir_humano com duvida_sem_resposta e uma mensagem direta de encaminhamento ao vendedor, sem novas perguntas nem promessa de solução." }
+    : { ok: true }
+};
+
 const semTerceirizar: Rule = {
   id: "sem_terceirizar_prequalificacao",
   check: ({texto,jogada}) => jogada.tipo !== "cobrar_pendencia" && !jogada.avisarHumano && !jogada.humano && /\b(vendedor(?:a)?|comercial|responsavel|ele confirma|eles confirmam)\b|\b(?:vou|vamos)\s+(?:encaminhar|passar|transferir)\b.{0,50}\b(?:pedido|solicitacao|atendimento|orcamento|dados|voce)\b/.test(sem(texto))
     ? {ok:false,regra:"sem_terceirizar_prequalificacao",motivo:"Você conduz a pré-qualificação. Retire a referência ao vendedor/comercial/responsável e faça a próxima pergunta necessária. Divergências ficam internas até o repasse real."}
     : {ok:true}
+};
+
+const repasseSemColeta: Rule = {
+  id: "repasse_sem_coleta",
+  check: ({ texto, jogada }) => jogada.dados?.duvidaSemResposta === true && texto.includes("?")
+    ? { ok: false, regra: "repasse_sem_coleta", motivo: "A dúvida comercial exige repasse agora. Anuncie o encaminhamento e preserve os dados recebidos, sem continuar perguntando quantidade, medida, cidade, cadastro ou aceite." }
+    : { ok: true }
 };
 
 const respondePerguntas: Rule = {
@@ -161,4 +176,4 @@ const aberturaUtil: Rule = {
     : { ok: true }
 };
 
-export const regras: Rule[] = [semAgradecimentoDeContato, aberturaUtil, respondePerguntas, semTerceirizar, naoRepete, naoRepeteFrase, semValorNovo, designacaoDoFollowup, semPressao, naoInverteRecusa, naoPrometeAnexo, semTermoInterno];
+export const regras: Rule[] = [semAgradecimentoDeContato, aberturaUtil, respondePerguntas, semExporDesconhecimento, repasseSemColeta, semTerceirizar, naoRepete, naoRepeteFrase, semValorNovo, designacaoDoFollowup, semPressao, naoInverteRecusa, naoPrometeAnexo, semTermoInterno];

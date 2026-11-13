@@ -66,9 +66,9 @@ describe("natural attendance regressions from the Villefer review", () => {
     expect(result).toMatchObject({ ok: false, regra: "juiz_requisito", motivo: expect.stringContaining("ressalva_interna") });
     expect(await createJuizDeAtendimento(jev({ afirmacao_sem_base: "estoque" }))(judgeInput("Temos todas essas medidas em estoque."))).toMatchObject({ ok: false });
   });
-  it("allows an honest limit when availability was actually asked", async () => {
-    const result = await createJuizDeAtendimento(jev())(judgeInput("Não tenho a disponibilidade dessa medida confirmada. Quantas barras precisa?", "Vocês têm esse perfil à pronta entrega?"));
-    expect(result).toMatchObject({ ok: true });
+  it("blocks a recital of missing knowledge even when availability was actually asked", async () => {
+    const result = await reviewMessage({ ...judgeInput("Não tenho a disponibilidade dessa medida confirmada. Quantas barras precisa?", "Vocês têm esse perfil à pronta entrega?"), rules: regras, judge: createJuizDeAtendimento(jev()) });
+    expect(result).toMatchObject({ ok: false, regra: "sem_expor_desconhecimento" });
   });
   it.each(["Não fornecemos buchas de ferro fundido.", "Não fornecemos corte e dobra."])("answers an integral refusal without starting a quote: %s", citacao => {
     const ficha: FichaDoAtendimento = { ...fichaInicial(), perguntas: [{ id: "q1", texto: "Vocês fornecem esse item?", status: "respondida", buscas: 1, resposta: { trechoId: "t1", citacao } }] };

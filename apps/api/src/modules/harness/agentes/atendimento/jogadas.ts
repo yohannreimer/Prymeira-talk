@@ -91,7 +91,7 @@ function jogadaDaMensagem(ficha: FichaDoAtendimento, triagem: TriageResult | nul
     return { tipo: "encerrar", instrucao: "O contato encerrou ou recusou. Agradeça em uma frase, sem insistir e sem perguntar nada." };
   }
   const jogada = jogadaDasPerguntas(ficha);
-  if (jogada.tipo === "responder_recusa") return jogada;
+  if (jogada.tipo === "responder_recusa" || jogada.avisarHumano) return jogada;
   // Weights computed by code go to the writer even when the reader did not cite them, apart from the minimum.
   const pesos = (ficha.pesosDaVez ?? []).map((id) => ficha.trechosVistos[id]).filter(Boolean);
   const anexos = (ficha.anexosDaVez ?? []).map((id) => pedido.anexos?.find((anexo) => anexo.id === id)).filter((anexo) => anexo !== undefined);
@@ -141,10 +141,25 @@ function jogadaDasPerguntas(ficha: FichaDoAtendimento): Jogada {
       instrucao: `Responda de forma curta e cordial somente o que a base recusa neste pedido: ${respostas.join("; ")}. Se ainda não cumprimentou, devolva a saudação do contato. Não pergunte medida, quantidade, cidade, cadastro ou aceite, nem encaminhe apenas para repetir a recusa. Não ofereça produtos parecidos por conta própria.`
     };
   }
+  // A factual question is different from a specification requested for a quote.
+  // Once searched and unanswered it belongs to a person, even with customer fields missing.
+  const duvidasDiretas = semBase.filter(item => item.natureza === "pergunta");
+  if (duvidasDiretas.length) {
+    const assuntos = duvidasDiretas.map(item => `"${item.texto}"`).join("; ");
+    return {
+      tipo: "responder_e_passar",
+      dados: { duvidaSemResposta: true },
+      instrucao: [
+        ...(respostas.length ? [`Responda somente os fatos confirmados que atendem à última mensagem: ${respostas.join("; ")}.`] : []),
+        `Encaminhe agora ao vendedor para tratar esta dúvida do cliente: ${assuntos}. Diga diretamente o que será feito, citando o assunto e aproveitando os dados já recebidos. Não diga que não sabe, não consegue confirmar ou não tem informação. Não peça quantidade, medida, cidade ou cadastro antes do repasse e não prometa disponibilidade, aceitação ou prazo. Preserve as medidas originais e o pedido no resumo interno.`
+      ].join(" "),
+      avisarHumano: `Dúvida factual sem resposta após consulta à base: ${assuntos}. Pedido recebido: ${ficha.prequalificacao?.resumo || "ver ficha e histórico"}. Divergências: ${ficha.prequalificacao?.divergencias.join("; ") || "ver pergunta"}`
+    };
+  }
   if (ficha.prequalificacao?.situacao === "pronta" || ficha.prequalificacao?.situacao === "impedida") {
     const pronta = ficha.prequalificacao.situacao === "pronta";
     return {tipo: pronta ? "prequalificacao_pronta" : "prequalificacao_impedida",
-      instrucao: pronta ? "O pedido está qualificado. Faça um resumo curto e diga que vai encaminhar para preparação do orçamento, sem declarar preço, venda ou pagamento confirmado." : "Há um impedimento real para continuar. Diga o assunto que precisa de atenção e que encaminhará para uma pessoa resolver, sem inventar resposta.",
+      instrucao: pronta ? "O pedido está qualificado. Faça um resumo curto e diga que vai encaminhar para preparação do orçamento, sem declarar preço, venda ou pagamento confirmado." : "Há um impedimento real para continuar. Diga diretamente que encaminhará o assunto a uma pessoa, sem narrar que não sabe ou não consegue confirmar, sem fazer outra pergunta e sem inventar resposta.",
       avisarHumano: `${pronta ? "Pedido qualificado para orçamento" : "Impedimento na pré-qualificação"}: ${ficha.prequalificacao.resumo}. Divergências: ${ficha.prequalificacao.divergencias.join("; ") || "nenhuma"}`};
   }
   if (semBase.length) {
@@ -152,7 +167,7 @@ function jogadaDasPerguntas(ficha: FichaDoAtendimento): Jogada {
       tipo: "qualificar_com_pendencias",
       instrucao: [
         ...(respostas.length ? [`Responda com estas informações da base: ${respostas.join("; ")}. Use só o que responde a última mensagem; não repita informações antigas sem motivo. Se o cliente perguntou novamente ou pediu confirmação, responda esse ponto de novo.`] : []),
-        `Divergências internas ainda sem base: ${semBase.map(item => `"${item.texto}"`).join("; ")}. Mantenha essas pendências na ficha. Uma lista para cotação, medida ou material solicitado não é pergunta direta sobre nossa disponibilidade: reconheça o pedido e pergunte apenas o próximo dado que falta, sem narrar que não sabe informar, que o fornecimento não está definido ou que falta confirmação. Só explique uma limitação quando o contato realmente perguntou aquele fato nas próprias palavras, quando ela impede atender ou quando a resposta sem ela seria enganosa. Não invente resposta nem prometa checar/retornar. Uma especificação solicitada pode ficar registrada sem garantia da combinação exata.`
+        `Divergências internas ainda sem base: ${semBase.map(item => `"${item.texto}"`).join("; ")}. Mantenha essas pendências na ficha. Uma lista para cotação, medida ou material solicitado não é pergunta direta sobre nossa disponibilidade: reconheça o pedido e pergunte apenas o próximo dado que falta, sem narrar que não sabe informar, que o fornecimento não está definido ou que falta confirmação. Não narre desconhecimento. Se houver uma dúvida factual real que a ficha não capturou e que não pode ser respondida com a base, peça humano com duvida_sem_resposta, citando o assunto sem expor incapacidade. Não invente resposta nem prometa checar/retornar. Uma especificação solicitada pode ficar registrada sem garantia da combinação exata.`
       ].join(" "),
       dados: { perguntasSemBase: semBase.map(item=>item.id) }
 

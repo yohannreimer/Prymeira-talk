@@ -29,7 +29,7 @@ export const atendimento: AgentDefinition<FichaDoAtendimento, ContextoDoAtendime
   aposEnvio,
   regras,
   // The passages the reader already pulled from the base are true facts the judge must also see.
-  orientacaoDaConversa: "Saudação abre atendimento: cumprimente e pergunte como ajudar; se já existe pedido, atenda ao pedido. Nunca agradeça genericamente pelo contato. Não repita informações sem necessidade. Responda novamente ao que o cliente perguntou de novo; retome um dado ainda pendente se ele aceitou avançar. Não repita ofertas de catálogo/vendedor. Use as fontes completas para responder cidades e fornecimento já confirmados. Divergências técnicas ficam internas; uma lista de cotação não obriga avisar que o fornecimento ou a especificação ainda não estão definidos. Só exponha uma limitação perguntada diretamente ou necessária para não enganar.",
+  orientacaoDaConversa: "Saudação abre atendimento: cumprimente e pergunte como ajudar; se já existe pedido, atenda ao pedido. Nunca agradeça genericamente pelo contato. Não repita informações sem necessidade. Responda novamente ao que o cliente perguntou de novo; retome um dado ainda pendente se ele aceitou avançar. Não repita ofertas de catálogo/vendedor. Use as fontes completas para responder cidades e fornecimento já confirmados. Divergências técnicas ficam internas; uma lista de cotação não obriga avisar que o fornecimento ou a especificação ainda não estão definidos. Se uma dúvida factual não puder ser respondida com a base, encaminhe diretamente ao vendedor, sem expor desconhecimento nem continuar o formulário; negativas e condições comprovadas continuam sendo respondidas.",
   fontesDoEscritor: (ficha) => Object.entries(ficha.trechosVistos).map(([id, texto]) => `[${id}] ${texto}`).join("\n"),
   fontesDoRevisor: (ficha) => Object.entries(ficha.trechosVistos).map(([id, texto]) => `[${id}] ${texto}`).join("\n"),
   janelaDeMensagens: 20,
@@ -41,9 +41,10 @@ export const atendimento: AgentDefinition<FichaDoAtendimento, ContextoDoAtendime
   motivosParaHumano: {
     sem_base_para_retomar: "num follow-up, a pendência depende de um fato (preço, prazo, estoque) que não está na conversa",
     reclamacao: "o cliente está reclamando ou irritado com a empresa",
-    fechar_pedido: "o cliente quer fechar o pedido agora (faturar, pagar, emitir nota)"
+    fechar_pedido: "o cliente quer fechar o pedido agora (faturar, pagar, emitir nota)",
+    duvida_sem_resposta: "o cliente fez uma dúvida factual que as fontes não respondem; encaminhar o assunto e os dados recebidos, sem narrar desconhecimento nem continuar o formulário"
   },
-  motivosAoVivo: ["reclamacao", "fechar_pedido"],
+  motivosAoVivo: ["reclamacao", "fechar_pedido", "duvida_sem_resposta"],
   avisoDeRepasse: "Vou passar sua mensagem para um vendedor, que continua o atendimento com você por aqui."
 };
 
