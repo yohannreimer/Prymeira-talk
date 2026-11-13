@@ -3,6 +3,7 @@ import { PrismaClient } from '@prisma/client';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { applyAuthenticatedConnectionObservation } from './channel-connections.js';
 import { normalizeEvolutionWebhook } from '../evolution/evolution-event-normalizer.js';
+import { normalizeWahaEvent } from '../waha/waha-normalizer.js';
 import type { TrustedMessagingContext } from '../messaging/normalized-event.js';
 
 const url = process.env.MESSAGING_TEST_DATABASE_URL;
@@ -32,6 +33,24 @@ describe.skipIf(!url)('connection observations on PostgreSQL', () => {
     return { observe, readChannel: () => db.channel.findUniqueOrThrow({ where: { id: channel.id } }) };
   }
 
+  it('records a WAHA STARTING outage once without granting eligibility when WORKING returns', async () => {
+    const workspaceId = randomUUID(); workspaces.push(workspaceId);
+    const channel = await db.channel.create({ data: { workspaceId, provider: 'evolution', providerKey: randomUUID(), status: 'connected', verifiedMessagingPhoneNumber: '15550000000' } });
+    const c = await db.channelConnection.create({ data: { workspaceId, channelId: channel.id, provider: 'waha', sessionName: randomUUID(),
+      status: 'connected', health: 'healthy', eligible: true, verifiedPhoneNumber: '15550000000' } });
+    const at = Math.floor(Date.now() / 1000) * 1000;
+    const observe = async (status: string, offset: number) => {
+      const context: TrustedMessagingContext = { workspaceId, channelId: channel.id, provider: 'waha', channelProvider: 'evolution', connectionId: c.id,
+        sessionName: c.sessionName, lifecycleGeneration: c.lifecycleGeneration, mode: 'live', observedAt: new Date(at + offset).toISOString() };
+      const n = normalizeWahaEvent(context, { event: 'session.status', session: c.sessionName, payload: { status } });
+      if (n.kind !== 'accepted' || n.event.kind !== 'control') throw Error('Invalid status fixture');
+      const event = n.event; await db.$transaction(tx => applyAuthenticatedConnectionObservation(tx, event));
+      return db.channelConnection.findUniqueOrThrow({ where: { id: c.id } });
+    };
+    expect(await observe('STARTING', 0)).toMatchObject({ status: 'connecting', eligible: false, disconnectedAt: new Date(at) });
+    expect(await observe('STARTING', 60_000)).toMatchObject({ disconnectedAt: new Date(at) });
+    expect(await observe('WORKING', 120_000)).toMatchObject({ status: 'connected', eligible: false, disconnectedAt: new Date(at), lifecycleGeneration: 0 });
+  });
   it('Vendas 06 on 05/10: connecting then open as the same account puts the primary back in use', async () => {
     const { observe } = await fixture('554789126453');
     expect(await observe({ state: 'connecting', statusReason: 200 })).toMatchObject({ status: 'connecting', eligible: false });
