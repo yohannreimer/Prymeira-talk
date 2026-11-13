@@ -1,6 +1,7 @@
 import { choice, noul, type JevClient, type JevQuestion } from "../../core/jev.js";
 import { CRITERIO_INVENTA, PERGUNTA_INVENTA, type Judge } from "../../core/review.js";
 import type { FichaDoAtendimento } from "./tipos.js";
+import { contextoDosPedidos } from "./contexto-dos-pedidos.js";
 
 type Requisito = { id: string; exigencia: string; pergunta: JevQuestion & { type: "choice" }; falhas: Record<string, string> };
 
@@ -92,6 +93,7 @@ export function createJuizDeAtendimento(jev: JevClient): Judge {
 /** Concrete defects only: useful reactivation does not require new information or a fresh promise to reply. */
 export function createJuizDeFollowup(jev: JevClient): Judge {
   const falhas: Record<string, string> = {
+    mistura_pedidos: "A mensagem combina dados de pedidos distintos ou retoma uma especificação substituída. Use só os dados e a etapa da oportunidade retomada.",
     contradiz_negociacao: "A mensagem altera uma condição informada pelo vendedor nesta negociação. Preserve o combinado, mesmo quando difere da base geral.",
     etapa_antecipada: "A mensagem pede medida ou cadastro antes de saber se a alternativa atende. Pergunte primeiro só pela viabilidade da alternativa.",
     cobra_empresa: "A pendência é da empresa: falta responder ou enviar o que o cliente pediu. Gere lembrete interno, sem cobrar avaliação de algo não entregue.",
@@ -100,12 +102,13 @@ export function createJuizDeFollowup(jev: JevClient): Judge {
     inventa: "A mensagem inventa preço, estoque atual, prazo, desconto, condição ou equivalência técnica. Retire a afirmação sem suporte.",
     repete_dado: "A mensagem cobra um dado já informado. Use o histórico e pergunte apenas o que ainda falta.",
     terceiriza: "A mensagem desvia para vendedor ou catálogo sem retomar a negociação. Pergunte diretamente sobre o pedido.",
-    repete_mensagem: "A mensagem repete a mesma cobrança sem mudar a abordagem. Preserve o assunto e faça uma retomada diferente.",
     contato_interno: "O contato não é cliente nesta conversa. Não envie retomada comercial."
   };
   return async ({ texto, jogada, historico, fichaTexto, pedidoTexto, fontesExtras }) => {
     const exigencia = `Revise a retomada de uma venda parada e escolha uma falha concreta, ou adequada.
+${contextoDosPedidos}
 Silêncio, cobranças anteriores sem resposta, agradecimento pelo orçamento e 'vou ver e aviso' NÃO encerram a compra. Retomar o mesmo produto com outra abordagem é o objetivo, não repetição indevida. Não exija novidade, urgência, desconto ou promessa de resposta para permitir follow-up. O sistema controla cadência e limite: avalie conteúdo, não invente intervalo.
+Pergunta de qualificação sem resposta pode ser retomada: "qual o comprimento?" seguido dias depois de "Oi! Para seguir com o orçamento dos tubos de8e6polegadas, qual o comprimento de cada um?" é ADEQUADO. A checagem de cópia de mensagens é feita pelas regras de código ANTES desta revisão e não faz parte desta classificação. O mesmo objetivo ou dado pendente é a finalidade do follow-up. Não invente outra falha por essa retomada nem peça aceite de alternativa quando a pendência é um comprimento ainda ausente.
 A condição informada pelo vendedor nesta negociação prevalece sobre a base geral; 500 kg informados pelo vendedor não podem ser corrigidos para 1.000 kg. Não exija mencionar vendedor nem confirmação. Não deduza estoque atual de oferta antiga. Cada condição pertence ao produto/modalidade informado: mínimo de tubos não vale automaticamente para perfis, e não se pode somar perfil U com tubo para atingir 500 kg sem autorização explícita. Isso é contradiz_negociacao, mesmo se a ficha ou a jogada tiver resumido errado: o histórico original prevalece sobre essas interpretações.
 Pedido detalhado de cotação ainda sem orçamento respondido gera lembrete interno, mesmo se a última mensagem da empresa só informou mínimo genérico, disse "registrei" ou ofereceu catálogo/vendedor. Isso não obriga o cliente a pedir novamente para seguir. Só cobre dado essencial ausente ou aceite explicitamente perguntado e não respondido. Para quem pediu retalho, confirmar se chapa inteira serve é válido, sem pedir medidas antes desse aceite; orçamento enviado e agradecido permite retomada. Aprovação com pagamento ainda indefinido mantém essa decisão em aberto. Cortesia não é fechamento. Uma alternativa recusada não deve ser oferecida de novo, mas o pedido original pode continuar se ainda houver caminho de compra. Não presuma equivalência entre vigas ou materiais.
 Se o vendedor ofereceu uma alternativa e perguntou se atende, o silêncio mantém essa decisão aberta: uma nova pergunta contextual sobre a alternativa é válida, sem presumir equivalência técnica. Não vete só porque o item original estava indisponível ou a pergunta já foi feita; retomar uma decisão sem resposta é o objetivo. Vete afirmar equivalência sem prova ou insistir após recusa expressa. Recusa de uma oferta posterior não encerra os outros itens de uma cotação anterior: retomar os itens ainda abertos, não recusados e não declarados indisponíveis é válido, mesmo sem sinal recente de interesse. Não cobre a alternativa recusada nem afirme disponibilidade do item que acabou.

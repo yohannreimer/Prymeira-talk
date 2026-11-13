@@ -20,7 +20,8 @@ env:
 jobs:
   validate:
     name: Validate exact revision
-    runs-on: ubuntu-latest
+    # Pin validation after the November 2026 ubuntu-latest migration.
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     services:
       postgres:
@@ -72,9 +73,20 @@ jobs:
       - run: pnpm --filter @prymeira-talk/api exec prisma generate --schema prisma/schema.prisma
       - name: Prepare platform tools and temporary directory
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg poppler-utils
+          # Use the production media toolchain even when the runner's Ubuntu DNS/mirrors fail.
+          docker build -f apps/api/scripts/validation/media-tools.Dockerfile -t prymeira-talk-validation-media .
           sudo install -d -m 1777 /private/tmp
+          mkdir -p "$RUNNER_TEMP/talk-media-bin"
+          for tool in ffmpeg ffprobe pdfinfo pdftoppm pdftotext pdfimages; do
+            install -m 755 apps/api/scripts/validation/media-tool.sh "$RUNNER_TEMP/talk-media-bin/$tool"
+          done
+          echo "$RUNNER_TEMP/talk-media-bin" >> "$GITHUB_PATH"
+      - name: Verify isolated media tools
+        run: |
+          ffmpeg -version
+          ffprobe -version
+          pdfinfo -v
+          pdftoppm -v
       - name: Typecheck, unit, builds, migrations and serial PostgreSQL/RabbitMQ integration
         env:
           TALK_TEST_DATABASE_ADMIN_URL: postgresql://talk_test:talk_test@127.0.0.1:55439/postgres

@@ -414,19 +414,17 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
     : undefined;
   const followupBrainApplies = (workspaceId: string) =>
     env.FOLLOWUP_BRAIN_WORKSPACES.includes("*") || env.FOLLOWUP_BRAIN_WORKSPACES.includes(workspaceId);
+  const followupAudioTranscriber = options.prismaEnabled === false ? undefined : createFollowupAudioTranscriber({
+    prisma: app.prisma,
+    media: (() => {
+      const inboxMedia = createInboxMediaService({ prisma: app.prisma, client: evolutionRuntime.client, durable: durableMedia?.media ?? null, photos: deploymentPhotoStore() });
+      return (workspaceId: string, conversationId: string, messageId: string) => inboxMedia.media(workspaceId, conversationId, messageId);
+    })(),
+    transcriptions: durableMedia?.transcriptions
+  });
   const followupBrain = options.prismaEnabled === false || env.FOLLOWUP_BRAIN_WORKSPACES.length === 0
     ? undefined
-    : createFollowupBrain({
-        prisma: app.prisma,
-        transcribeAudio: createFollowupAudioTranscriber({
-          prisma: app.prisma,
-          media: (() => {
-            const inboxMedia = createInboxMediaService({ prisma: app.prisma, client: evolutionRuntime.client, durable: durableMedia?.media ?? null, photos: deploymentPhotoStore() });
-            return (workspaceId: string, conversationId: string, messageId: string) => inboxMedia.media(workspaceId, conversationId, messageId);
-          })(),
-          transcriptions: durableMedia?.transcriptions
-        })
-      });
+    : createFollowupBrain({ prisma: app.prisma, transcribeAudio: followupAudioTranscriber });
   const followupService =
     options.prismaEnabled === false
       ? undefined
@@ -618,6 +616,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
           outbound: followupOutbound,
           publisher: followupPublisher,
           followupBrain,
+          transcribeAudio: followupAudioTranscriber,
           contextualFollowup: createContextualFollowupRuntime({ prisma: app.prisma, followups: followupService, outbound: followupOutbound, jev: harnessJev, publisher: followupPublisher }),
           harness: { jev: harnessJev }
         });
