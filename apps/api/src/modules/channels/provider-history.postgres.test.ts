@@ -7,6 +7,8 @@ import { normalizeWahaEvent } from '../waha/waha-normalizer.js';
 import { persistProviderMessages, importChatCanonical } from './channel-history-canonical.js';
 import { normalizeChatAddress } from '../messaging/whatsapp-identity.js';
 import { rolloutDiagnostics } from './rollout-diagnostics.js';
+import { createCanonicalStore } from '../messaging/canonical-store.js';
+import { historyDigest } from './history-memory-budget.js';
 import { pairedConnections, recoverGapsSweep, compareProviderHistories, importConnectionHistory, recoverConnectionGap, wahaChatAddress, wahaHistorySweep, type ProviderHistoryDeps } from './provider-history.js';
 
 const databaseUrl = process.env.MESSAGING_TEST_DATABASE_URL;
@@ -54,6 +56,41 @@ describe.skipIf(!databaseUrl)('provider history and gap recovery on PostgreSQL',
       getMessages: vi.fn(async ({ chatId, offset = 0, limit = 100 }: { chatId: string; offset?: number; limit?: number }) => (input.waha?.[chatId] ?? []).slice(offset, offset + limit)) }
   } as unknown as ProviderHistoryDeps);
 
+  it('prioritizes a reconnect with real canonical persistence while live ingestion and delivery receipts keep working', async () => {
+    const f = await fixture(), now = Math.floor(Date.now() / 1000) * 1000, checkpoint = new Date(now - 20 * 86400_000);
+    const c = await db.channelConnection.update({ where: { id: f.waha.id }, data: { recoveredThroughAt: checkpoint, disconnectedAt: new Date(now - 120_000) } });
+    const store = createCanonicalStore();
+    const context = { workspaceId: f.workspaceId, channelId: f.channel.id, connectionId: c.id, sessionName: c.sessionName,
+      provider: 'waha' as const, channelProvider: 'evolution' as const, lifecycleGeneration: c.lifecycleGeneration, mode: 'live' as const, observedAt: new Date(now).toISOString() };
+    const live = async (id: string, at: number) => {
+      const n = normalizeWahaEvent(context, { event: 'message.any', session: c.sessionName, payload: wa(id, 'Synthetic live text', at) });
+      if (n.kind !== 'accepted') throw Error('Invalid live fixture');
+      return store.persist(db, n.event, { receiptKey: `webhook-${id}` });
+    };
+    expect(await live('ALREADY_LIVE', now - 110_000)).toMatchObject({ outcome: 'created', allowOperationalEffects: true });
+    const messages = [wa('ANCIENT', 'Synthetic old text', checkpoint.getTime() + 60_000),
+      wa('ALREADY_LIVE', 'Synthetic live text', now - 110_000), wa('GAP_IN', 'Synthetic missed text', now - 100_000),
+      wa('GAP_OUT', 'Synthetic phone reply', now - 90_000, CUS, true), wa('GAP_IN_LAST', 'Synthetic final text', now - 80_000)];
+    const getRecoveryMessages = vi.fn(async (q: { from: number; to: number; offset: number; limit: number }) => {
+      const all = messages.filter(m => m.timestamp! >= q.from && m.timestamp! <= q.to), page = all.slice(q.offset, q.offset + q.limit);
+      return { messages: page, rawDigest: historyDigest(page), rawCount: page.length, nextOffset: q.offset + page.length, exhausted: !page.length };
+    });
+    const source = { ...deps({}), waha: { getChats: vi.fn(), getMessages: vi.fn(), getRecoveryMessages } };
+    expect(await recoverConnectionGap(db, source, c, { now })).toMatchObject({ recovered: 3, advanced: true, lane: 'recent' });
+    expect(await db.message.count({ where: { workspaceId: f.workspaceId } })).toBe(4);
+    expect((await db.conversation.findFirstOrThrow({ where: { workspaceId: f.workspaceId } })).unreadCount).toBe(1);
+    expect((await db.channelConnection.findUniqueOrThrow({ where: { id: c.id } })).recoveredThroughAt).toEqual(checkpoint);
+    expect(await live('AFTER_RECOVERY', now - 1000)).toMatchObject({ outcome: 'created', allowOperationalEffects: true });
+    const ack = normalizeWahaEvent(context, { event: 'message.ack', session: c.sessionName, payload: {
+      id: wa('GAP_OUT', '', now, CUS, true).id, ack: 2, _data: { id: { id: 'GAP_OUT', remote: CUS, fromMe: true } }
+    } });
+    if (ack.kind !== 'accepted') throw Error('Invalid ack fixture');
+    await store.persist(db, ack.event, { receiptKey: 'delivery-after-recovery' });
+    expect(await db.message.findFirstOrThrow({ where: { workspaceId: f.workspaceId, direction: 'outbound' } })).toMatchObject({ status: 'delivered' });
+    expect(await db.outboundIntent.count({ where: { workspaceId: f.workspaceId } })).toBe(0);
+    expect(await db.outboundDispatch.count({ where: { workspaceId: f.workspaceId } })).toBe(0);
+    expect(source.waha.getChats).not.toHaveBeenCalled(); expect(source.waha.getMessages).not.toHaveBeenCalled();
+  });
   it('keeps healthy same-number WAHA recoverable when Evolution is disconnected, but not during its new pairing', async () => {
     const f = await fixture();
     await db.channelConnection.update({ where: { id: f.evolution.id }, data: { status: 'disconnected', eligible: false } });
